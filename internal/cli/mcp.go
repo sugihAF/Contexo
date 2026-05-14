@@ -78,15 +78,41 @@ func handleMCPRequest(srv *mcpserver.HubServer, req *MCPRequest) *MCPResponse {
 			Result: map[string]interface{}{
 				"protocolVersion": "2024-11-05",
 				"capabilities": map[string]interface{}{
-					"resources": map[string]interface{}{
-						"listChanged": false,
-					},
+					"resources": map[string]interface{}{"listChanged": false},
+					"tools":     map[string]interface{}{"listChanged": false},
 				},
 				"serverInfo": map[string]interface{}{
 					"name":    "ctxhub",
 					"version": "0.2.0",
 				},
 			},
+		}
+
+	case "tools/list":
+		tools := srv.ListTools()
+		return &MCPResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  map[string]interface{}{"tools": tools},
+		}
+
+	case "tools/call":
+		var params struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return &MCPResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error:   &MCPError{Code: -32602, Message: "invalid params"},
+			}
+		}
+		result := srv.HandleToolCall(context.Background(), params.Name, params.Arguments)
+		return &MCPResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  result,
 		}
 
 	case "resources/list":
