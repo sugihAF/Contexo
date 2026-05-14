@@ -1,0 +1,26 @@
+{
+  "feature": "CtxHub MVP-1",
+  "created": "2026-02-28",
+  "stories": [
+    {"id": 1, "title": "Go Module + Schema Types", "status": "passed", "files_modified": ["go.mod", "Makefile", "internal/schema/session_event.go", "internal/schema/commit.go", "internal/schema/feature.go", "internal/schema/policy.go", "internal/schema/validate.go", "tests/story01_schema_test.go"], "ralph_iterations": 1},
+    {"id": 2, "title": "Storage Interfaces + JSONL Reader/Writer", "status": "passed", "files_modified": ["internal/store/interfaces.go", "internal/store/jsonl/writer.go", "internal/store/jsonl/reader.go", "tests/story02_jsonl_test.go"], "ralph_iterations": 1},
+    {"id": 3, "title": "SQLite Local Index", "status": "passed", "files_modified": ["internal/store/sqlite/sqlite.go", "internal/store/sqlite/migrations.go", "internal/store/sqlite/sessions.go", "internal/store/sqlite/commits.go", "internal/store/sqlite/symbols.go", "tests/story03_sqlite_test.go"], "ralph_iterations": 1},
+    {"id": 4, "title": "BoltDB Blob Store", "status": "passed", "files_modified": ["internal/store/boltdb/blobstore.go", "tests/story04_boltdb_test.go"], "ralph_iterations": 1},
+    {"id": 5, "title": "Config + ctx init Command", "status": "passed", "files_modified": ["internal/config/config.go", "internal/cli/root.go", "internal/cli/init.go", "cmd/ctx/main.go", "tests/story05_init_test.go"], "ralph_iterations": 1},
+    {"id": 6, "title": "Redaction Pipeline", "status": "passed", "files_modified": ["internal/redaction/pipeline.go", "internal/redaction/patterns.go", "internal/redaction/denylist.go", "tests/story06_redaction_test.go"], "ralph_iterations": 1},
+    {"id": 7, "title": "Embedded Recorder", "status": "passed", "files_modified": ["internal/recorder/recorder.go", "internal/recorder/http.go", "tests/story07_recorder_test.go"], "ralph_iterations": 1},
+    {"id": 8, "title": "Claude Code Adapter", "status": "passed", "files_modified": ["internal/adapter/claudecode/hooks.go", "internal/adapter/claudecode/normalize.go", "tests/story08_claudecode_test.go"], "ralph_iterations": 1},
+    {"id": 9, "title": "Codex CLI Adapter", "status": "passed", "files_modified": ["internal/adapter/codex/wrapper.go", "internal/adapter/codex/normalize.go", "tests/story09_codex_test.go"], "ralph_iterations": 1},
+    {"id": 10, "title": "VS Code Import Adapter", "status": "passed", "files_modified": ["internal/adapter/vscode/importer.go", "tests/story10_vscode_test.go"], "ralph_iterations": 1},
+    {"id": 11, "title": "Capture CLI Commands", "status": "passed", "files_modified": ["internal/cli/capture.go", "tests/story11_capture_test.go"], "ralph_iterations": 1},
+    {"id": 12, "title": "Session CLI Commands", "status": "passed", "files_modified": ["internal/cli/session.go", "tests/story12_session_test.go"], "ralph_iterations": 1},
+    {"id": 13, "title": "Context Commit CLI Commands", "status": "passed", "files_modified": ["internal/cli/commit.go", "internal/cli/log.go", "internal/cli/show.go", "internal/cli/link.go", "tests/story13_commit_test.go"], "ralph_iterations": 1},
+    {"id": 14, "title": "Feature Overview + Activity Log", "status": "passed", "files_modified": ["internal/store/sqlite/features.go", "internal/cli/context.go", "tests/story14_features_test.go"], "ralph_iterations": 1},
+    {"id": 15, "title": "Symbol Blame", "status": "passed", "files_modified": ["internal/symbols/extract.go", "internal/cli/blame.go", "tests/story15_blame_test.go"], "ralph_iterations": 1},
+    {"id": 16, "title": "Auth Module", "status": "passed", "files_modified": ["internal/auth/apikey.go", "internal/auth/middleware.go", "internal/config/credentials.go", "tests/story16_auth_test.go"], "ralph_iterations": 1},
+    {"id": 17, "title": "Server Skeleton + PostgreSQL", "status": "passed", "files_modified": ["internal/server/router.go", "internal/server/service/service.go", "internal/server/service/memstore.go", "internal/server/handler/repos.go", "internal/server/handler/commits.go", "internal/store/postgres/postgres.go", "internal/store/postgres/commits.go", "cmd/ctxhub/main.go", "migrations/001_initial.sql", "tests/story17_server_test.go"], "ralph_iterations": 1},
+    {"id": 18, "title": "Server Sessions + S3", "status": "passed", "files_modified": ["internal/server/handler/sessions.go", "internal/store/s3/s3.go", "internal/store/postgres/sessions.go", "tests/story18_sessions_test.go"], "ralph_iterations": 1},
+    {"id": 19, "title": "Push/Pull Sync CLI", "status": "passed", "files_modified": ["internal/cli/push.go", "internal/cli/pull.go", "internal/sync/client.go", "internal/store/sqlite/sync.go", "tests/story19_sync_test.go"], "ralph_iterations": 1},
+    {"id": 20, "title": "MCP Server Facade", "status": "passed", "files_modified": ["internal/mcp/server.go", "internal/mcp/handlers.go", "internal/cli/mcp.go", "tests/story20_mcp_test.go"], "ralph_iterations": 1}
+  ]
+}

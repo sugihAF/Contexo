@@ -1,0 +1,2 @@
+Capture started on port 19476 (client: claude-code)
+Listening at http://127.0.0.1:19476

@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ctxhub
+      POSTGRES_PASSWORD: ctxhub
+      POSTGRES_DB: ctxhub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  ctxhub:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ctxhub
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "postgres://ctxhub:ctxhub@postgres:5432/ctxhub?sslmode=disable"
+      S3_ENDPOINT: "minio:9000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      S3_BUCKET: "ctxhub-sessions"
+      CTXHUB_API_KEY: "dev-key"
+    depends_on:
+      - postgres
+      - minio
+
+volumes:
+  pgdata:
+  miniodata:
