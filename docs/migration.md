@@ -1,6 +1,6 @@
-# CtxHub — Migration From Current Code
+# Contexo — Migration From Current Code
 
-This is the file-by-file map from the current MVP-1 codebase (JSONL recorder + SQLite commit store) to the vision in [vision.md](./vision.md): per-project `.ctxhub/` directories with markdown pages, git-backed server, layered MCP reads, agent-triggered sync.
+This is the file-by-file map from the current MVP-1 codebase (JSONL recorder + SQLite commit store) to the vision in [vision.md](./vision.md): per-project `.contexo/` directories with markdown pages, git-backed server, layered MCP reads, agent-triggered sync.
 
 Roughly half the current Go code goes away — the recorder, redaction, blob, and JSONL adapter layers exist to handle raw transcripts that the new design doesn't capture. What remains is the CLI scaffolding, the HTTP sync skeleton, auth, and the MCP server — all of which gets refactored to handle markdown pages instead of JSON commits.
 
@@ -26,7 +26,7 @@ Roughly half the current Go code goes away — the recorder, redaction, blob, an
 | `http.go` | DELETE |
 | `recorder.go` | DELETE |
 
-Rationale: raw transcript capture is no longer in scope. AI writes distilled markdown directly to `.ctxhub/` at session end (same instruction model as the global `llm-wiki`).
+Rationale: raw transcript capture is no longer in scope. AI writes distilled markdown directly to `.contexo/` at session end (same instruction model as the global `llm-wiki`).
 
 ---
 
@@ -61,7 +61,7 @@ Rationale: adapters existed to normalize raw events from different IDE/CLI sourc
 | Path | Action | Notes |
 |---|---|---|
 | `interfaces.go` | REFACTOR | Replace `CommitStore` / `EventStore` / `BlobStore` with `PageStore` interface |
-| `sqlite/` | REFACTOR | Becomes a local-side metadata index over `.ctxhub/` files (slug → path, last-modified, tags) for fast lookup; no longer the source of truth |
+| `sqlite/` | REFACTOR | Becomes a local-side metadata index over `.contexo/` files (slug → path, last-modified, tags) for fast lookup; no longer the source of truth |
 | `postgres/` | REFACTOR | Server-side: tracks page metadata, authorship, and API-key → user mapping. The pages themselves live in git. |
 | `s3/` | KEEP, defer | Useful eventually for large attachments referenced by pages. Not needed for MVP. |
 | `boltdb/` | DELETE | Blob storage not needed |
@@ -93,9 +93,9 @@ Rationale: adapters existed to normalize raw events from different IDE/CLI sourc
 | File | Action | Notes |
 |---|---|---|
 | `root.go` | REFACTOR | Trim down to new command set (below) |
-| `init.go` | REFACTOR | Creates `.ctxhub/` with seed `index.md`, `tags.md`, `wiki/`, `raw/sessions/` |
-| `push.go` | REFACTOR | Walks `.ctxhub/`, filters by `--feature`/`--tag`/`--glob`, uploads pages with `parent_sha`, handles 409 conflicts |
-| `pull.go` | REFACTOR | Fetches pages changed since last pull, writes into `.ctxhub/`, updates local index |
+| `init.go` | REFACTOR | Creates `.contexo/` with seed `index.md`, `tags.md`, `wiki/`, `raw/sessions/` |
+| `push.go` | REFACTOR | Walks `.contexo/`, filters by `--feature`/`--tag`/`--glob`, uploads pages with `parent_sha`, handles 409 conflicts |
+| `pull.go` | REFACTOR | Fetches pages changed since last pull, writes into `.contexo/`, updates local index |
 | `remote.go` | KEEP | Already good |
 | `auth.go` | KEEP | Already good |
 | `status.go` | REFACTOR | Shows local pages modified since last push, server pages newer than local |
@@ -114,8 +114,8 @@ Rationale: adapters existed to normalize raw events from different IDE/CLI sourc
 
 **Final CLI surface:**
 ```
-ctx init                  Initialize .ctxhub/ in current project
-ctx remote add <url>      Configure CtxHub server
+ctx init                  Initialize .contexo/ in current project
+ctx remote add <url>      Configure Contexo server
 ctx auth login            Authenticate with API key
 ctx status                Show local vs server delta
 ctx push [filters]        Upload pages to server
@@ -134,7 +134,7 @@ ctx config get|set
 | File | Action |
 |---|---|
 | `server.go` | REFACTOR resource templates to new layout (see below) |
-| `handlers.go` | REFACTOR — read from `.ctxhub/` filesystem instead of stores |
+| `handlers.go` | REFACTOR — read from `.contexo/` filesystem instead of stores |
 
 **New resource templates:**
 ```
@@ -156,7 +156,7 @@ ctx_status()                                  What's local-unpushed vs server-ne
 ctx_write_page(slug, type, content)           Agent writes a page directly
 ```
 
-This is the genuinely new code that makes "sync my Stripe knowledge to contexthub" work via natural language.
+This is the genuinely new code that makes "sync my Stripe knowledge to contexo" work via natural language.
 
 ---
 
@@ -202,7 +202,7 @@ Wraps `os/exec` calls to `git` (or uses `go-git` if we want pure Go) to:
 | File | Action |
 |---|---|
 | `ctx/main.go` | KEEP — just calls `cli.NewRootCmd().Execute()` |
-| `ctxhub/main.go` | REFACTOR — wire git-backed store + postgres metadata, drop `service.NewMemStore()` |
+| `cmd/contexo-server/main.go` | REFACTOR — wire git-backed store + postgres metadata, drop `service.NewMemStore()` |
 
 ---
 
@@ -228,7 +228,7 @@ Bearer-key middleware is fine. Add one thing: API key → user identity (name + 
 
 ### `internal/config/` — **KEEP, small refactor**
 
-`.ctx/config.json` becomes `.ctxhub/config.json`. Add fields: `repo_id`, `server_url`, `last_pull_sha`.
+`.ctx/config.json` becomes `.contexo/config.json`. Add fields: `repo_id`, `server_url`, `last_pull_sha`.
 
 ---
 
@@ -253,8 +253,8 @@ All 28 story tests target the old schema. They go away. New tests organized arou
 ## What stays exactly as-is
 
 - `internal/auth/` — bearer-key middleware
-- `internal/config/` — config + credentials loading (rename `.ctx/` → `.ctxhub/`)
-- `cmd/ctx/main.go` and `cmd/ctxhub/main.go` shells (their bodies change)
+- `internal/config/` — config + credentials loading (rename `.ctx/` → `.contexo/`)
+- `cmd/ctx/main.go` and `cmd/contexo-server/main.go` shells (their bodies change)
 - The general Cobra CLI scaffolding pattern in `internal/cli/root.go`
 - Gin router pattern in `internal/server/router.go`
 
@@ -266,7 +266,7 @@ All 28 story tests target the old schema. They go away. New tests organized arou
 |---|---|
 | `internal/schema/page.go` | The `Page` struct |
 | `internal/schema/frontmatter.go` | YAML frontmatter parse/serialize |
-| `internal/store/pagestore/local.go` | Read/write `.ctxhub/` filesystem |
+| `internal/store/pagestore/local.go` | Read/write `.contexo/` filesystem |
 | `internal/server/gitstore/gitstore.go` | Server-side git operations |
 | `internal/mcp/tools.go` | MCP tool handlers (push/pull/status/write_page) |
 | `internal/indexer/indexer.go` | Builds/maintains `index.md` and `tags.md` from page frontmatter |

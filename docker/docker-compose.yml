@@ -1,17 +1,17 @@
 services:
-  ctxhub:
+  contexo:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.ctxhub
-    image: ctxhub:latest
-    container_name: ctxhub
+      dockerfile: docker/Dockerfile
+    image: contexo:latest
+    container_name: contexo
     ports:
       - "${CTXHUB_PORT:-8080}:8080"
     volumes:
-      - ctxhub_data:/data
+      - contexo_data:/data
     environment:
-      CTXHUB_API_KEY: ${CTXHUB_API_KEY:?set CTXHUB_API_KEY in .env or env}
+      CONTEXO_API_KEY: ${CONTEXO_API_KEY:?set CONTEXO_API_KEY in .env or env}
     restart: unless-stopped
 
 volumes:
-  ctxhub_data:
+  contexo_data:

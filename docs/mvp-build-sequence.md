@@ -1,4 +1,4 @@
-# CtxHub — MVP Build Sequence
+# Contexo — MVP Build Sequence
 
 A vertical-slice ordering. The goal is to hit the **acceptance criteria** below by end of day 2 with a working two-developer workflow, then iterate.
 
@@ -22,7 +22,7 @@ Everything beyond this is post-MVP polish.
 
 ## Day 1 — local end-to-end (no server yet)
 
-Build the local half: schema, file I/O, MCP serving from local `.ctxhub/`. By end of day, an agent can read a page it wrote via MCP. No sync, no server.
+Build the local half: schema, file I/O, MCP serving from local `.contexo/`. By end of day, an agent can read a page it wrote via MCP. No sync, no server.
 
 ### Step 1.1 — Schema (1 hour)
 
@@ -53,7 +53,7 @@ Hello.
 ### Step 1.2 — Local pagestore (1 hour)
 
 **Build:**
-- `internal/store/pagestore/local.go` — `Write(page)`, `Read(slug)`, `List(filter)`, `Walk(.ctxhub/)`
+- `internal/store/pagestore/local.go` — `Write(page)`, `Read(slug)`, `List(filter)`, `Walk(.contexo/)`
 
 **Checkpoint:** write a page to a temp dir, read it back, confirm frontmatter and body match.
 
@@ -61,7 +61,7 @@ Hello.
 
 **Refactor:** `internal/cli/init.go` to create:
 ```
-.ctxhub/
+.contexo/
   config.json
   index.md            (empty index with header)
   tags.md             (empty tags with header)
@@ -74,7 +74,7 @@ Hello.
 
 ### Step 1.4 — Indexer (1 hour)
 
-**Build:** `internal/indexer/indexer.go` — walks `.ctxhub/wiki/` and `.ctxhub/raw/`, regenerates `index.md` and `tags.md`.
+**Build:** `internal/indexer/indexer.go` — walks `.contexo/wiki/` and `.contexo/raw/`, regenerates `index.md` and `tags.md`.
 
 **Checkpoint:** hand-write two pages into `wiki/concepts/`, run the indexer, see them in `index.md` with correct one-line summaries and in `tags.md` under each tag.
 
@@ -86,13 +86,13 @@ Hello.
 - `ctx://raw/{session-id}` → returns the session
 - `ctx://search?q=` → grep over the corpus
 
-**Refactor:** `internal/cli/mcp.go` to start the MCP server pointed at the current `.ctxhub/`.
+**Refactor:** `internal/cli/mcp.go` to start the MCP server pointed at the current `.contexo/`.
 
 **Checkpoint:** start the MCP server, hit it with a test client (or `curl` if we use HTTP transport), confirm reading the index and a specific page works.
 
 ### Step 1.6 — Agent writes a page end-to-end (30 min, no code)
 
-In a Claude Code session, instruct the agent: *"Look at the .ctxhub/ structure. Now write a concept page for 'Stripe Subscription' at `.ctxhub/wiki/concepts/stripe-subscription.md` with proper frontmatter including the Agent Reasoning section."*
+In a Claude Code session, instruct the agent: *"Look at the .contexo/ structure. Now write a concept page for 'Stripe Subscription' at `.contexo/wiki/concepts/stripe-subscription.md` with proper frontmatter including the Agent Reasoning section."*
 
 **Checkpoint:** the agent produces a well-formed page. Run the indexer; the page appears in `index.md`. Read via MCP works.
 
@@ -127,7 +127,7 @@ GET    /v1/repos/:id/sync/pull?since=<sha>
 GET    /v1/repos/:id/timeline?limit=50
 ```
 
-**Refactor:** `cmd/ctxhub/main.go` to wire `gitstore` (not memstore), with a configurable data root (`/var/ctxhub/repos/` or env var).
+**Refactor:** `cmd/contexo-server/main.go` to wire `gitstore` (not memstore), with a configurable data root (`/var/contexo/repos/` or env var).
 
 **Checkpoint:** start the server, `curl` create a repo, push a page, pull it back, see it in `/timeline`.
 
@@ -135,7 +135,7 @@ GET    /v1/repos/:id/timeline?limit=50
 
 **Refactor:**
 - `internal/sync/client.go` — new `PushPages` / `PullPages` shapes carrying `parent_sha`
-- `internal/cli/push.go` — walks `.ctxhub/`, filters by `--feature`/`--tag`/`--glob`, sends, handles conflicts (for MVP: print conflict and abort; AI-assisted merge comes later)
+- `internal/cli/push.go` — walks `.contexo/`, filters by `--feature`/`--tag`/`--glob`, sends, handles conflicts (for MVP: print conflict and abort; AI-assisted merge comes later)
 - `internal/cli/pull.go` — fetches changed pages since `last_pull_sha`, writes to disk, re-runs indexer, updates `last_pull_sha` in config
 
 **Checkpoint:** two local clones (e.g. `/tmp/devA/chompchat/`, `/tmp/devB/chompchat/`), both pointed at the same local server. Push from A, pull from B, see the page appear.
@@ -155,11 +155,11 @@ GET    /v1/repos/:id/timeline?limit=50
 
 Wire these in the MCP server alongside the resources.
 
-**Checkpoint:** from a Claude session, say *"push my stripe knowledge to contexthub"*. Confirm the agent calls `ctx_push(feature="stripe")` and the file appears on the server.
+**Checkpoint:** from a Claude session, say *"push my stripe knowledge to contexo"*. Confirm the agent calls `ctx_push(feature="stripe")` and the file appears on the server.
 
 ### Step 2.6 — Acceptance test (1.5 hours)
 
-Run the full vertical-slice scenario from the **Acceptance criteria** section above. Two separate working directories, two MCP servers, one CtxHub server. Walk through all 5 criteria. Fix anything that breaks.
+Run the full vertical-slice scenario from the **Acceptance criteria** section above. Two separate working directories, two MCP servers, one Contexo server. Walk through all 5 criteria. Fix anything that breaks.
 
 **Checkpoint:** all 5 acceptance criteria pass.
 

@@ -8,7 +8,7 @@ import (
 )
 
 // State tracks per-page sync metadata so the client knows which parent_sha
-// to send on each push. Lives at .ctxhub/.sync/state.json.
+// to send on each push. Lives at .contexo/.sync/state.json.
 type State struct {
 	LastPullSHA string            `json:"last_pull_sha,omitempty"`
 	PageSHAs    map[string]string `json:"page_shas,omitempty"`

@@ -17,15 +17,15 @@ import (
 func newMCPCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
-		Short: "Run MCP server over stdio against the local .ctxhub/",
+		Short: "Run MCP server over stdio against the local .contexo/",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			hubDir := config.CtxhubDirPath(root)
+			hubDir := config.ContexoDirPath(root)
 			store, err := pagestore.Open(hubDir)
 			if err != nil {
 				return fmt.Errorf("mcp: open store: %w (did you run 'ctx init'?)", err)
 			}
-			srv := mcpserver.NewHubServer(store)
+			srv := mcpserver.NewServer(store)
 			return runMCPStdio(srv)
 		},
 	}
@@ -53,7 +53,7 @@ type MCPError struct {
 	Message string `json:"message"`
 }
 
-func runMCPStdio(srv *mcpserver.HubServer) error {
+func runMCPStdio(srv *mcpserver.Server) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
@@ -69,7 +69,7 @@ func runMCPStdio(srv *mcpserver.HubServer) error {
 	return scanner.Err()
 }
 
-func handleMCPRequest(srv *mcpserver.HubServer, req *MCPRequest) *MCPResponse {
+func handleMCPRequest(srv *mcpserver.Server, req *MCPRequest) *MCPResponse {
 	switch req.Method {
 	case "initialize":
 		return &MCPResponse{
@@ -82,7 +82,7 @@ func handleMCPRequest(srv *mcpserver.HubServer, req *MCPRequest) *MCPResponse {
 					"tools":     map[string]interface{}{"listChanged": false},
 				},
 				"serverInfo": map[string]interface{}{
-					"name":    "ctxhub",
+					"name":    "contexo",
 					"version": "0.2.0",
 				},
 			},

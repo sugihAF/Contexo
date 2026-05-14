@@ -59,7 +59,7 @@ func (fm *PageFrontmatter) Validate() error {
 	return nil
 }
 
-// RelPath returns the path under .ctxhub/ where a page of this type and slug lives.
+// RelPath returns the path under .contexo/ where a page of this type and slug lives.
 func (fm *PageFrontmatter) RelPath() string {
 	switch fm.Type {
 	case TypeSource:

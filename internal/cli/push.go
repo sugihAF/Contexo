@@ -22,16 +22,16 @@ func newPushCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "Push local .ctxhub pages to the server",
+		Short: "Push local .contexo pages to the server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			hubDir := config.CtxhubDirPath(root)
+			hubDir := config.ContexoDirPath(root)
 
-			cfg, err := config.LoadHub(root)
+			cfg, err := config.Load(root)
 			if err != nil {
 				return err
 			}
-			creds, err := config.LoadCredentialsHub(root)
+			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
 				return fmt.Errorf("push: no credentials, run 'ctx auth login' first")
 			}
@@ -41,7 +41,7 @@ func newPushCmd() *cobra.Command {
 				return fmt.Errorf("push: no server URL configured (run 'ctx remote add')")
 			}
 			if cfg.RepoID == "" {
-				return fmt.Errorf("push: no repo_id configured in .ctxhub/config.json")
+				return fmt.Errorf("push: no repo_id configured in .contexo/config.json")
 			}
 
 			store, err := pagestore.Open(hubDir)

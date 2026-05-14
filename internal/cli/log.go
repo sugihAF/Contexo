@@ -16,11 +16,11 @@ func newLogCmd() *cobra.Command {
 		Short: "Show the server's commit timeline (who changed what when)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			cfg, err := config.LoadHub(root)
+			cfg, err := config.Load(root)
 			if err != nil {
 				return err
 			}
-			creds, err := config.LoadCredentialsHub(root)
+			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
 				return fmt.Errorf("log: not authenticated (run 'ctx auth login')")
 			}

@@ -17,19 +17,19 @@ func main() {
 		port = "8080"
 	}
 
-	dataRoot := os.Getenv("CTXHUB_DATA_ROOT")
+	dataRoot := os.Getenv("CONTEXO_DATA_ROOT")
 	if dataRoot == "" {
 		cwd, _ := os.Getwd()
-		dataRoot = filepath.Join(cwd, "ctxhub-data")
+		dataRoot = filepath.Join(cwd, "contexo-data")
 	}
 
 	store, err := gitstore.Open(dataRoot)
 	if err != nil {
-		log.Fatalf("ctxhub: open gitstore at %s: %v", dataRoot, err)
+		log.Fatalf("contexo: open gitstore at %s: %v", dataRoot, err)
 	}
 
 	validator := func(key string) (string, bool) {
-		expectedKey := os.Getenv("CTXHUB_API_KEY")
+		expectedKey := os.Getenv("CONTEXO_API_KEY")
 		if expectedKey == "" {
 			expectedKey = "dev-key"
 		}
@@ -39,9 +39,9 @@ func main() {
 		return "", false
 	}
 
-	router := server.NewHubRouter(store, auth.KeyValidator(validator))
+	router := server.NewRouter(store, auth.KeyValidator(validator))
 
-	log.Printf("CtxHub server starting on :%s (data: %s)", port, dataRoot)
+	log.Printf("Contexo server starting on :%s (data: %s)", port, dataRoot)
 	if err := router.Run(fmt.Sprintf(":%s", port)); err != nil {
 		log.Fatal(err)
 	}

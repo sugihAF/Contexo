@@ -13,8 +13,8 @@ var rootDir string
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "ctx",
-		Short:        "CtxHub CLI — share AI agent knowledge across a team",
-		Long:         "ctx manages a per-project knowledge base of distilled AI sessions and syncs it with a CtxHub server so teammates' agents start from the same context.",
+		Short:        "Contexo CLI — share AI agent knowledge across a team",
+		Long:         "ctx manages a per-project knowledge base of distilled AI sessions and syncs it with a Contexo server so teammates' agents start from the same context.",
 		SilenceUsage: true,
 	}
 

@@ -8,8 +8,8 @@ import (
 	"github.com/sugihAF/contexo/internal/server/handler"
 )
 
-// NewHubRouter wires the git-backed CtxHub endpoints behind a bearer-key middleware.
-func NewHubRouter(store *gitstore.Store, keyValidator auth.KeyValidator) *gin.Engine {
+// NewRouter wires the git-backed Contexo endpoints behind a bearer-key middleware.
+func NewRouter(store *gitstore.Store, keyValidator auth.KeyValidator) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -19,7 +19,7 @@ func NewHubRouter(store *gitstore.Store, keyValidator auth.KeyValidator) *gin.En
 	v1 := r.Group("/v1")
 	v1.Use(auth.GinMiddleware(keyValidator))
 
-	h := handler.NewHub(store)
+	h := handler.New(store)
 
 	v1.POST("/repos/:id", h.CreateRepo)
 	v1.GET("/repos/:id/pages/*path", h.ReadPage)

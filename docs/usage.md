@@ -1,8 +1,8 @@
-# CtxHub — Usage Walkthrough
+# Contexo — Usage Walkthrough
 
 Concrete end-to-end flow from zero. Two roles:
 
-- **Admin** (one-time setup): runs the CtxHub server, hands out API keys.
+- **Admin** (one-time setup): runs the Contexo server, hands out API keys.
 - **Developer** (per dev, per project): installs the CLI, points it at the server, wires it into their AI agent.
 
 Then the daily flow: Dev A researches with their agent, Dev A shares to the team, Dev B picks up the work, Dev B's agent sees Dev A's reasoning.
@@ -17,7 +17,7 @@ Then the daily flow: Dev A researches with their agent, Dev A shares to the team
 git clone <this repo>
 cd contexo
 go build -o bin/ctx ./cmd/ctx
-go build -o bin/ctxhub ./cmd/ctxhub
+go build -o bin/contexo-server ./cmd/contexo-server
 ```
 
 Pure Go, no CGO. The server needs `git` on PATH (used internally for the per-repo storage).
@@ -25,11 +25,11 @@ Pure Go, no CGO. The server needs `git` on PATH (used internally for the per-rep
 ### 1.2 Run the server
 
 ```
-mkdir -p /var/ctxhub/repos
-CTXHUB_DATA_ROOT=/var/ctxhub/repos \
-CTXHUB_API_KEY=team-secret-key-here \
+mkdir -p /var/contexo/repos
+CONTEXO_DATA_ROOT=/var/contexo/repos \
+CONTEXO_API_KEY=team-secret-key-here \
 PORT=8080 \
-./bin/ctxhub
+./bin/contexo-server
 ```
 
 That's it. The server is now listening on `:8080`. Health check:
@@ -41,15 +41,15 @@ curl http://localhost:8080/health
 
 ### 1.3 What state lives where
 
-- `/var/ctxhub/repos/<repo_id>/` — one git working repository per project. Real `git log` works in there; you can inspect history with normal git tools.
-- `CTXHUB_API_KEY` — single shared key for the team (MVP). Multi-user keys with per-user identities are a deferred feature.
+- `/var/contexo/repos/<repo_id>/` — one git working repository per project. Real `git log` works in there; you can inspect history with normal git tools.
+- `CONTEXO_API_KEY` — single shared key for the team (MVP). Multi-user keys with per-user identities are a deferred feature.
 - No database. The git repos are the source of truth.
 
-Back-ups: `rsync /var/ctxhub/repos/ <backup-target>/`. That's the whole thing.
+Back-ups: `rsync /var/contexo/repos/ <backup-target>/`. That's the whole thing.
 
 ### 1.4 Production deployment
 
-For real use, put it behind nginx with HTTPS and rotate `CTXHUB_API_KEY` away from `dev-key`:
+For real use, put it behind nginx with HTTPS and rotate `CONTEXO_API_KEY` away from `dev-key`:
 
 ```nginx
 location / {
@@ -64,7 +64,7 @@ A systemd unit, a small VM (1 CPU, 2 GB RAM is plenty for hundreds of pages and 
 ### 1.5 Hand out credentials
 
 Tell each developer:
-- Server URL: `https://ctxhub.yourcompany.com` (or `http://localhost:8080` for local testing)
+- Server URL: `https://contexo.yourcompany.com` (or `http://localhost:8080` for local testing)
 - API key: `team-secret-key-here`
 - Repo ID for each project: e.g. `chompchat`, `acme-api`, etc.
 
@@ -86,13 +86,13 @@ In your existing project directory (e.g. `~/code/chompchat`):
 ```
 $ cd ~/code/chompchat
 $ ctx init
-Initialized .ctxhub in /home/sugih/code/chompchat
+Initialized .contexo in /home/sugih/code/chompchat
 ```
 
-You now have a `.ctxhub/` tree:
+You now have a `.contexo/` tree:
 
 ```
-.ctxhub/
+.contexo/
 ├── config.json
 ├── index.md            ← always loaded into the AI's context
 ├── tags.md
@@ -103,13 +103,13 @@ You now have a `.ctxhub/` tree:
     └── entities/
 ```
 
-Add `.ctxhub/.sync/` to `.gitignore` if you want — it's local sync metadata, not knowledge.
+Add `.contexo/.sync/` to `.gitignore` if you want — it's local sync metadata, not knowledge.
 
 ### 2.3 Point at the server and authenticate
 
 ```
-$ ctx remote set https://ctxhub.yourcompany.com
-Server: https://ctxhub.yourcompany.com
+$ ctx remote set https://contexo.yourcompany.com
+Server: https://contexo.yourcompany.com
 
 $ ctx remote set-repo chompchat
 Repo: chompchat
@@ -118,7 +118,7 @@ $ ctx auth login \
     --api-key team-secret-key-here \
     --name "sugihAF" \
     --email "sugih@yourcompany.com"
-Authenticated (server: https://ctxhub.yourcompany.com) (repo: chompchat)
+Authenticated (server: https://contexo.yourcompany.com) (repo: chompchat)
 ```
 
 `--name` and `--email` become the git commit author on every push, so teammates can see who contributed each piece of knowledge.
@@ -128,7 +128,7 @@ Verify:
 ```
 $ ctx status
 Initialized: yes
-Server: https://ctxhub.yourcompany.com
+Server: https://contexo.yourcompany.com
 Repo: chompchat
 Authenticated: yes
 User: sugihAF <sugih@yourcompany.com>
@@ -139,14 +139,14 @@ Pages never pushed: 0
 
 ### 2.4 Wire it into your AI agent
 
-CtxHub exposes both **resources** (read-only knowledge) and **tools** (`ctx_push`, `ctx_pull`, `ctx_status`, `ctx_write_page`) over MCP. The agent reaches it by running `ctx mcp` in the project directory.
+Contexo exposes both **resources** (read-only knowledge) and **tools** (`ctx_push`, `ctx_pull`, `ctx_status`, `ctx_write_page`) over MCP. The agent reaches it by running `ctx mcp` in the project directory.
 
 **Claude Code** — create `.mcp.json` in the project root (or add to `~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
-    "ctxhub": {
+    "contexo": {
       "command": "ctx",
       "args": ["mcp"]
     }
@@ -157,10 +157,10 @@ CtxHub exposes both **resources** (read-only knowledge) and **tools** (`ctx_push
 Or via the CLI:
 
 ```
-claude mcp add ctxhub -- ctx mcp
+claude mcp add contexo -- ctx mcp
 ```
 
-**Cursor / Windsurf / other MCP clients**: same idea — register a server named `ctxhub` whose command is `ctx mcp` and whose working directory is the project root.
+**Cursor / Windsurf / other MCP clients**: same idea — register a server named `contexo` whose command is `ctx mcp` and whose working directory is the project root.
 
 The first time the agent starts in this project, it will see the four `ctx_*` tools and the five `ctx://...` resources available.
 
@@ -173,13 +173,13 @@ $ ctx pull
 Pulled 12 page(s); HEAD=a4b2c1d3
 ```
 
-Now `.ctxhub/wiki/...` is populated and `.ctxhub/index.md` is regenerated. Open the project in your IDE — your AI agent has everything the team knows.
+Now `.contexo/wiki/...` is populated and `.contexo/index.md` is regenerated. Open the project in your IDE — your AI agent has everything the team knows.
 
 ---
 
 ## Part 3 — The daily flow
 
-The scenario: you (Dev A) spend a Tuesday afternoon researching how to model Stripe subscription billing for ChompChat. On Wednesday morning Dev B is going to do the implementation. Without CtxHub, Dev B's Claude would re-do the research from scratch, possibly badly. With CtxHub, Dev B's Claude inherits your reasoning.
+The scenario: you (Dev A) spend a Tuesday afternoon researching how to model Stripe subscription billing for ChompChat. On Wednesday morning Dev B is going to do the implementation. Without Contexo, Dev B's Claude would re-do the research from scratch, possibly badly. With Contexo, Dev B's Claude inherits your reasoning.
 
 ### 3.1 Dev A — research session with the agent
 
@@ -189,7 +189,7 @@ You work normally with Claude Code in `~/code/chompchat/`. You discuss Stripe bi
 
 Near the end of the session, you tell Claude:
 
-> *"Distill this session into a CtxHub concept page and sync it to contexthub. Include an Agent Reasoning section explaining what we considered and rejected."*
+> *"Distill this session into a Contexo concept page and sync it to contexo. Include an Agent Reasoning section explaining what we considered and rejected."*
 
 Claude invokes `ctx_write_page` with the slug `stripe-subscription`, type `concept`, your distilled body (Decision + Agent Reasoning + Current State + Open Questions), tags `[stripe, billing, subscription]`, and a `reasoning_summary` like *"Rejected Connect (negative-balance ownership); chose Billing + metered usage"*.
 
@@ -215,11 +215,11 @@ Pushed 1 page(s); HEAD=1a320e1d
 
 ### 3.3 Dev B — start the implementation
 
-Wednesday morning. Dev B opens `~/code/chompchat/` for the first time today. Their `.ctxhub/` is from a few days ago. They tell their Claude:
+Wednesday morning. Dev B opens `~/code/chompchat/` for the first time today. Their `.contexo/` is from a few days ago. They tell their Claude:
 
 > *"I'm picking up the Stripe subscription implementation. What does the team already know?"*
 
-Claude invokes `ctx_pull` (which it knows to do from the tool's description — *"Call this at the start of a session when picking up work on a topic"*). The new page lands in Dev B's `.ctxhub/wiki/concepts/stripe-subscription.md`. The index regenerates.
+Claude invokes `ctx_pull` (which it knows to do from the tool's description — *"Call this at the start of a session when picking up work on a topic"*). The new page lands in Dev B's `.contexo/wiki/concepts/stripe-subscription.md`. The index regenerates.
 
 Or Dev B just runs:
 
@@ -304,10 +304,10 @@ For markdown prose this works better than git's line-based merge because the age
 | `push: no credentials, run 'ctx auth login' first` | `ctx auth login --api-key ...` |
 | `push: no server URL configured` | `ctx remote set <url>` |
 | `push: no repo_id configured` | `ctx remote set-repo <id>` |
-| Server returns 401 | Wrong API key, or server isn't running with `CTXHUB_API_KEY` set. |
+| Server returns 401 | Wrong API key, or server isn't running with `CONTEXO_API_KEY` set. |
 | Server returns 404 on push | Probably fine — push auto-creates the repo. If on pull, the repo has no commits yet. |
 | Agent says it can't find `ctx_push` | Check `.mcp.json` is registered and the `ctx` binary is on PATH for the agent's environment. |
-| `git: command not found` (server side) | Install git on the server machine. CtxHub shells out to it. |
+| `git: command not found` (server side) | Install git on the server machine. Contexo shells out to it. |
 
 ---
 
@@ -317,6 +317,6 @@ Things you might expect but won't find:
 
 - **Automatic capture.** The agent has to write pages explicitly (via `ctx_write_page` or by editing files). There's no daemon recording every conversation.
 - **Multi-user access control.** Single shared API key per server. Per-user roles are deferred.
-- **Web UI.** The local markdown files + your AI agent are the UI. If you want to browse server-side, `git log` and `git show` in `/var/ctxhub/repos/<repo>/` work.
+- **Web UI.** The local markdown files + your AI agent are the UI. If you want to browse server-side, `git log` and `git show` in `/var/contexo/repos/<repo>/` work.
 - **Full-text search ranking.** `ctx://search?q=...` does substring + tag/type filtering. No relevance ranking. The agent + `grep` is fine until proven otherwise.
-- **Cross-project knowledge.** CtxHub is per-project. Cross-project knowledge (Anthropic API, general patterns) stays in your personal `llm-wiki` or equivalent.
+- **Cross-project knowledge.** Contexo is per-project. Cross-project knowledge (Anthropic API, general patterns) stays in your personal `llm-wiki` or equivalent.

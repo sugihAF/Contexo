@@ -8,7 +8,7 @@ import (
 	"net/http"
 )
 
-// Client speaks HTTP to the CtxHub server.
+// Client speaks HTTP to the Contexo server.
 type Client struct {
 	baseURL string
 	apiKey  string

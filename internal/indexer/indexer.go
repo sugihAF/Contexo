@@ -32,7 +32,7 @@ func Generate(store *pagestore.Store) error {
 func buildIndex(pages []*schema.Page) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("# Knowledge Index\n\n")
-	buf.WriteString("Always-loaded index for this project's CtxHub knowledge base. ")
+	buf.WriteString("Always-loaded index for this project's Contexo knowledge base. ")
 	buf.WriteString("Find what's relevant here, then read individual pages on demand.\n\n")
 
 	sections := []struct {

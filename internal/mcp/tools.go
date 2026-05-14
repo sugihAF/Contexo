@@ -24,11 +24,11 @@ type Tool struct {
 }
 
 // ListTools returns the agent-invokable tools.
-func (s *HubServer) ListTools() []Tool {
+func (s *Server) ListTools() []Tool {
 	return []Tool{
 		{
 			Name: "ctx_push",
-			Description: "Push local CtxHub pages to the team server. Use when the user says something like " +
+			Description: "Push local Contexo pages to the team server. Use when the user says something like " +
 				"'sync my stripe knowledge to contexthub' or 'share this with the team'. Filter by " +
 				"feature (= tag), tag, or type to push a subset.",
 			InputSchema: map[string]interface{}{
@@ -43,7 +43,7 @@ func (s *HubServer) ListTools() []Tool {
 		},
 		{
 			Name: "ctx_pull",
-			Description: "Pull new pages from the team CtxHub server into the local .ctxhub/. Call this at the start " +
+			Description: "Pull new pages from the team Contexo server into the local .contexo/. Call this at the start " +
 				"of a session when picking up work on a topic, to see what the team already knows.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -54,7 +54,7 @@ func (s *HubServer) ListTools() []Tool {
 		},
 		{
 			Name:        "ctx_status",
-			Description: "Show local .ctxhub status: server, repo, auth, local page count, last pull sha, never-pushed pages.",
+			Description: "Show local .contexo status: server, repo, auth, local page count, last pull sha, never-pushed pages.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
@@ -62,7 +62,7 @@ func (s *HubServer) ListTools() []Tool {
 		},
 		{
 			Name: "ctx_write_page",
-			Description: "Write a CtxHub knowledge page to .ctxhub/. Use this when distilling research, decisions, " +
+			Description: "Write a Contexo knowledge page to .contexo/. Use this when distilling research, decisions, " +
 				"or analysis the team would benefit from. Always include reasoning_summary and an Agent Reasoning " +
 				"section in the body explaining what was considered and rejected.",
 			InputSchema: map[string]interface{}{
@@ -97,7 +97,7 @@ type ToolContent struct {
 }
 
 // HandleToolCall dispatches a tool invocation by name.
-func (s *HubServer) HandleToolCall(ctx context.Context, name string, args map[string]interface{}) *ToolResult {
+func (s *Server) HandleToolCall(ctx context.Context, name string, args map[string]interface{}) *ToolResult {
 	switch name {
 	case "ctx_push":
 		return s.toolPush(args)
@@ -112,14 +112,14 @@ func (s *HubServer) HandleToolCall(ctx context.Context, name string, args map[st
 	}
 }
 
-func (s *HubServer) rootDir() string {
+func (s *Server) rootDir() string {
 	return filepath.Dir(s.store.Root)
 }
 
-func (s *HubServer) toolStatus() *ToolResult {
+func (s *Server) toolStatus() *ToolResult {
 	root := s.rootDir()
-	cfg, _ := config.LoadHub(root)
-	creds, _ := config.LoadCredentialsHub(root)
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
 	pages, _ := s.store.List(pagestore.Filter{})
 	state, _ := sync.LoadState(s.store.Root)
 
@@ -156,10 +156,10 @@ func (s *HubServer) toolStatus() *ToolResult {
 	))
 }
 
-func (s *HubServer) toolPush(args map[string]interface{}) *ToolResult {
+func (s *Server) toolPush(args map[string]interface{}) *ToolResult {
 	root := s.rootDir()
-	cfg, _ := config.LoadHub(root)
-	creds, _ := config.LoadCredentialsHub(root)
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
 	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
 		return errorResult("ctx_push: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
 	}
@@ -221,10 +221,10 @@ func (s *HubServer) toolPush(args map[string]interface{}) *ToolResult {
 	return textResult(fmt.Sprintf("Pushed %d page(s); HEAD=%s", len(resp.Pushed), head))
 }
 
-func (s *HubServer) toolPull(args map[string]interface{}) *ToolResult {
+func (s *Server) toolPull(args map[string]interface{}) *ToolResult {
 	root := s.rootDir()
-	cfg, _ := config.LoadHub(root)
-	creds, _ := config.LoadCredentialsHub(root)
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
 	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
 		return errorResult("ctx_pull: server not configured")
 	}
@@ -268,7 +268,7 @@ func (s *HubServer) toolPull(args map[string]interface{}) *ToolResult {
 	return textResult(fmt.Sprintf("Pulled %d page(s); HEAD=%s", written, head))
 }
 
-func (s *HubServer) toolWritePage(args map[string]interface{}) *ToolResult {
+func (s *Server) toolWritePage(args map[string]interface{}) *ToolResult {
 	slug, _ := args["slug"].(string)
 	typStr, _ := args["type"].(string)
 	body, _ := args["body"].(string)
@@ -276,7 +276,7 @@ func (s *HubServer) toolWritePage(args map[string]interface{}) *ToolResult {
 		return errorResult("ctx_write_page: slug, type, body are required")
 	}
 
-	creds, _ := config.LoadCredentialsHub(s.rootDir())
+	creds, _ := config.LoadCredentials(s.rootDir())
 
 	author, _ := args["author"].(string)
 	if author == "" && creds != nil {

@@ -63,10 +63,10 @@ func (s *Store) Init(repoID string) error {
 	if out, err := s.git(dir, "init", "--initial-branch=main"); err != nil {
 		return fmt.Errorf("gitstore: init: %w: %s", err, out)
 	}
-	if out, err := s.git(dir, "config", "user.email", "server@ctxhub.local"); err != nil {
+	if out, err := s.git(dir, "config", "user.email", "server@contexo.local"); err != nil {
 		return fmt.Errorf("gitstore: config email: %w: %s", err, out)
 	}
-	if out, err := s.git(dir, "config", "user.name", "ctxhub-server"); err != nil {
+	if out, err := s.git(dir, "config", "user.name", "contexo-server"); err != nil {
 		return fmt.Errorf("gitstore: config name: %w: %s", err, out)
 	}
 	return nil

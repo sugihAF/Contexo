@@ -12,7 +12,7 @@ import (
 	"github.com/sugihAF/contexo/internal/schema"
 )
 
-// Store wraps a .ctxhub/ directory tree on local disk.
+// Store wraps a .contexo/ directory tree on local disk.
 type Store struct {
 	Root string
 }

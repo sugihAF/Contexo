@@ -23,18 +23,18 @@ type ResourceTemplate struct {
 	Annotations map[string]interface{} `json:"annotations,omitempty"`
 }
 
-// HubServer serves CtxHub knowledge pages over MCP from a local .ctxhub/ tree.
-type HubServer struct {
+// Server serves Contexo knowledge pages over MCP from a local .contexo/ tree.
+type Server struct {
 	store *pagestore.Store
 }
 
-// NewHubServer creates a HubServer backed by the given local pagestore.
-func NewHubServer(store *pagestore.Store) *HubServer {
-	return &HubServer{store: store}
+// NewServer creates a Server backed by the given local pagestore.
+func NewServer(store *pagestore.Store) *Server {
+	return &Server{store: store}
 }
 
 // ListResources returns the resource templates this server publishes.
-func (s *HubServer) ListResources() []ResourceTemplate {
+func (s *Server) ListResources() []ResourceTemplate {
 	return []ResourceTemplate{
 		{
 			URITemplate: "ctx://index",
@@ -75,7 +75,7 @@ func (s *HubServer) ListResources() []ResourceTemplate {
 }
 
 // HandleResourceRead dispatches a ctx:// URI to the right backend lookup.
-func (s *HubServer) HandleResourceRead(ctx context.Context, uri string) ([]byte, string, error) {
+func (s *Server) HandleResourceRead(ctx context.Context, uri string) ([]byte, string, error) {
 	parsed, err := url.Parse(uri)
 	if err != nil {
 		return nil, "", fmt.Errorf("mcp: parse uri: %w", err)
@@ -114,7 +114,7 @@ func (s *HubServer) HandleResourceRead(ctx context.Context, uri string) ([]byte,
 	}
 }
 
-func (s *HubServer) readFile(relPath, mimeType string) ([]byte, string, error) {
+func (s *Server) readFile(relPath, mimeType string) ([]byte, string, error) {
 	data, err := os.ReadFile(filepath.Join(s.store.Root, relPath))
 	if err != nil {
 		return nil, "", fmt.Errorf("mcp: read %s: %w", relPath, err)
@@ -122,7 +122,7 @@ func (s *HubServer) readFile(relPath, mimeType string) ([]byte, string, error) {
 	return data, mimeType, nil
 }
 
-func (s *HubServer) readBySlug(slug string, types []schema.PageType) ([]byte, string, error) {
+func (s *Server) readBySlug(slug string, types []schema.PageType) ([]byte, string, error) {
 	for _, t := range types {
 		fm := schema.PageFrontmatter{Type: t, Slug: slug}
 		p, err := s.store.Read(fm.RelPath())
@@ -149,7 +149,7 @@ type searchResult struct {
 	Summary string   `json:"summary,omitempty"`
 }
 
-func (s *HubServer) handleSearch(params url.Values) ([]byte, string, error) {
+func (s *Server) handleSearch(params url.Values) ([]byte, string, error) {
 	q := strings.ToLower(params.Get("q"))
 	typeFilter := params.Get("type")
 	tag := params.Get("tag")

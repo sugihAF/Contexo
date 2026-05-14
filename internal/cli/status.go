@@ -14,10 +14,10 @@ import (
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show .ctxhub status and local-vs-server delta",
+		Short: "Show .contexo status and local-vs-server delta",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			hubDir := config.CtxhubDirPath(root)
+			hubDir := config.ContexoDirPath(root)
 
 			if _, err := os.Stat(hubDir); os.IsNotExist(err) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Not initialized (run 'ctx init')")
@@ -25,7 +25,7 @@ func newStatusCmd() *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Initialized: yes")
 
-			cfg, _ := config.LoadHub(root)
+			cfg, _ := config.Load(root)
 			if cfg.ServerURL != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
 			} else {
@@ -37,7 +37,7 @@ func newStatusCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "Repo: (none — run 'ctx remote set-repo <id>')")
 			}
 
-			creds, _ := config.LoadCredentialsHub(root)
+			creds, _ := config.LoadCredentials(root)
 			if creds != nil && creds.APIKey != "" {
 				fmt.Fprintln(cmd.OutOrStdout(), "Authenticated: yes")
 				if creds.UserName != "" {

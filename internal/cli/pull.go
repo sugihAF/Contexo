@@ -17,16 +17,16 @@ func newPullCmd() *cobra.Command {
 	var forceFull bool
 	cmd := &cobra.Command{
 		Use:   "pull",
-		Short: "Pull new pages from the server into .ctxhub/",
+		Short: "Pull new pages from the server into .contexo/",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			hubDir := config.CtxhubDirPath(root)
+			hubDir := config.ContexoDirPath(root)
 
-			cfg, err := config.LoadHub(root)
+			cfg, err := config.Load(root)
 			if err != nil {
 				return err
 			}
-			creds, err := config.LoadCredentialsHub(root)
+			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
 				return fmt.Errorf("pull: no credentials, run 'ctx auth login' first")
 			}
@@ -35,7 +35,7 @@ func newPullCmd() *cobra.Command {
 				return fmt.Errorf("pull: no server URL configured (run 'ctx remote add')")
 			}
 			if cfg.RepoID == "" {
-				return fmt.Errorf("pull: no repo_id configured in .ctxhub/config.json")
+				return fmt.Errorf("pull: no repo_id configured in .contexo/config.json")
 			}
 
 			store, err := pagestore.Open(hubDir)

@@ -31,7 +31,7 @@ func newAuthLoginCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with a CtxHub server",
+		Short: "Authenticate with a Contexo server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
 
@@ -48,7 +48,7 @@ func newAuthLoginCmd() *cobra.Command {
 				return fmt.Errorf("API key is required")
 			}
 
-			cfg, err := config.LoadHub(root)
+			cfg, err := config.Load(root)
 			if err != nil {
 				return err
 			}
@@ -58,7 +58,7 @@ func newAuthLoginCmd() *cobra.Command {
 			if repoID != "" {
 				cfg.RepoID = repoID
 			}
-			if err := config.SaveHub(root, cfg); err != nil {
+			if err := config.Save(root, cfg); err != nil {
 				return err
 			}
 
@@ -68,7 +68,7 @@ func newAuthLoginCmd() *cobra.Command {
 				UserName:  userName,
 				UserEmail: userEmail,
 			}
-			if err := config.SaveCredentialsHub(root, creds); err != nil {
+			if err := config.SaveCredentials(root, creds); err != nil {
 				return err
 			}
 
@@ -97,7 +97,7 @@ func newAuthStatusCmd() *cobra.Command {
 		Short: "Show authentication status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			creds, err := config.LoadCredentialsHub(root)
+			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
 				fmt.Fprintln(cmd.OutOrStdout(), "Not authenticated")
 				return nil

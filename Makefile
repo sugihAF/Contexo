@@ -1,12 +1,12 @@
 .PHONY: build test clean lint fmt
 
-build: build-ctx build-ctxhub
+build: build-ctx build-contexo-server
 
 build-ctx:
 	go build -o bin/ctx ./cmd/ctx
 
-build-ctxhub:
-	go build -o bin/ctxhub ./cmd/ctxhub
+build-contexo-server:
+	go build -o bin/contexo-server ./cmd/contexo-server
 
 test:
 	go test ./... -v

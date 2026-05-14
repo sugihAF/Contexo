@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	CtxhubDir  = ".ctxhub"
+	ContexoDir  = ".contexo"
 	ConfigFile = "config.json"
 )
 
-// Config holds the local .ctxhub configuration.
+// Config holds the local .contexo configuration.
 type Config struct {
 	Version     int    `json:"version"`
 	RepoID      string `json:"repo_id,omitempty"`
@@ -20,28 +20,28 @@ type Config struct {
 	LastPullSHA string `json:"last_pull_sha,omitempty"`
 }
 
-// DefaultHubConfig returns a Config seeded for a fresh .ctxhub.
-func DefaultHubConfig() *Config {
+// DefaultConfig returns a Config seeded for a fresh .contexo.
+func DefaultConfig() *Config {
 	return &Config{Version: 1}
 }
 
-// CtxhubDirPath returns the absolute .ctxhub directory path for the given root.
-func CtxhubDirPath(root string) string {
-	return filepath.Join(root, CtxhubDir)
+// ContexoDirPath returns the absolute .contexo directory path for the given root.
+func ContexoDirPath(root string) string {
+	return filepath.Join(root, ContexoDir)
 }
 
-// CtxhubConfigPath returns the config.json path within .ctxhub.
-func CtxhubConfigPath(root string) string {
-	return filepath.Join(CtxhubDirPath(root), ConfigFile)
+// ContexoConfigPath returns the config.json path within .contexo.
+func ContexoConfigPath(root string) string {
+	return filepath.Join(ContexoDirPath(root), ConfigFile)
 }
 
-// LoadHub reads config from .ctxhub/config.json, returning a default config
+// Load reads config from .contexo/config.json, returning a default config
 // if the file does not yet exist.
-func LoadHub(root string) (*Config, error) {
-	data, err := os.ReadFile(CtxhubConfigPath(root))
+func Load(root string) (*Config, error) {
+	data, err := os.ReadFile(ContexoConfigPath(root))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return DefaultHubConfig(), nil
+			return DefaultConfig(), nil
 		}
 		return nil, fmt.Errorf("config: read: %w", err)
 	}
@@ -52,13 +52,13 @@ func LoadHub(root string) (*Config, error) {
 	return &cfg, nil
 }
 
-// SaveHub writes config to .ctxhub/config.json, creating parent dirs.
-func SaveHub(root string, cfg *Config) error {
+// Save writes config to .contexo/config.json, creating parent dirs.
+func Save(root string, cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config: marshal: %w", err)
 	}
-	path := CtxhubConfigPath(root)
+	path := ContexoConfigPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("config: create dir: %w", err)
 	}

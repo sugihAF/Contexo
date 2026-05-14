@@ -13,7 +13,7 @@ import (
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 )
 
-func setupHub(t *testing.T) *HubServer {
+func setupHub(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := pagestore.Open(dir)
@@ -57,7 +57,7 @@ func setupHub(t *testing.T) *HubServer {
 		t.Fatalf("indexer: %v", err)
 	}
 	_ = filepath.Join // silence unused
-	return NewHubServer(store)
+	return NewServer(store)
 }
 
 func TestHubReadIndex(t *testing.T) {

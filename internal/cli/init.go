@@ -14,8 +14,8 @@ import (
 func NewInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Initialize .ctxhub knowledge directory",
-		Long: "Creates a .ctxhub/ tree in the current project for storing AI " +
+		Short: "Initialize .contexo knowledge directory",
+		Long: "Creates a .contexo/ tree in the current project for storing AI " +
 			"knowledge pages. Idempotent — re-running leaves existing pages alone.",
 		RunE: runInit,
 	}
@@ -23,7 +23,7 @@ func NewInitCmd() *cobra.Command {
 
 func runInit(cmd *cobra.Command, args []string) error {
 	root := GetRootDir()
-	hubDir := config.CtxhubDirPath(root)
+	hubDir := config.ContexoDirPath(root)
 
 	dirs := []string{
 		hubDir,
@@ -39,9 +39,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Write config.json (don't overwrite if exists)
-	cfgPath := config.CtxhubConfigPath(root)
+	cfgPath := config.ContexoConfigPath(root)
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		if err := config.SaveHub(root, config.DefaultHubConfig()); err != nil {
+		if err := config.Save(root, config.DefaultConfig()); err != nil {
 			return fmt.Errorf("init: save config: %w", err)
 		}
 	}
@@ -54,7 +54,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Initialized .ctxhub in %s\n", root)
+	fmt.Fprintf(cmd.OutOrStdout(), "Initialized .contexo in %s\n", root)
 	return nil
 }
 
@@ -67,7 +67,7 @@ func writeIfAbsent(path, content string) error {
 
 const seedIndex = `# Knowledge Index
 
-Always-loaded index for this project's CtxHub knowledge base. Find what's
+Always-loaded index for this project's Contexo knowledge base. Find what's
 relevant here, then read individual pages on demand.
 
 ## Concepts

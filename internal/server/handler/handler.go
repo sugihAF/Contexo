@@ -15,17 +15,17 @@ import (
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
-// HubHandler exposes the git-backed CtxHub endpoints.
-type HubHandler struct {
+// Handler exposes the git-backed Contexo endpoints.
+type Handler struct {
 	store *gitstore.Store
 }
 
-func NewHub(store *gitstore.Store) *HubHandler {
-	return &HubHandler{store: store}
+func New(store *gitstore.Store) *Handler {
+	return &Handler{store: store}
 }
 
 // CreateRepo handles POST /v1/repos/:id.
-func (h *HubHandler) CreateRepo(c *gin.Context) {
+func (h *Handler) CreateRepo(c *gin.Context) {
 	repoID := c.Param("id")
 	if err := h.store.Init(repoID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -36,7 +36,7 @@ func (h *HubHandler) CreateRepo(c *gin.Context) {
 
 // ReadPage handles GET /v1/repos/:id/pages/*path. Returns content as
 // text/markdown with X-Page-SHA header carrying the last-touch sha.
-func (h *HubHandler) ReadPage(c *gin.Context) {
+func (h *Handler) ReadPage(c *gin.Context) {
 	repoID := c.Param("id")
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
@@ -62,7 +62,7 @@ func (h *HubHandler) ReadPage(c *gin.Context) {
 }
 
 // Push handles POST /v1/repos/:id/sync/push.
-func (h *HubHandler) Push(c *gin.Context) {
+func (h *Handler) Push(c *gin.Context) {
 	repoID := c.Param("id")
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -78,7 +78,7 @@ func (h *HubHandler) Push(c *gin.Context) {
 		req.AuthorName = "unknown"
 	}
 	if req.AuthorEmail == "" {
-		req.AuthorEmail = "unknown@ctxhub.local"
+		req.AuthorEmail = "unknown@contexo.local"
 	}
 	if req.Message == "" {
 		req.Message = "ctx push"
@@ -131,7 +131,7 @@ func (h *HubHandler) Push(c *gin.Context) {
 }
 
 // Pull handles GET /v1/repos/:id/sync/pull?since=<sha>.
-func (h *HubHandler) Pull(c *gin.Context) {
+func (h *Handler) Pull(c *gin.Context) {
 	repoID := c.Param("id")
 	since := c.Query("since")
 
@@ -158,7 +158,7 @@ func (h *HubHandler) Pull(c *gin.Context) {
 }
 
 // Timeline handles GET /v1/repos/:id/timeline?limit=N.
-func (h *HubHandler) Timeline(c *gin.Context) {
+func (h *Handler) Timeline(c *gin.Context) {
 	repoID := c.Param("id")
 	limit := 50
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
@@ -177,7 +177,7 @@ func (h *HubHandler) Timeline(c *gin.Context) {
 }
 
 // History handles GET /v1/repos/:id/history/*path?limit=N.
-func (h *HubHandler) History(c *gin.Context) {
+func (h *Handler) History(c *gin.Context) {
 	repoID := c.Param("id")
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {

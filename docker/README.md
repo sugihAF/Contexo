@@ -8,7 +8,7 @@ runtime image bundles git and exposes /data as a named volume.
 ```
 cd docker
 cp .env.example .env
-# edit .env: set CTXHUB_API_KEY to a real secret
+# edit .env: set CONTEXO_API_KEY to a real secret
 
 docker compose up -d
 docker compose logs -f
@@ -29,9 +29,9 @@ your cloud LB) and reverse-proxy to localhost:8080.
 ```nginx
 server {
   listen 443 ssl http2;
-  server_name ctxhub.yourcompany.com;
-  ssl_certificate     /etc/letsencrypt/live/ctxhub.yourcompany.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/ctxhub.yourcompany.com/privkey.pem;
+  server_name contexo.yourcompany.com;
+  ssl_certificate     /etc/letsencrypt/live/contexo.yourcompany.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/contexo.yourcompany.com/privkey.pem;
 
   client_max_body_size 50M;   # large for big page batches
 
@@ -47,14 +47,14 @@ server {
 
 ## Data
 
-The named volume `ctxhub_data` holds one git working repository per
+The named volume `contexo_data` holds one git working repository per
 `repo_id` (e.g. `/data/chompchat/`, `/data/acme-api/`).
 
 Backup is rsync of that volume:
 
 ```
-docker run --rm -v ctxhub_data:/src -v $(pwd):/backup alpine \
-  tar -czf /backup/ctxhub-backup-$(date +%F).tar.gz -C /src .
+docker run --rm -v contexo_data:/src -v $(pwd):/backup alpine \
+  tar -czf /backup/contexo-backup-$(date +%F).tar.gz -C /src .
 ```
 
 Or use docker volume inspect to find the host path and back up directly.
