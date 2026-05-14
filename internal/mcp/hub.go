@@ -14,6 +14,15 @@ import (
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 )
 
+// ResourceTemplate describes an MCP resource template.
+type ResourceTemplate struct {
+	URITemplate string                 `json:"uriTemplate"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	MimeType    string                 `json:"mimeType,omitempty"`
+	Annotations map[string]interface{} `json:"annotations,omitempty"`
+}
+
 // HubServer serves CtxHub knowledge pages over MCP from a local .ctxhub/ tree.
 type HubServer struct {
 	store *pagestore.Store

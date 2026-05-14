@@ -3,11 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
-
-	sqlitestore "github.com/sugihAF/contexo/internal/store/sqlite"
 )
 
 var rootDir string
@@ -16,31 +13,21 @@ var rootDir string
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "ctx",
-		Short:        "CtxHub CLI — AI development context management",
-		Long:         "ctx captures, stores, and retrieves AI-assisted development context.",
+		Short:        "CtxHub CLI — share AI agent knowledge across a team",
+		Long:         "ctx manages a per-project knowledge base of distilled AI sessions and syncs it with a CtxHub server so teammates' agents start from the same context.",
 		SilenceUsage: true,
 	}
 
 	cmd.PersistentFlags().StringVar(&rootDir, "root", "", "project root directory (default: current directory)")
 
 	cmd.AddCommand(NewInitCmd())
-	cmd.AddCommand(newCaptureCmd())
-	cmd.AddCommand(newSessionCmd())
-	cmd.AddCommand(newCommitCmd())
-	cmd.AddCommand(newLogCmd())
-	cmd.AddCommand(newShowCmd())
-	cmd.AddCommand(newLinkCmd())
-	cmd.AddCommand(newContextCmd())
-	cmd.AddCommand(newBlameCmd())
 	cmd.AddCommand(newPushCmd())
 	cmd.AddCommand(newPullCmd())
 	cmd.AddCommand(newMCPCmd())
 	cmd.AddCommand(newRemoteCmd())
 	cmd.AddCommand(newAuthCmd())
 	cmd.AddCommand(newStatusCmd())
-	cmd.AddCommand(newConfigCmd())
-	cmd.AddCommand(newOpenSessionCmd())
-	cmd.AddCommand(newCodexCmd())
+	cmd.AddCommand(newLogCmd())
 
 	return cmd
 }
@@ -56,22 +43,4 @@ func GetRootDir() string {
 		return "."
 	}
 	return dir
-}
-
-// shortID safely truncates an ID to 8 characters for display.
-func shortID(s string) string {
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:8]
-}
-
-// openDB opens the SQLite database in the .ctx directory.
-func openDB(root string) (*sqlitestore.DB, error) {
-	ctxDir := filepath.Join(root, ".ctx")
-	db, err := sqlitestore.Open(filepath.Join(ctxDir, "index.sqlite"))
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
 }
