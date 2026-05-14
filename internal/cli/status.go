@@ -1,81 +1,73 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/store"
+	"github.com/sugihAF/contexo/internal/store/pagestore"
+	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show project context status overview",
+		Short: "Show .ctxhub status and local-vs-server delta",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			ctxDir := config.CtxDirPath(root)
+			hubDir := config.CtxhubDirPath(root)
 
-			// Check if initialized
-			if _, err := os.Stat(ctxDir); os.IsNotExist(err) {
+			if _, err := os.Stat(hubDir); os.IsNotExist(err) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Not initialized (run 'ctx init')")
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Initialized: yes")
 
-			// Config
-			cfg, err := config.Load(root)
-			if err == nil {
-				if cfg.ServerURL != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
-				}
-				if cfg.RemoteName != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Remote: %s\n", cfg.RemoteName)
-				}
-				if cfg.RepoID != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Repo ID: %s\n", cfg.RepoID)
-				}
+			cfg, _ := config.LoadHub(root)
+			if cfg.ServerURL != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Server: (none — run 'ctx remote set <url>')")
+			}
+			if cfg.RepoID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Repo: %s\n", cfg.RepoID)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Repo: (none — run 'ctx remote set-repo <id>')")
 			}
 
-			// Credentials
-			creds, credErr := config.LoadCredentials(root)
-			if credErr == nil && creds != nil {
+			creds, _ := config.LoadCredentialsHub(root)
+			if creds != nil && creds.APIKey != "" {
 				fmt.Fprintln(cmd.OutOrStdout(), "Authenticated: yes")
+				if creds.UserName != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "User: %s <%s>\n", creds.UserName, creds.UserEmail)
+				}
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "Authenticated: no")
 			}
 
-			// Capture status
-			state, stateErr := loadCaptureState(ctxDir)
-			if stateErr == nil && state.Active {
-				status := "active"
-				if state.Paused {
-					status = "paused"
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Capture: %s (port %d)\n", status, state.Port)
+			store, err := pagestore.Open(hubDir)
+			if err != nil {
+				return nil
+			}
+			pages, _ := store.List(pagestore.Filter{})
+			fmt.Fprintf(cmd.OutOrStdout(), "Local pages: %d\n", len(pages))
+
+			state, _ := sync.LoadState(hubDir)
+			if state != nil && state.LastPullSHA != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Last pull: %s\n", shortSHA(state.LastPullSHA))
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "Capture: inactive")
+				fmt.Fprintln(cmd.OutOrStdout(), "Last pull: (never)")
 			}
 
-			// Session and commit counts
-			db, err := openDB(root)
-			if err == nil {
-				defer db.Close()
-				ctx := context.Background()
-
-				sessions, serr := db.ListSessions(ctx, store.SessionFilter{})
-				if serr == nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "Sessions: %d\n", len(sessions))
-				}
-
-				commits, cerr := db.ListCommits(ctx, store.CommitFilter{})
-				if cerr == nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "Commits: %d\n", len(commits))
+			unpushed := 0
+			for _, p := range pages {
+				if _, known := state.PageSHAs[p.Frontmatter.RelPath()]; !known {
+					unpushed++
 				}
 			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Pages never pushed: %d\n", unpushed)
 
 			return nil
 		},
