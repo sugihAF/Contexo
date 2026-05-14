@@ -1,0 +1,203 @@
+package gitstore
+
+import (
+	"errors"
+	"os"
+	"strings"
+	"testing"
+)
+
+func newStore(t *testing.T) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	return s
+}
+
+func TestInitIdempotent(t *testing.T) {
+	s := newStore(t)
+	if err := s.Init("chompchat"); err != nil {
+		t.Fatalf("init 1: %v", err)
+	}
+	if err := s.Init("chompchat"); err != nil {
+		t.Fatalf("init 2 (should be idempotent): %v", err)
+	}
+	if !s.Exists("chompchat") {
+		t.Errorf("Exists returned false after Init")
+	}
+}
+
+func TestWriteAndRead(t *testing.T) {
+	s := newStore(t)
+	if err := s.Init("chompchat"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	sha1, conflict, err := s.Write("chompchat", "wiki/concepts/stripe-subscription.md",
+		[]byte("hello world\n"),
+		"sugihAF", "sugih@example.com",
+		"add stripe page", "")
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if conflict != nil {
+		t.Fatalf("unexpected conflict: %+v", conflict)
+	}
+	if sha1 == "" {
+		t.Fatalf("expected non-empty sha")
+	}
+
+	content, sha, err := s.Read("chompchat", "wiki/concepts/stripe-subscription.md")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(content) != "hello world\n" {
+		t.Errorf("content mismatch: %q", string(content))
+	}
+	if sha != sha1 {
+		t.Errorf("sha mismatch: read=%s write=%s", sha, sha1)
+	}
+}
+
+func TestParentSHAConflict(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	sha1, _, _ := s.Write("repo", "page.md", []byte("v1\n"), "A", "a@a", "v1", "")
+	if sha1 == "" {
+		t.Fatalf("write 1 failed")
+	}
+
+	// Second write with correct parent should succeed
+	sha2, conflict, err := s.Write("repo", "page.md", []byte("v2\n"), "A", "a@a", "v2", sha1)
+	if err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	if conflict != nil {
+		t.Fatalf("unexpected conflict on correct parent: %+v", conflict)
+	}
+	if sha2 == sha1 {
+		t.Errorf("sha2 should differ from sha1")
+	}
+
+	// Third write claiming sha1 as parent — but real parent is now sha2 — should conflict
+	_, conflict, err = s.Write("repo", "page.md", []byte("v3\n"), "B", "b@b", "v3", sha1)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict, got %v", err)
+	}
+	if conflict == nil || conflict.CurrentSHA != sha2 {
+		t.Errorf("conflict.CurrentSHA: got %q, want %q", conflict.CurrentSHA, sha2)
+	}
+	if string(conflict.CurrentContent) != "v2\n" {
+		t.Errorf("conflict.CurrentContent: got %q", string(conflict.CurrentContent))
+	}
+}
+
+func TestLogAndLogPath(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	s.Write("repo", "a.md", []byte("a1\n"), "Alice", "a@a", "a v1", "")
+	sha2, _, _ := s.Write("repo", "b.md", []byte("b1\n"), "Bob", "b@b", "b v1", "")
+	s.Write("repo", "a.md", []byte("a2\n"), "Alice", "a@a", "a v2", "")
+
+	log, err := s.Log("repo", 10)
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if len(log) != 3 {
+		t.Errorf("expected 3 commits, got %d", len(log))
+	}
+	if log[0].Message != "a v2" {
+		t.Errorf("log[0] should be most recent ('a v2'), got %q", log[0].Message)
+	}
+
+	logA, err := s.LogPath("repo", "a.md", 10)
+	if err != nil {
+		t.Fatalf("logPath a.md: %v", err)
+	}
+	if len(logA) != 2 {
+		t.Errorf("a.md should have 2 commits, got %d", len(logA))
+	}
+
+	logB, _ := s.LogPath("repo", "b.md", 10)
+	if len(logB) != 1 || logB[0].SHA != sha2 {
+		t.Errorf("b.md log: %+v", logB)
+	}
+}
+
+func TestChangedSince(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	sha1, _, _ := s.Write("repo", "a.md", []byte("a1\n"), "A", "a@a", "msg", "")
+	s.Write("repo", "b.md", []byte("b\n"), "A", "a@a", "msg", "")
+	sha3, _, _ := s.Write("repo", "c.md", []byte("c\n"), "A", "a@a", "msg", "")
+
+	// All files since empty
+	files, head, err := s.ChangedSince("repo", "")
+	if err != nil {
+		t.Fatalf("changed empty: %v", err)
+	}
+	if len(files) != 3 || head != sha3 {
+		t.Errorf("all: files=%v head=%s want sha3=%s", files, head, sha3)
+	}
+
+	// Since sha1: should include b.md and c.md but NOT a.md
+	files, head, err = s.ChangedSince("repo", sha1)
+	if err != nil {
+		t.Fatalf("changed since sha1: %v", err)
+	}
+	if head != sha3 {
+		t.Errorf("head mismatch: %s vs %s", head, sha3)
+	}
+	if len(files) != 2 {
+		t.Errorf("expected 2 files since sha1, got %v", files)
+	}
+
+	// Since head: empty
+	files, _, _ = s.ChangedSince("repo", sha3)
+	if len(files) != 0 {
+		t.Errorf("expected no changes since head, got %v", files)
+	}
+}
+
+func TestReadNotFound(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	_, _, err := s.Read("repo", "missing.md")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected os.ErrNotExist, got %v", err)
+	}
+}
+
+func TestUninitializedRepoRejects(t *testing.T) {
+	s := newStore(t)
+	if s.Exists("not-init") {
+		t.Errorf("Exists true for non-init")
+	}
+	_, _, err := s.Write("not-init", "x.md", []byte("y"), "a", "a@a", "m", "")
+	if !errors.Is(err, ErrRepoNotFound) {
+		t.Errorf("expected ErrRepoNotFound, got %v", err)
+	}
+}
+
+func TestSanitizeRepoID(t *testing.T) {
+	cases := map[string]string{
+		"chompchat":            "chompchat",
+		"my-project_v2":        "my-project_v2",
+		"foo/bar":              "foobar",
+		"../../etc/passwd":     "etcpasswd",
+		"":                     "",
+	}
+	for in, want := range cases {
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+		_ = strings.TrimSpace
+	}
+}
