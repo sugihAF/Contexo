@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/server"
-	"github.com/sugihAF/contexo/internal/server/service"
+	"github.com/sugihAF/contexo/internal/server/gitstore"
 )
 
 func main() {
@@ -16,13 +17,18 @@ func main() {
 		port = "8080"
 	}
 
-	// For MVP-1, use in-memory store when no DB is configured
-	store := service.NewMemStore()
-	svc := service.New(store)
+	dataRoot := os.Getenv("CTXHUB_DATA_ROOT")
+	if dataRoot == "" {
+		cwd, _ := os.Getwd()
+		dataRoot = filepath.Join(cwd, "ctxhub-data")
+	}
 
-	// Simple key validator for MVP
+	store, err := gitstore.Open(dataRoot)
+	if err != nil {
+		log.Fatalf("ctxhub: open gitstore at %s: %v", dataRoot, err)
+	}
+
 	validator := func(key string) (string, bool) {
-		// In production, validate against PostgreSQL api_keys table
 		expectedKey := os.Getenv("CTXHUB_API_KEY")
 		if expectedKey == "" {
 			expectedKey = "dev-key"
@@ -33,9 +39,9 @@ func main() {
 		return "", false
 	}
 
-	router := server.NewRouter(svc, auth.KeyValidator(validator))
+	router := server.NewHubRouter(store, auth.KeyValidator(validator))
 
-	log.Printf("CtxHub server starting on :%s", port)
+	log.Printf("CtxHub server starting on :%s (data: %s)", port, dataRoot)
 	if err := router.Run(fmt.Sprintf(":%s", port)); err != nil {
 		log.Fatal(err)
 	}

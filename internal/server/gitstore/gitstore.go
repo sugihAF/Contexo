@@ -25,10 +25,10 @@ var ErrRepoNotFound = errors.New("gitstore: repo not initialized")
 
 // Conflict describes a non-fast-forward write attempt.
 type Conflict struct {
-	Path              string
-	CurrentSHA        string
-	CurrentContent    []byte
-	ExpectedParentSHA string
+	Path              string `json:"path"`
+	CurrentSHA        string `json:"current_sha"`
+	CurrentContent    []byte `json:"current_content"`
+	ExpectedParentSHA string `json:"expected_parent_sha"`
 }
 
 // CommitMeta describes a single commit returned by Log.
