@@ -11,77 +11,75 @@ import (
 func newRemoteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remote",
-		Short: "Manage remote servers",
+		Short: "Configure the CtxHub server URL and repo ID",
 	}
-
-	cmd.AddCommand(newRemoteAddCmd())
-	cmd.AddCommand(newRemoteLsCmd())
-
+	cmd.AddCommand(newRemoteSetCmd())
+	cmd.AddCommand(newRemoteGetCmd())
+	cmd.AddCommand(newRemoteSetRepoCmd())
 	return cmd
 }
 
-func newRemoteAddCmd() *cobra.Command {
+func newRemoteSetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "add <name> <url>",
-		Short: "Add a remote server",
-		Args:  cobra.ExactArgs(2),
+		Use:   "set <url>",
+		Short: "Set the CtxHub server URL",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			name := args[0]
-			url := args[1]
-
-			cfg, err := config.Load(root)
+			cfg, err := config.LoadHub(root)
 			if err != nil {
 				return err
 			}
-
-			// Check for duplicate
-			for _, r := range cfg.Remotes {
-				if r.Name == name {
-					return fmt.Errorf("remote '%s' already exists", name)
-				}
-			}
-
-			cfg.Remotes = append(cfg.Remotes, config.Remote{Name: name, URL: url})
-
-			// If this is the first remote, set it as default and update ServerURL
-			if cfg.RemoteName == "" {
-				cfg.RemoteName = name
-				cfg.ServerURL = url
-			}
-
-			if err := config.Save(root, cfg); err != nil {
+			cfg.ServerURL = args[0]
+			if err := config.SaveHub(root, cfg); err != nil {
 				return err
 			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Remote '%s' added: %s\n", name, url)
+			fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
 			return nil
 		},
 	}
 }
 
-func newRemoteLsCmd() *cobra.Command {
+func newRemoteSetRepoCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls",
-		Short: "List remotes",
+		Use:   "set-repo <repo_id>",
+		Short: "Set the repo_id for this project",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			cfg, err := config.Load(root)
+			cfg, err := config.LoadHub(root)
 			if err != nil {
 				return err
 			}
-
-			if len(cfg.Remotes) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No remotes configured")
-				return nil
+			cfg.RepoID = args[0]
+			if err := config.SaveHub(root, cfg); err != nil {
+				return err
 			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Repo: %s\n", cfg.RepoID)
+			return nil
+		},
+	}
+}
 
-			for _, r := range cfg.Remotes {
-				marker := " "
-				if r.Name == cfg.RemoteName {
-					marker = "*"
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s %s\t%s\n", marker, r.Name, r.URL)
+func newRemoteGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get",
+		Short: "Show the configured server URL and repo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := GetRootDir()
+			cfg, err := config.LoadHub(root)
+			if err != nil {
+				return err
+			}
+			if cfg.ServerURL == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No server configured (run 'ctx remote set <url>')")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
+			}
+			if cfg.RepoID == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "No repo configured (run 'ctx remote set-repo <id>')")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Repo:   %s\n", cfg.RepoID)
 			}
 			return nil
 		},

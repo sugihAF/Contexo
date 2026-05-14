@@ -1,75 +1,103 @@
 package cli
 
 import (
-	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
-	sqlitestore "github.com/sugihAF/contexo/internal/store/sqlite"
+	"github.com/sugihAF/contexo/internal/indexer"
+	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newPullCmd() *cobra.Command {
-	return &cobra.Command{
+	var forceFull bool
+	cmd := &cobra.Command{
 		Use:   "pull",
-		Short: "Pull new commits from server",
+		Short: "Pull new pages from the server into .ctxhub/",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
-			ctxDir := config.CtxDirPath(root)
+			hubDir := config.CtxhubDirPath(root)
 
-			creds, err := config.LoadCredentials(root)
+			cfg, err := config.LoadHub(root)
+			if err != nil {
+				return err
+			}
+			creds, err := config.LoadCredentialsHub(root)
 			if err != nil || creds == nil {
 				return fmt.Errorf("pull: no credentials, run 'ctx auth login' first")
 			}
+			serverURL := chooseServerURL(creds, cfg)
+			if serverURL == "" {
+				return fmt.Errorf("pull: no server URL configured (run 'ctx remote add')")
+			}
+			if cfg.RepoID == "" {
+				return fmt.Errorf("pull: no repo_id configured in .ctxhub/config.json")
+			}
 
-			cfg, err := config.Load(root)
+			store, err := pagestore.Open(hubDir)
+			if err != nil {
+				return fmt.Errorf("pull: open hub: %w (did you run 'ctx init'?)", err)
+			}
+			_ = store
+
+			state, err := sync.LoadState(hubDir)
 			if err != nil {
 				return err
 			}
 
-			serverURL := creds.ServerURL
-			if serverURL == "" {
-				serverURL = cfg.ServerURL
-			}
-			if serverURL == "" {
-				return fmt.Errorf("pull: no server URL configured")
+			since := state.LastPullSHA
+			if forceFull {
+				since = ""
 			}
 
-			db, err := sqlitestore.Open(filepath.Join(ctxDir, "index.sqlite"))
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-
-			ctx := context.Background()
 			client := sync.NewClient(serverURL, creds.APIKey)
-
-			repoID := cfg.RepoID
-			commits, err := client.PullCommits(repoID)
+			resp, err := client.PullPages(cfg.RepoID, since)
 			if err != nil {
-				return fmt.Errorf("pull: %w", err)
+				return err
 			}
 
-			inserted := 0
-			for _, c := range commits {
-				// Check if we already have it
-				existing, err := db.GetCommit(ctx, c.CommitID)
-				if err == nil && existing != nil {
-					continue
+			if len(resp.Files) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Already up to date")
+				if resp.NewHead != "" && resp.NewHead != state.LastPullSHA {
+					state.LastPullSHA = resp.NewHead
+					_ = sync.SaveState(hubDir, state)
 				}
-
-				if err := db.CreateCommit(ctx, c); err != nil {
-					fmt.Fprintf(cmd.OutOrStderr(), "warning: insert commit %s: %v\n", shortID(c.CommitID), err)
-					continue
-				}
-				inserted++
+				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Pulled %d new commits\n", inserted)
+			written := 0
+			for _, f := range resp.Files {
+				abs := filepath.Join(hubDir, filepath.FromSlash(f.Path))
+				if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+					return fmt.Errorf("pull: mkdir %s: %w", f.Path, err)
+				}
+				if err := os.WriteFile(abs, []byte(f.Content), 0o644); err != nil {
+					return fmt.Errorf("pull: write %s: %w", f.Path, err)
+				}
+				state.PageSHAs[f.Path] = f.SHA
+				written++
+			}
+
+			state.LastPullSHA = resp.NewHead
+			if err := sync.SaveState(hubDir, state); err != nil {
+				return fmt.Errorf("pull: save state: %w", err)
+			}
+
+			// Regenerate index after pulling new pages so the local index reflects
+			// the latest team knowledge.
+			if err := indexer.Generate(store); err != nil {
+				fmt.Fprintf(cmd.OutOrStderr(), "warning: reindex: %v\n", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Pulled %d page(s); HEAD=%s\n", written, shortSHA(resp.NewHead))
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&forceFull, "full", false, "ignore last_pull_sha and fetch everything")
+	return cmd
 }

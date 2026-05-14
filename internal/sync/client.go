@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/sugihAF/contexo/internal/schema"
 )
 
-// Client handles HTTP sync operations with the CtxHub server.
+// Client speaks HTTP to the CtxHub server.
 type Client struct {
 	baseURL string
 	apiKey  string
@@ -26,82 +24,93 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
-// PushCommit uploads a context commit to the server.
-func (c *Client) PushCommit(repoID string, commit *schema.ContextCommit) error {
-	data, err := json.Marshal(commit)
-	if err != nil {
-		return fmt.Errorf("sync: marshal commit: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/v1/repos/%s/commits", c.baseURL, repoID)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("sync: create request: %w", err)
-	}
+// CreateRepo idempotently creates a repo on the server.
+func (c *Client) CreateRepo(repoID string) error {
+	url := fmt.Sprintf("%s/v1/repos/%s", c.baseURL, repoID)
+	req, _ := http.NewRequest("POST", url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("sync: push commit: %w", err)
+		return fmt.Errorf("sync: create repo: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("sync: push commit failed (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("sync: create repo (%d): %s", resp.StatusCode, string(body))
 	}
-
 	return nil
 }
 
-// PushSessionChunk uploads a compressed session chunk.
-func (c *Client) PushSessionChunk(repoID, sessionID, chunkID string, data []byte) error {
-	url := fmt.Sprintf("%s/v1/repos/%s/sessions/%s/chunks/%s",
-		c.baseURL, repoID, sessionID, chunkID)
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
+// PushPages uploads a batch of files to the server. Returns PushResponse
+// even on 409 so the caller can inspect conflicts.
+func (c *Client) PushPages(repoID string, req *PushRequest) (*PushResponse, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/sync/push", c.baseURL, repoID)
+	data, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("sync: create request: %w", err)
+		return nil, fmt.Errorf("sync: marshal push: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/gzip")
-
-	resp, err := c.http.Do(req)
+	httpReq, _ := http.NewRequest("POST", url, bytes.NewReader(data))
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("sync: push chunk: %w", err)
+		return nil, fmt.Errorf("sync: push: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("sync: push chunk failed (%d)", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+		return nil, fmt.Errorf("sync: push failed (%d): %s", resp.StatusCode, string(body))
 	}
-
-	return nil
+	var pr PushResponse
+	if err := json.Unmarshal(body, &pr); err != nil {
+		return nil, fmt.Errorf("sync: parse push response: %w", err)
+	}
+	return &pr, nil
 }
 
-// PullCommits fetches commits from the server.
-func (c *Client) PullCommits(repoID string) ([]*schema.ContextCommit, error) {
-	url := fmt.Sprintf("%s/v1/repos/%s/commits", c.baseURL, repoID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sync: create request: %w", err)
+// PullPages fetches files changed since the given sha (empty = all).
+func (c *Client) PullPages(repoID, since string) (*PullResponse, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/sync/pull", c.baseURL, repoID)
+	if since != "" {
+		url += "?since=" + since
 	}
+	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("sync: pull commits: %w", err)
+		return nil, fmt.Errorf("sync: pull: %w", err)
 	}
 	defer resp.Body.Close()
-
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sync: pull commits failed (%d)", resp.StatusCode)
+		return nil, fmt.Errorf("sync: pull failed (%d): %s", resp.StatusCode, string(body))
 	}
-
-	var commits []*schema.ContextCommit
-	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
-		return nil, fmt.Errorf("sync: decode commits: %w", err)
+	var pr PullResponse
+	if err := json.Unmarshal(body, &pr); err != nil {
+		return nil, fmt.Errorf("sync: parse pull response: %w", err)
 	}
+	return &pr, nil
+}
 
-	return commits, nil
+// Timeline returns recent commits across the repo.
+func (c *Client) Timeline(repoID string, limit int) ([]Commit, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/timeline?limit=%d", c.baseURL, repoID, limit)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: timeline: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: timeline (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Commits []Commit `json:"commits"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse timeline: %w", err)
+	}
+	return wrapper.Commits, nil
 }
