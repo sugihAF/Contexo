@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -12,16 +13,28 @@ import (
 
 // NewInitCmd creates the ctx init command.
 func NewInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		skipMCP       bool
+		skipGitignore bool
+	)
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize .contexo knowledge directory",
 		Long: "Creates a .contexo/ tree in the current project for storing AI " +
-			"knowledge pages. Idempotent — re-running leaves existing pages alone.",
-		RunE: runInit,
+			"knowledge pages. Also writes .mcp.json so your agent picks up Contexo's " +
+			"MCP server, and adds .contexo/ to .gitignore so the knowledge isn't " +
+			"committed to your project's git history. Idempotent — re-running leaves " +
+			"existing files alone.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInit(cmd, skipMCP, skipGitignore)
+		},
 	}
+	cmd.Flags().BoolVar(&skipMCP, "no-mcp", false, "skip creating .mcp.json")
+	cmd.Flags().BoolVar(&skipGitignore, "no-gitignore", false, "skip adding .contexo/ to .gitignore")
+	return cmd
 }
 
-func runInit(cmd *cobra.Command, args []string) error {
+func runInit(cmd *cobra.Command, skipMCP, skipGitignore bool) error {
 	root := GetRootDir()
 	hubDir := config.ContexoDirPath(root)
 
@@ -38,7 +51,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Write config.json (don't overwrite if exists)
 	cfgPath := config.ContexoConfigPath(root)
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		if err := config.Save(root, config.DefaultConfig()); err != nil {
@@ -46,12 +58,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Seed index.md and tags.md if they don't exist yet
 	if err := writeIfAbsent(filepath.Join(hubDir, "index.md"), seedIndex); err != nil {
 		return err
 	}
 	if err := writeIfAbsent(filepath.Join(hubDir, "tags.md"), seedTags); err != nil {
 		return err
+	}
+
+	if !skipMCP {
+		if err := writeMCPConfig(cmd, root); err != nil {
+			return err
+		}
+	}
+	if !skipGitignore {
+		if err := updateGitignore(cmd, root); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Initialized .contexo in %s\n", root)
@@ -64,6 +86,78 @@ func writeIfAbsent(path, content string) error {
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
+
+// writeMCPConfig writes .mcp.json at the project root if absent, so AI agents
+// (Claude Code, Cursor, etc.) pick up the local Contexo MCP server on next
+// session start.
+func writeMCPConfig(cmd *cobra.Command, root string) error {
+	mcpPath := filepath.Join(root, ".mcp.json")
+	if _, err := os.Stat(mcpPath); err == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "  .mcp.json already exists; leaving it alone (add a contexo entry manually if missing)")
+		return nil
+	}
+	if err := os.WriteFile(mcpPath, []byte(mcpConfigContent), 0o644); err != nil {
+		return fmt.Errorf("init: write .mcp.json: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "  Created .mcp.json (restart your AI agent to load the contexo server)")
+	return nil
+}
+
+// updateGitignore adds .contexo/ to the project's .gitignore so the local
+// knowledge isn't committed to the project's git history (knowledge syncs
+// via ctx push/pull instead). Skips silently if the project isn't a git repo.
+func updateGitignore(cmd *cobra.Command, root string) error {
+	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+		return nil
+	}
+
+	giPath := filepath.Join(root, ".gitignore")
+	data, err := os.ReadFile(giPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("init: read .gitignore: %w", err)
+		}
+		content := gitignoreHeader + ".contexo/\n"
+		if err := os.WriteFile(giPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("init: write .gitignore: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "  Created .gitignore with .contexo/")
+		return nil
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ".contexo/" || trimmed == ".contexo" {
+			return nil
+		}
+	}
+
+	addition := gitignoreHeader + ".contexo/\n"
+	if !strings.HasSuffix(string(data), "\n") {
+		addition = "\n" + addition
+	} else {
+		addition = "\n" + addition
+	}
+	f, err := os.OpenFile(giPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("init: open .gitignore: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(addition); err != nil {
+		return fmt.Errorf("init: append .gitignore: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "  Added .contexo/ to .gitignore")
+	return nil
+}
+
+const mcpConfigContent = `{
+  "mcpServers": {
+    "contexo": { "command": "ctx", "args": ["mcp"] }
+  }
+}
+`
+
+const gitignoreHeader = "# Contexo local knowledge (synced via ctx push/pull, not git)\n"
 
 const seedIndex = `# Knowledge Index
 
