@@ -1,4 +1,4 @@
-# Contexo (Contexo)
+# Contexo
 
 **GitHub for AI agent knowledge, scoped per project.**
 
@@ -54,22 +54,43 @@ Tools (agent-invokable):
 - `ctx_write_page` — write a knowledge page with frontmatter
 - `ctx_push`, `ctx_pull`, `ctx_status` — sync against the team server
 
-## Building
+## Install
 
-Pure-Go, no CGO required:
+Pure Go, no CGO. Works on Linux, macOS, and Windows.
 
+**Easiest (any platform):**
+
+```bash
+go install github.com/sugihAF/Contexo/cmd/ctx@latest
+# binary goes to $GOPATH/bin (typically ~/go/bin on Linux/macOS, %USERPROFILE%\go\bin on Windows)
+# make sure that directory is on PATH
 ```
-go build -o bin/ctx.exe ./cmd/ctx
-go build -o bin/contexo-server.exe ./cmd/contexo-server
+
+**From source, into a local `bin/` dir:**
+
+```bash
+# Linux / macOS
+go build -o bin/ctx ./cmd/ctx
+go build -o bin/contexo-server ./cmd/contexo-server
+
+# Windows (PowerShell)
+go build -o bin\ctx.exe .\cmd\ctx
+go build -o bin\contexo-server.exe .\cmd\contexo-server
 ```
 
-Run the server:
+The `ctx` CLI runs anywhere. The `contexo-server` binary is what the team's Contexo instance runs — typically via the Docker setup in `docker/`.
 
-```
+**Run the server (host install):**
+
+```bash
+# Linux / macOS
 CONTEXO_DATA_ROOT=/var/contexo/repos PORT=8080 ./bin/contexo-server
+
+# Windows (PowerShell)
+$env:CONTEXO_DATA_ROOT="C:\contexo\repos"; $env:PORT="8080"; .\bin\contexo-server.exe
 ```
 
-The server requires `git` on PATH.
+The server shells out to `git`, so `git` must be on PATH. The Docker image (`docker/Dockerfile`) bundles it.
 
 ## Documentation
 
