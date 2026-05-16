@@ -58,7 +58,7 @@ func main() {
 		log.Fatalf("contexo: session signer: %v", err)
 	}
 
-	var googleVerifier *auth.GoogleVerifier
+	var googleVerifier auth.Verifier
 	if clientID := os.Getenv("GOOGLE_OAUTH_CLIENT_ID"); clientID != "" {
 		googleVerifier = auth.NewGoogleVerifier(clientID)
 		log.Printf("contexo: google sign-in enabled (client_id=%s...)", clientID[:min(len(clientID), 12)])
