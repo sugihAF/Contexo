@@ -54,7 +54,7 @@ func newPullCmd() *cobra.Command {
 				since = ""
 			}
 
-			client := sync.NewClient(serverURL, creds.APIKey)
+			client := sync.NewClient(serverURL, creds.Bearer())
 			resp, err := client.PullPages(cfg.RepoID, since)
 			if err != nil {
 				return err

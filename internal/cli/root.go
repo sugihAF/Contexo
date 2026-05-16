@@ -26,6 +26,8 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newMCPCmd())
 	cmd.AddCommand(newRemoteCmd())
 	cmd.AddCommand(newAuthCmd())
+	cmd.AddCommand(newLoginCmd())
+	cmd.AddCommand(newJoinCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newLogCmd())
 

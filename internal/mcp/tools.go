@@ -152,7 +152,7 @@ func (s *Server) toolStatus() *ToolResult {
 
 	return textResult(fmt.Sprintf(
 		"Server: %s\nRepo: %s\nUser: %s\nAuthenticated: %t\nLocal pages: %d\nLast pull: %s\nNever-pushed pages: %d",
-		server, repo, user, creds != nil && creds.APIKey != "", len(pages), lastPull, unpushed,
+		server, repo, user, creds != nil && creds.Bearer() != "", len(pages), lastPull, unpushed,
 	))
 }
 
@@ -194,7 +194,7 @@ func (s *Server) toolPush(args map[string]interface{}) *ToolResult {
 		message = fmt.Sprintf("agent push (%d pages)", len(files))
 	}
 
-	client := sync.NewClient(cfg.ServerURL, creds.APIKey)
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
 	resp, err := client.PushPages(cfg.RepoID, &sync.PushRequest{
 		AuthorName:  creds.UserName,
 		AuthorEmail: creds.UserEmail,
@@ -236,7 +236,7 @@ func (s *Server) toolPull(args map[string]interface{}) *ToolResult {
 		since = ""
 	}
 
-	client := sync.NewClient(cfg.ServerURL, creds.APIKey)
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
 	resp, err := client.PullPages(cfg.RepoID, since)
 	if err != nil {
 		return errorResult(err.Error())

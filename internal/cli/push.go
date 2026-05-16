@@ -91,7 +91,7 @@ func newPushCmd() *cobra.Command {
 				message = fmt.Sprintf("ctx push (%d pages)", len(files))
 			}
 
-			client := sync.NewClient(serverURL, creds.APIKey)
+			client := sync.NewClient(serverURL, creds.Bearer())
 			resp, err := client.PushPages(cfg.RepoID, &sync.PushRequest{
 				AuthorName:  creds.UserName,
 				AuthorEmail: creds.UserEmail,

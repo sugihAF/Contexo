@@ -92,6 +92,33 @@ func (c *Client) PullPages(repoID, since string) (*PullResponse, error) {
 	return &pr, nil
 }
 
+// JoinRepo consumes a repo invite key, adding the authenticated user as a
+// member of the target repo. Returns the repo id the key was for.
+func (c *Client) JoinRepo(key string) (string, string, error) {
+	url := fmt.Sprintf("%s/v1/repos/join", c.baseURL)
+	body, _ := json.Marshal(map[string]string{"key": key})
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("sync: join: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("sync: join failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+	var wrapper struct {
+		RepoID string `json:"repo_id"`
+		Role   string `json:"role"`
+	}
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return "", "", fmt.Errorf("sync: parse join response: %w", err)
+	}
+	return wrapper.RepoID, wrapper.Role, nil
+}
+
 // Timeline returns recent commits across the repo.
 func (c *Client) Timeline(repoID string, limit int) ([]Commit, error) {
 	url := fmt.Sprintf("%s/v1/repos/%s/timeline?limit=%d", c.baseURL, repoID, limit)

@@ -29,7 +29,7 @@ func newLogCmd() *cobra.Command {
 				return fmt.Errorf("log: server URL or repo_id not configured")
 			}
 
-			client := sync.NewClient(serverURL, creds.APIKey)
+			client := sync.NewClient(serverURL, creds.Bearer())
 			commits, err := client.Timeline(cfg.RepoID, limit)
 			if err != nil {
 				return err

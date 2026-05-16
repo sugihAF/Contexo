@@ -5,15 +5,48 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// Credentials stores CLI authentication credentials.
+// Credentials stores CLI authentication credentials. Token is the new
+// preferred field (holds a PAT, session JWT, or legacy API key — server
+// figures out which). APIKey is kept for back-compat with existing files.
 type Credentials struct {
-	APIKey    string `json:"api_key"`
+	Token     string `json:"token,omitempty"`
+	APIKey    string `json:"api_key,omitempty"`
 	ServerURL string `json:"server_url"`
 	UserID    string `json:"user_id,omitempty"`
 	UserName  string `json:"user_name,omitempty"`
 	UserEmail string `json:"user_email,omitempty"`
+}
+
+// Bearer returns the value to send in Authorization: Bearer …. Token wins
+// over APIKey when both are populated.
+func (c *Credentials) Bearer() string {
+	if c == nil {
+		return ""
+	}
+	if c.Token != "" {
+		return c.Token
+	}
+	return c.APIKey
+}
+
+// Kind describes a Bearer's shape — useful for printing in `auth status`.
+func (c *Credentials) Kind() string {
+	tok := c.Bearer()
+	switch {
+	case tok == "":
+		return "(none)"
+	case strings.HasPrefix(tok, "ctxp_"):
+		return "personal access token"
+	case strings.HasPrefix(tok, "ctxi_"):
+		return "invite key (NOT for CLI use)"
+	case strings.Count(tok, ".") == 2:
+		return "session token"
+	default:
+		return "legacy API key"
+	}
 }
 
 // CredentialsPath returns the .contexo credentials path.

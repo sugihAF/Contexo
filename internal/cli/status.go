@@ -38,8 +38,8 @@ func newStatusCmd() *cobra.Command {
 			}
 
 			creds, _ := config.LoadCredentials(root)
-			if creds != nil && creds.APIKey != "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "Authenticated: yes")
+			if creds != nil && creds.Bearer() != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Authenticated: yes (%s)\n", creds.Kind())
 				if creds.UserName != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "User: %s <%s>\n", creds.UserName, creds.UserEmail)
 				}
