@@ -24,6 +24,31 @@ func New(store *gitstore.Store) *Handler {
 	return &Handler{store: store}
 }
 
+// ListRepos handles GET /v1/repos.
+func (h *Handler) ListRepos(c *gin.Context) {
+	summaries, err := h.store.ListReposWithMeta()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"repos": summaries})
+}
+
+// ListPages handles GET /v1/repos/:id/pages.
+func (h *Handler) ListPages(c *gin.Context) {
+	repoID := c.Param("id")
+	pages, err := h.store.ListPages(repoID)
+	if err != nil {
+		if errors.Is(err, gitstore.ErrRepoNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pages": pages})
+}
+
 // CreateRepo handles POST /v1/repos/:id.
 func (h *Handler) CreateRepo(c *gin.Context) {
 	repoID := c.Param("id")

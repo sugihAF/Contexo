@@ -186,6 +186,92 @@ func TestUninitializedRepoRejects(t *testing.T) {
 	}
 }
 
+func TestListRepos(t *testing.T) {
+	s := newStore(t)
+	// Empty
+	if r, _ := s.ListRepos(); len(r) != 0 {
+		t.Errorf("empty: got %v", r)
+	}
+	// Init three; ListRepos sorts
+	for _, id := range []string{"zeta", "alpha", "mike"} {
+		if err := s.Init(id); err != nil {
+			t.Fatalf("init %s: %v", id, err)
+		}
+	}
+	got, err := s.ListRepos()
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	want := []string{"alpha", "mike", "zeta"}
+	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestListPages(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	if pages, _ := s.ListPages("repo"); len(pages) != 0 {
+		t.Errorf("empty repo: %v", pages)
+	}
+
+	sha1, _, _ := s.Write("repo", "a.md", []byte("a1"), "Alice", "a@a", "msg-a-1", "")
+	s.Write("repo", "b.md", []byte("b1"), "Bob", "b@b", "msg-b-1", "")
+	sha3, _, _ := s.Write("repo", "a.md", []byte("a2"), "Alice", "a@a", "msg-a-2", sha1)
+
+	pages, err := s.ListPages("repo")
+	if err != nil {
+		t.Fatalf("ListPages: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("want 2 pages, got %d: %v", len(pages), pages)
+	}
+	// Sorted by path: a.md, b.md
+	if pages[0].Path != "a.md" || pages[1].Path != "b.md" {
+		t.Errorf("path order: %v", pages)
+	}
+	// a.md's last-touch is the second commit (sha3, msg-a-2)
+	if pages[0].SHA != sha3 || pages[0].Message != "msg-a-2" {
+		t.Errorf("a.md last-touch wrong: %+v", pages[0])
+	}
+	// b.md author = Bob
+	if pages[1].Author != "Bob" {
+		t.Errorf("b.md author: %+v", pages[1])
+	}
+}
+
+func TestListReposWithMeta(t *testing.T) {
+	s := newStore(t)
+	s.Init("empty-repo")
+	s.Init("active-repo")
+	s.Write("active-repo", "x.md", []byte("hi"), "Alice", "a@a", "first", "")
+	s.Write("active-repo", "y.md", []byte("yo"), "Alice", "a@a", "second", "")
+
+	summaries, err := s.ListReposWithMeta()
+	if err != nil {
+		t.Fatalf("ListReposWithMeta: %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(summaries))
+	}
+	for _, sum := range summaries {
+		if sum.ID == "empty-repo" {
+			if sum.PageCount != 0 || sum.LastCommit != nil {
+				t.Errorf("empty-repo summary wrong: %+v", sum)
+			}
+		}
+		if sum.ID == "active-repo" {
+			if sum.PageCount != 2 {
+				t.Errorf("active-repo page count: %d", sum.PageCount)
+			}
+			if sum.LastCommit == nil || sum.LastCommit.Message != "second" {
+				t.Errorf("active-repo last commit: %+v", sum.LastCommit)
+			}
+		}
+	}
+}
+
 func TestSanitizeRepoID(t *testing.T) {
 	cases := map[string]string{
 		"chompchat":            "chompchat",

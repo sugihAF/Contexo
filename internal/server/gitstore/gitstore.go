@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,118 @@ func (s *Store) Log(repoID string, limit int) ([]CommitMeta, error) {
 		return nil, fmt.Errorf("gitstore: log: %w: %s", err, out)
 	}
 	return parseLog(out), nil
+}
+
+// PageMeta describes a tracked file's last-touch metadata in a repo.
+type PageMeta struct {
+	Path    string    `json:"path"`
+	SHA     string    `json:"sha"`
+	Author  string    `json:"author"`
+	Email   string    `json:"email"`
+	Time    time.Time `json:"time"`
+	Message string    `json:"message"`
+}
+
+// RepoSummary is the JSON shape returned for the repo list.
+type RepoSummary struct {
+	ID         string      `json:"id"`
+	PageCount  int         `json:"page_count"`
+	LastCommit *CommitMeta `json:"last_commit,omitempty"`
+}
+
+// ListRepos returns every initialized repo ID under the store root, sorted.
+func (s *Store) ListRepos() ([]string, error) {
+	entries, err := os.ReadDir(s.Root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("gitstore: list repos: %w", err)
+	}
+	var repos []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(s.Root, e.Name(), ".git")); err == nil {
+			repos = append(repos, e.Name())
+		}
+	}
+	sort.Strings(repos)
+	return repos, nil
+}
+
+// ListReposWithMeta returns repo summaries (page count + last commit).
+func (s *Store) ListReposWithMeta() ([]RepoSummary, error) {
+	ids, err := s.ListRepos()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RepoSummary, 0, len(ids))
+	for _, id := range ids {
+		pages, _ := s.ListPages(id)
+		log, _ := s.Log(id, 1)
+		sum := RepoSummary{ID: id, PageCount: len(pages)}
+		if len(log) > 0 {
+			c := log[0]
+			sum.LastCommit = &c
+		}
+		out = append(out, sum)
+	}
+	return out, nil
+}
+
+// ListPages returns metadata for every tracked file in a repo. One git
+// process walks all commits newest → oldest; for each file the first time
+// it appears is its last-touch commit.
+func (s *Store) ListPages(repoID string) ([]PageMeta, error) {
+	if !s.Exists(repoID) {
+		return nil, ErrRepoNotFound
+	}
+	dir := s.repoDir(repoID)
+	out, err := s.git(dir, "log", "--name-only", "--format=COMMIT\t%H\t%an\t%ae\t%at\t%s")
+	if err != nil {
+		if strings.Contains(out, "does not have any commits") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("gitstore: list pages: %w: %s", err, out)
+	}
+
+	seen := map[string]bool{}
+	var pages []PageMeta
+	var cur PageMeta
+	hasCommit := false
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "COMMIT\t") {
+			parts := strings.SplitN(strings.TrimPrefix(line, "COMMIT\t"), "\t", 5)
+			if len(parts) < 5 {
+				continue
+			}
+			unix, _ := strconv.ParseInt(parts[3], 10, 64)
+			cur = PageMeta{
+				SHA:     parts[0],
+				Author:  parts[1],
+				Email:   parts[2],
+				Time:    time.Unix(unix, 0).UTC(),
+				Message: parts[4],
+			}
+			hasCommit = true
+			continue
+		}
+		if !hasCommit || seen[line] {
+			continue
+		}
+		seen[line] = true
+		p := cur
+		p.Path = line
+		pages = append(pages, p)
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i].Path < pages[j].Path })
+	return pages, nil
 }
 
 // LogPath returns up to limit commits that touched filePath.
