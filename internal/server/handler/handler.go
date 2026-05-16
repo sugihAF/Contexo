@@ -1,3 +1,4 @@
+// Package handler holds the HTTP handlers for the Contexo git-backed server.
 package handler
 
 import (
@@ -11,32 +12,125 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/server/gitstore"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/userstore"
 )
 
-// Handler exposes the git-backed Contexo endpoints.
+// Handler holds dependencies for every HTTP route.
 type Handler struct {
-	store *gitstore.Store
+	store  *gitstore.Store
+	users  *userstore.Store
+	signer *auth.SessionSigner
+	google auth.Verifier
 }
 
-func New(store *gitstore.Store) *Handler {
-	return &Handler{store: store}
+// New constructs a Handler. users/signer/google may be nil during tests of the
+// gitstore-only paths.
+func New(store *gitstore.Store, users *userstore.Store, signer *auth.SessionSigner, google auth.Verifier) *Handler {
+	return &Handler{store: store, users: users, signer: signer, google: google}
 }
 
-// ListRepos handles GET /v1/repos.
+// userID returns the authenticated user_id placed in the gin context by the
+// auth middleware, or "" if missing.
+func (h *Handler) userID(c *gin.Context) string {
+	v, _ := c.Get("user_id")
+	id, _ := v.(string)
+	return id
+}
+
+// requireMember returns true (and writes the response) if the request is not
+// authorized to act on repoID. Legacy auth always passes.
+func (h *Handler) requireMember(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) {
+		return true
+	}
+	if h.users == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "user auth not configured"})
+		return false
+	}
+	ok, err := h.users.IsMember(repoID, uid)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+		return false
+	}
+	return true
+}
+
+// requireOwner is like requireMember but also checks role=owner.
+func (h *Handler) requireOwner(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) {
+		return true
+	}
+	if h.users == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "user auth not configured"})
+		return false
+	}
+	role, err := h.users.GetRole(repoID, uid)
+	if err != nil {
+		if errors.Is(err, userstore.ErrNotFound) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+			return false
+		}
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if role != userstore.RoleOwner {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "owner role required"})
+		return false
+	}
+	return true
+}
+
+// ListRepos handles GET /v1/repos. Returns every repo for legacy auth, or
+// just the user's memberships for real users.
 func (h *Handler) ListRepos(c *gin.Context) {
-	summaries, err := h.store.ListReposWithMeta()
+	uid := h.userID(c)
+	all, err := h.store.ListReposWithMeta()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"repos": summaries})
+	if auth.IsLegacy(uid) || h.users == nil {
+		c.JSON(http.StatusOK, gin.H{"repos": all})
+		return
+	}
+	memberships, err := h.users.ListUserRepos(uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	allowed := make(map[string]string, len(memberships))
+	for _, m := range memberships {
+		allowed[m.RepoID] = m.Role
+	}
+	filtered := make([]repoSummaryWithRole, 0, len(allowed))
+	for _, r := range all {
+		if role, ok := allowed[r.ID]; ok {
+			filtered = append(filtered, repoSummaryWithRole{RepoSummary: r, Role: role})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"repos": filtered})
+}
+
+type repoSummaryWithRole struct {
+	gitstore.RepoSummary
+	Role string `json:"role"`
 }
 
 // ListPages handles GET /v1/repos/:id/pages.
 func (h *Handler) ListPages(c *gin.Context) {
 	repoID := c.Param("id")
+	if !h.requireMember(c, repoID) {
+		return
+	}
 	pages, err := h.store.ListPages(repoID)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
@@ -49,26 +143,33 @@ func (h *Handler) ListPages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"pages": pages})
 }
 
-// CreateRepo handles POST /v1/repos/:id.
-func (h *Handler) CreateRepo(c *gin.Context) {
+// CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
+// existing CLI's repo-init flow. Kept for back-compat with legacy auth; real
+// users should use POST /v1/repos.
+func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	repoID := c.Param("id")
+	uid := h.userID(c)
 	if err := h.store.Init(repoID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if !auth.IsLegacy(uid) && h.users != nil {
+		_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
+	}
 	c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 }
 
-// ReadPage handles GET /v1/repos/:id/pages/*path. Returns content as
-// text/markdown with X-Page-SHA header carrying the last-touch sha.
+// ReadPage handles GET /v1/repos/:id/pages/*path.
 func (h *Handler) ReadPage(c *gin.Context) {
 	repoID := c.Param("id")
+	if !h.requireMember(c, repoID) {
+		return
+	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing page path"})
 		return
 	}
-
 	content, sha, err := h.store.Read(repoID, path)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
@@ -86,9 +187,12 @@ func (h *Handler) ReadPage(c *gin.Context) {
 	c.Data(http.StatusOK, "text/markdown", content)
 }
 
-// Push handles POST /v1/repos/:id/sync/push.
+// Push handles POST /v1/repos/:id/sync/push. For real users, the first push
+// to a new repo auto-creates and assigns ownership.
 func (h *Handler) Push(c *gin.Context) {
 	repoID := c.Param("id")
+	uid := h.userID(c)
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
@@ -109,9 +213,17 @@ func (h *Handler) Push(c *gin.Context) {
 		req.Message = "ctx push"
 	}
 
-	if !h.store.Exists(repoID) {
+	repoExists := h.store.Exists(repoID)
+	if !repoExists {
 		if err := h.store.Init(repoID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !auth.IsLegacy(uid) && h.users != nil {
+			_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
+		}
+	} else {
+		if !h.requireMember(c, repoID) {
 			return
 		}
 	}
@@ -158,6 +270,9 @@ func (h *Handler) Push(c *gin.Context) {
 // Pull handles GET /v1/repos/:id/sync/pull?since=<sha>.
 func (h *Handler) Pull(c *gin.Context) {
 	repoID := c.Param("id")
+	if !h.requireMember(c, repoID) {
+		return
+	}
 	since := c.Query("since")
 
 	paths, head, err := h.store.ChangedSince(repoID, since)
@@ -185,6 +300,9 @@ func (h *Handler) Pull(c *gin.Context) {
 // Timeline handles GET /v1/repos/:id/timeline?limit=N.
 func (h *Handler) Timeline(c *gin.Context) {
 	repoID := c.Param("id")
+	if !h.requireMember(c, repoID) {
+		return
+	}
 	limit := 50
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = l
@@ -204,6 +322,9 @@ func (h *Handler) Timeline(c *gin.Context) {
 // History handles GET /v1/repos/:id/history/*path?limit=N.
 func (h *Handler) History(c *gin.Context) {
 	repoID := c.Param("id")
+	if !h.requireMember(c, repoID) {
+		return
+	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing path"})

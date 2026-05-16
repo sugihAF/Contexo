@@ -11,6 +11,9 @@ services:
       - contexo_data:/data
     environment:
       CONTEXO_API_KEY: ${CONTEXO_API_KEY:?set CONTEXO_API_KEY in .env or env}
+      CONTEXO_SESSION_SECRET: ${CONTEXO_SESSION_SECRET:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      CONTEXO_CORS_ORIGINS: ${CONTEXO_CORS_ORIGINS:-}
     restart: unless-stopped
 
 volumes:
