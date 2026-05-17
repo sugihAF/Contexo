@@ -14,16 +14,20 @@ import (
 
 func newPushCmd() *cobra.Command {
 	var (
-		featureFilter string
-		tagFilter     string
-		typeFilter    string
-		message       string
-		dryRun        bool
+		featureFilter  string
+		tagFilter      string
+		typeFilter     string
+		message        string
+		dryRun         bool
+		fallbackServer bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push local .contexo pages to the server",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if fallbackServer {
+				return fmt.Errorf("push: --fallback-server: server-side distillation not implemented yet (planned for Phase 4 of agent-reasoning-capture); use the agent-as-distiller flow via ctx_push MCP for now")
+			}
 			root := GetRootDir()
 			hubDir := config.ContexoDirPath(root)
 
@@ -132,6 +136,7 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&typeFilter, "type", "", "push only pages of this type (concept|entity|source|analysis)")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "commit message (default: 'ctx push (N pages)')")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pushed without sending")
+	cmd.Flags().BoolVar(&fallbackServer, "fallback-server", false, "(planned) route reasoning-trail distillation to the Contexo server; currently errors")
 	return cmd
 }
 

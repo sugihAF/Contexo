@@ -44,6 +44,7 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver) *gin.Engine {
 	v1.GET("/repos/:id/pages/*path", h.ReadPage)
 	v1.POST("/repos/:id/sync/push", h.Push)
 	v1.GET("/repos/:id/sync/pull", h.Pull)
+	v1.POST("/repos/:id/sync/distill", h.Distill)
 	v1.GET("/repos/:id/timeline", h.Timeline)
 	v1.GET("/repos/:id/history/*path", h.History)
 
