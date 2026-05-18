@@ -10,6 +10,12 @@ import (
 const (
 	ContexoDir  = ".contexo"
 	ConfigFile = "config.json"
+
+	// DefaultServerURL is what `ctx login` and other server-touching
+	// commands fall back to when neither --server nor a saved
+	// .contexo/config.json entry specifies one. Mirrors the dashboard's
+	// hardcoded default so the two sides stay in sync.
+	DefaultServerURL = "https://api.contexo.live"
 )
 
 // Config holds the local .contexo configuration.

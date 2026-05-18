@@ -81,6 +81,12 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 			if serverURL != "" {
 				cfg.ServerURL = serverURL
 			}
+			// Default to the hosted Contexo server when the user hasn't
+			// configured one yet — saves a separate `ctx remote set` step
+			// for the common case. Self-hosted users still pass --server.
+			if cfg.ServerURL == "" {
+				cfg.ServerURL = config.DefaultServerURL
+			}
 			if repoID != "" {
 				cfg.RepoID = repoID
 			}
@@ -126,7 +132,7 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 	}
 	cmd.Flags().StringVar(&token, "token", "", "personal access token (paste from dashboard → Settings)")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "DEPRECATED: legacy shared API key. Use --token instead")
-	cmd.Flags().StringVar(&serverURL, "server", "", "server URL")
+	cmd.Flags().StringVar(&serverURL, "server", "", "server URL (default: https://api.contexo.live)")
 	cmd.Flags().StringVar(&repoID, "repo", "", "repo_id on the server")
 	cmd.Flags().StringVar(&userName, "name", "", "your display name (used as commit author)")
 	cmd.Flags().StringVar(&userEmail, "email", "", "your email (used as commit author)")
