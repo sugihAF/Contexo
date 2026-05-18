@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -32,21 +33,25 @@ func newLoginCmd() *cobra.Command {
 
 func newAuthLoginCmd() *cobra.Command {
 	var (
-		token     string
-		apiKey    string
-		serverURL string
-		repoID    string
-		userName  string
-		userEmail string
+		token        string
+		apiKey       string
+		serverURL    string
+		dashboardURL string
+		repoID       string
+		userName     string
+		userEmail    string
+		forceBrowser bool
+		noBrowser    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate with a Contexo server",
 		Long: `Authenticate with a Contexo server.
 
-The preferred path is --token: paste a personal access token minted from the
-web dashboard at Settings → New token. The legacy --api-key flag still works
-for the shared CONTEXO_API_KEY but is deprecated.`,
+With no flags on an interactive terminal, opens the dashboard in your browser,
+signs you in, and copies a freshly-minted personal access token back to the CLI
+over a loopback redirect. Use --no-browser to fall back to a paste-the-token
+prompt, or pass --token directly to skip the browser entirely.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
 
@@ -59,16 +64,41 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 				chosen = strings.TrimSpace(apiKey)
 			}
 			if chosen == "" {
-				fmt.Fprint(cmd.OutOrStdout(), "Token: ")
-				reader := bufio.NewReader(os.Stdin)
-				input, err := reader.ReadString('\n')
-				if err != nil {
-					return fmt.Errorf("auth: read input: %w", err)
+				// Decide between browser flow and paste-prompt:
+				//   --browser forces browser even off-TTY (rare but supported)
+				//   --no-browser forces paste prompt
+				//   otherwise: TTY → browser, no-TTY → error
+				useBrowser := forceBrowser || (!noBrowser && stdinIsTTY())
+				if useBrowser {
+					dash := strings.TrimRight(strings.TrimSpace(dashboardURL), "/")
+					if dash == "" {
+						cfgEarly, _ := config.Load(root)
+						if cfgEarly != nil && cfgEarly.DashboardURL != "" {
+							dash = strings.TrimRight(cfgEarly.DashboardURL, "/")
+						}
+					}
+					if dash == "" {
+						dash = config.DefaultDashboardURL
+					}
+					var err error
+					chosen, err = runBrowserLogin(context.Background(), dash, cmd.OutOrStdout())
+					if err != nil {
+						return err
+					}
+				} else if !stdinIsTTY() {
+					return fmt.Errorf("a token is required (--token, or run interactively for the browser flow)")
+				} else {
+					fmt.Fprint(cmd.OutOrStdout(), "Token: ")
+					reader := bufio.NewReader(os.Stdin)
+					input, err := reader.ReadString('\n')
+					if err != nil {
+						return fmt.Errorf("auth: read input: %w", err)
+					}
+					chosen = strings.TrimSpace(input)
 				}
-				chosen = strings.TrimSpace(input)
 			}
 			if chosen == "" {
-				return fmt.Errorf("a token is required (--token or interactive prompt)")
+				return fmt.Errorf("a token is required (--token, browser flow, or interactive prompt)")
 			}
 			if strings.HasPrefix(chosen, "ctxi_") {
 				return fmt.Errorf("that looks like a repo invite key (ctxi_…), not a CLI token. Use 'ctx join' or paste it into the dashboard's Join with key dialog")
@@ -86,6 +116,9 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 			// for the common case. Self-hosted users still pass --server.
 			if cfg.ServerURL == "" {
 				cfg.ServerURL = config.DefaultServerURL
+			}
+			if dashboardURL != "" {
+				cfg.DashboardURL = strings.TrimRight(dashboardURL, "/")
 			}
 			if repoID != "" {
 				cfg.RepoID = repoID
@@ -130,12 +163,15 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&token, "token", "", "personal access token (paste from dashboard → Settings)")
+	cmd.Flags().StringVar(&token, "token", "", "personal access token (skips the browser flow if set)")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "DEPRECATED: legacy shared API key. Use --token instead")
 	cmd.Flags().StringVar(&serverURL, "server", "", "server URL (default: https://api.contexo.live)")
+	cmd.Flags().StringVar(&dashboardURL, "dashboard", "", "dashboard URL used by the browser flow (default: https://contexo-web.pages.dev)")
 	cmd.Flags().StringVar(&repoID, "repo", "", "repo_id on the server")
 	cmd.Flags().StringVar(&userName, "name", "", "your display name (used as commit author)")
 	cmd.Flags().StringVar(&userEmail, "email", "", "your email (used as commit author)")
+	cmd.Flags().BoolVar(&forceBrowser, "browser", false, "force the browser flow even when stdin is not a terminal")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "skip the browser flow; paste the token interactively")
 	return cmd
 }
 

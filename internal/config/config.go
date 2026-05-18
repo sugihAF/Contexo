@@ -16,14 +16,20 @@ const (
 	// .contexo/config.json entry specifies one. Mirrors the dashboard's
 	// hardcoded default so the two sides stay in sync.
 	DefaultServerURL = "https://api.contexo.live"
+
+	// DefaultDashboardURL is the public dashboard the browser-based
+	// `ctx login` flow opens. Self-hosted setups can override via
+	// --dashboard or by editing config.json's DashboardURL.
+	DefaultDashboardURL = "https://contexo-web.pages.dev"
 )
 
 // Config holds the local .contexo configuration.
 type Config struct {
-	Version     int    `json:"version"`
-	RepoID      string `json:"repo_id,omitempty"`
-	ServerURL   string `json:"server_url,omitempty"`
-	LastPullSHA string `json:"last_pull_sha,omitempty"`
+	Version      int    `json:"version"`
+	RepoID       string `json:"repo_id,omitempty"`
+	ServerURL    string `json:"server_url,omitempty"`
+	DashboardURL string `json:"dashboard_url,omitempty"`
+	LastPullSHA  string `json:"last_pull_sha,omitempty"`
 }
 
 // DefaultConfig returns a Config seeded for a fresh .contexo.
