@@ -16,25 +16,28 @@ func NewInitCmd() *cobra.Command {
 	var (
 		skipMCP       bool
 		skipGitignore bool
+		skipHooks     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize .contexo knowledge directory",
 		Long: "Creates a .contexo/ tree in the current project for storing AI " +
 			"knowledge pages. Also writes .mcp.json so your agent picks up Contexo's " +
-			"MCP server, and adds .contexo/ to .gitignore so the knowledge isn't " +
-			"committed to your project's git history. Idempotent — re-running leaves " +
-			"existing files alone.",
+			"MCP server, adds .contexo/ to .gitignore so the knowledge isn't " +
+			"committed to your project's git history, and registers a Claude Code " +
+			"Stop hook so per-turn capture starts working in the next agent session. " +
+			"Idempotent — re-running leaves existing entries alone.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInit(cmd, skipMCP, skipGitignore)
+			return runInit(cmd, skipMCP, skipGitignore, skipHooks)
 		},
 	}
 	cmd.Flags().BoolVar(&skipMCP, "no-mcp", false, "skip creating .mcp.json")
 	cmd.Flags().BoolVar(&skipGitignore, "no-gitignore", false, "skip adding .contexo/ to .gitignore")
+	cmd.Flags().BoolVar(&skipHooks, "no-hooks", false, "skip registering the Claude Code Stop hook for per-turn capture")
 	return cmd
 }
 
-func runInit(cmd *cobra.Command, skipMCP, skipGitignore bool) error {
+func runInit(cmd *cobra.Command, skipMCP, skipGitignore, skipHooks bool) error {
 	root := GetRootDir()
 	hubDir := config.ContexoDirPath(root)
 
@@ -73,6 +76,15 @@ func runInit(cmd *cobra.Command, skipMCP, skipGitignore bool) error {
 	if !skipGitignore {
 		if err := updateGitignore(cmd, root); err != nil {
 			return err
+		}
+	}
+	if !skipHooks {
+		// Failing here would be more annoying than helpful — the hook is a
+		// nice-to-have, not load-bearing for init's core job. Warn and move on.
+		if err := installHook(cmd, root); err != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Warning: could not install Stop hook: %v (run 'ctx hooks install' later to retry)\n", err)
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "  (Hook is Claude Code-specific; other agents need separate wiring.)")
 		}
 	}
 
