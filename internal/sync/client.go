@@ -119,6 +119,30 @@ func (c *Client) JoinRepo(key string) (string, string, error) {
 	return wrapper.RepoID, wrapper.Role, nil
 }
 
+// ListRepos returns the repos the authenticated user can see. Used by the
+// CLI's interactive picker so the user doesn't have to type a repo_id.
+func (c *Client) ListRepos() ([]RepoOption, error) {
+	url := fmt.Sprintf("%s/v1/repos", c.baseURL)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: list repos: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: list repos (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Repos []RepoOption `json:"repos"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse list repos: %w", err)
+	}
+	return wrapper.Repos, nil
+}
+
 // Timeline returns recent commits across the repo.
 func (c *Client) Timeline(repoID string, limit int) ([]Commit, error) {
 	url := fmt.Sprintf("%s/v1/repos/%s/timeline?limit=%d", c.baseURL, repoID, limit)

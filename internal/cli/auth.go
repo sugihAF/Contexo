@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newAuthCmd() *cobra.Command {
@@ -95,6 +96,21 @@ for the shared CONTEXO_API_KEY but is deprecated.`,
 			}
 			if err := config.SaveCredentials(root, creds); err != nil {
 				return err
+			}
+
+			// Offer an interactive repo picker if the user didn't pass --repo
+			// and we have a TTY + server URL. Skipping the picker (or it
+			// erroring) is non-fatal: the user can always run `ctx remote
+			// set-repo` later.
+			if cfg.RepoID == "" && cfg.ServerURL != "" && stdinIsTTY() {
+				client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+				chosenRepo, err := selectRepoInteractive(client, cmd.OutOrStdout())
+				if err == nil && chosenRepo != "" {
+					cfg.RepoID = chosenRepo
+					if saveErr := config.Save(root, cfg); saveErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: saved auth but could not persist repo selection: %v\n", saveErr)
+					}
+				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Authenticated (%s)", creds.Kind())

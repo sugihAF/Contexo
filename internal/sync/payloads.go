@@ -59,3 +59,11 @@ type Commit struct {
 	Time    time.Time `json:"time"`
 	Message string    `json:"message"`
 }
+
+// RepoOption is one entry in the response from GET /v1/repos as the CLI
+// cares about it. Other server-side fields (page_count, last_commit) are
+// ignored when the CLI just needs to enumerate memberships.
+type RepoOption struct {
+	ID   string `json:"id"`
+	Role string `json:"role,omitempty"`
+}
