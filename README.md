@@ -58,12 +58,24 @@ Tools (agent-invokable):
 
 Pure Go, no CGO. Works on Linux, macOS, and Windows.
 
-**Easiest (any platform):**
+**Easiest (one line, handles PATH for you):**
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.sh | sh
+
+# Windows (PowerShell)
+iwr -useb https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.ps1 | iex
+```
+
+Both scripts require **Go 1.25+** already installed. They run `go install`, detect where the binary landed (`$GOPATH/bin` or `$GOBIN`), and append that directory to your shell's PATH if it's not already there. Idempotent — safe to re-run.
+
+**Manual (control PATH yourself):**
 
 ```bash
 go install github.com/sugihAF/Contexo/cmd/ctx@latest
 # binary goes to $GOPATH/bin (typically ~/go/bin on Linux/macOS, %USERPROFILE%\go\bin on Windows)
-# make sure that directory is on PATH
+# add that directory to PATH yourself, then open a new terminal
 ```
 
 **From source, into a local `bin/` dir:**
