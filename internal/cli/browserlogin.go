@@ -22,32 +22,44 @@ import (
 // short enough not to leak a forgotten loopback listener forever.
 const browserLoginTimeout = 5 * time.Minute
 
+// BrowserLoginResult is what the loopback callback hands back when the
+// dashboard finishes minting a PAT. Name and Email are populated from
+// the dashboard's authenticated session (Google identity) and may be
+// empty if that information wasn't available.
+type BrowserLoginResult struct {
+	Token string
+	Name  string
+	Email string
+}
+
 // runBrowserLogin drives the loopback-redirect login flow:
 //
 //   1. Listen on a random 127.0.0.1 port.
 //   2. Open the dashboard's /cli-login page with port + CSRF state + hostname.
-//   3. Block until the dashboard posts the token back, the user Ctrl-Cs,
-//      or the timeout elapses.
+//   3. Block until the dashboard posts the token (and identity) back,
+//      the user Ctrl-Cs, or the timeout elapses.
 //
-// On success the minted PAT is returned. The loopback server is shut down
-// before returning either way.
-func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (string, error) {
+// On success the minted PAT + the user's name/email (from the dashboard's
+// Google session) are returned. The loopback server is shut down before
+// returning either way.
+func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (BrowserLoginResult, error) {
+	var zero BrowserLoginResult
 	state, err := randomState(16)
 	if err != nil {
-		return "", fmt.Errorf("browser login: generate state: %w", err)
+		return zero, fmt.Errorf("browser login: generate state: %w", err)
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("browser login: open loopback: %w", err)
+		return zero, fmt.Errorf("browser login: open loopback: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	type result struct {
-		token string
-		err   error
+	type chRes struct {
+		res BrowserLoginResult
+		err error
 	}
-	resultCh := make(chan result, 1)
+	resultCh := make(chan chRes, 1)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -57,16 +69,20 @@ func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (s
 
 		if gotState == "" || gotState != state {
 			writeFailureHTML(w, "state mismatch")
-			resultCh <- result{err: errors.New("browser login: state mismatch (possible CSRF) — please re-run")}
+			resultCh <- chRes{err: errors.New("browser login: state mismatch (possible CSRF) — please re-run")}
 			return
 		}
 		if !strings.HasPrefix(token, "ctxp_") {
 			writeFailureHTML(w, "missing or malformed token")
-			resultCh <- result{err: errors.New("browser login: callback did not include a CLI personal access token")}
+			resultCh <- chRes{err: errors.New("browser login: callback did not include a CLI personal access token")}
 			return
 		}
 		writeSuccessHTML(w)
-		resultCh <- result{token: token}
+		resultCh <- chRes{res: BrowserLoginResult{
+			Token: token,
+			Name:  strings.TrimSpace(q.Get("name")),
+			Email: strings.TrimSpace(q.Get("email")),
+		}}
 	})
 	// Anything other than /callback gets a soft 404. Useful when the user
 	// hits /favicon.ico from the success page.
@@ -86,7 +102,7 @@ func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (s
 
 	dashURL, err := buildCliLoginURL(dashboardURL, port, state)
 	if err != nil {
-		return "", err
+		return zero, err
 	}
 
 	fmt.Fprintf(out, "Opening %s in your browser...\n", dashURL)
@@ -97,11 +113,11 @@ func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (s
 
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return zero, ctx.Err()
 	case res := <-resultCh:
-		return res.token, res.err
+		return res.res, res.err
 	case <-time.After(browserLoginTimeout):
-		return "", fmt.Errorf("browser login: timed out after %s — re-run, or use --no-browser to paste a token manually", browserLoginTimeout)
+		return zero, fmt.Errorf("browser login: timed out after %s — re-run, or use --no-browser to paste a token manually", browserLoginTimeout)
 	}
 }
 

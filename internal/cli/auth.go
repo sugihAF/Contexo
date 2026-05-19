@@ -80,10 +80,19 @@ prompt, or pass --token directly to skip the browser entirely.`,
 					if dash == "" {
 						dash = config.DefaultDashboardURL
 					}
-					var err error
-					chosen, err = runBrowserLogin(context.Background(), dash, cmd.OutOrStdout())
+					res, err := runBrowserLogin(context.Background(), dash, cmd.OutOrStdout())
 					if err != nil {
 						return err
+					}
+					chosen = res.Token
+					// Identity from the dashboard's Google session fills in
+					// any --name / --email the user didn't pass explicitly.
+					// CLI flags still win when provided.
+					if userName == "" {
+						userName = res.Name
+					}
+					if userEmail == "" {
+						userEmail = res.Email
 					}
 				} else if !stdinIsTTY() {
 					return fmt.Errorf("a token is required (--token, or run interactively for the browser flow)")

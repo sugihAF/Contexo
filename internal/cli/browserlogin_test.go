@@ -62,3 +62,12 @@ func TestSuccessAndFailureHTMLNonEmpty(t *testing.T) {
 		t.Errorf("failure HTML missing the reason placeholder")
 	}
 }
+
+// TestBrowserLoginResultZeroValue documents the zero-value shape so that
+// callers (auth.go) can rely on "" meaning "dashboard didn't send this."
+func TestBrowserLoginResultZeroValue(t *testing.T) {
+	var r BrowserLoginResult
+	if r.Token != "" || r.Name != "" || r.Email != "" {
+		t.Errorf("zero value should have empty fields, got %+v", r)
+	}
+}
