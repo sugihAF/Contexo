@@ -21,6 +21,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&rootDir, "root", "", "project root directory (default: current directory)")
 
 	cmd.AddCommand(NewInitCmd())
+	cmd.AddCommand(newDetachCmd())
 	cmd.AddCommand(newPushCmd())
 	cmd.AddCommand(newPullCmd())
 	cmd.AddCommand(newMCPCmd())

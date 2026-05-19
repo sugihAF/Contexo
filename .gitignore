@@ -36,3 +36,6 @@ bin/
 
 # CtxHub local data
 .ctx/
+
+# Contexo local knowledge (synced via ctx push/pull, not git)
+.contexo/
