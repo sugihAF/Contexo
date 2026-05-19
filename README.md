@@ -29,16 +29,34 @@ Dev B's Claude  ←  ctx pull                ←
 
 ## CLI
 
+**Setup**
+
 ```
-ctx init                  Create .contexo/ in the current project
-ctx remote set <url>      Point at a Contexo server
-ctx remote set-repo <id>  Set the repo ID on that server
-ctx auth login --api-key K --name "..." --email "..."
+ctx init                       Create .contexo/, write .mcp.json, install Stop hook
+ctx detach [--keep-knowledge]  Reverse `ctx init` (purges .contexo/ by default)
+ctx login                      Browser flow: sign in once, mint a token, done
+                               (alias for `ctx auth login`; --no-browser to paste)
+ctx join <invite-key>          Join an existing repo with a ctxi_… invite key
+ctx remote set <url>           Point at a Contexo server
+ctx remote set-repo [<id>]     Set the repo ID (interactive picker if omitted)
+ctx remote get                 Show current server + repo
+```
+
+**Sync**
+
+```
 ctx push [--feature X] [--tag Y] [--type concept|entity|source|analysis] [--dry-run]
 ctx pull [--full]
-ctx status                Local vs server delta
-ctx log                   Server timeline (who changed what when)
-ctx mcp                   Start MCP server for the local agent
+ctx status                     Local vs server delta
+ctx log                        Server timeline (who changed what when)
+```
+
+**Agent integration**
+
+```
+ctx mcp                        Start MCP server for the local agent
+ctx hooks install|uninstall|status   Manage the Claude Code Stop hook
+ctx capture status             Show pending capture buffers
 ```
 
 ## MCP
@@ -103,6 +121,25 @@ $env:CONTEXO_DATA_ROOT="C:\contexo\repos"; $env:PORT="8080"; .\bin\contexo-serve
 ```
 
 The server shells out to `git`, so `git` must be on PATH. The Docker image (`docker/Dockerfile`) bundles it.
+
+## Uninstall
+
+**Per project** — remove Contexo from a specific project:
+
+```bash
+ctx detach                   # prompts before purging .contexo/, .mcp.json entry, .gitignore line, Stop hook
+ctx detach --keep-knowledge  # remove the integration but preserve .contexo/
+ctx detach -y                # skip the confirmation
+```
+
+`ctx detach` warns if local pages haven't been pushed yet so you can `ctx push` first.
+
+**The CLI itself:**
+
+```bash
+# Linux / macOS / Windows
+rm "$(go env GOPATH)/bin/ctx"      # ctx.exe on Windows
+```
 
 ## Documentation
 
