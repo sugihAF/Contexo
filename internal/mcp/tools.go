@@ -69,9 +69,13 @@ func (s *Server) ListTools() []Tool {
 		},
 		{
 			Name: "ctx_write_page",
-			Description: "Write a Contexo knowledge page to .contexo/. Use this when distilling research, decisions, " +
-				"or analysis the team would benefit from. Always include reasoning_summary and an Agent Reasoning " +
-				"section in the body explaining what was considered and rejected.",
+			Description: "Write a Contexo knowledge page to .contexo/. Pick the type that fits: " +
+				"'concept' = how or why something works (e.g. how Stripe trials work in this codebase); " +
+				"'entity' = a named system, service, library, product, or database (e.g. Stripe, ChompChat, Redis) — " +
+				"its purpose, where it lives in the project, and gotchas; " +
+				"'source' = the reasoning trail behind a recent decision (usually auto-prompted by ctx_push's PUSH_PAUSED handshake); " +
+				"'analysis' = a comparison or evaluation across options. " +
+				"Always include reasoning_summary and an Agent Reasoning section in the body explaining what was considered and rejected.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"slug", "type", "body"},
@@ -312,9 +316,9 @@ func (s *Server) buildDistillDirective(batch []*schema.Page) (string, bool) {
 	return strings.Join([]string{
 		"<PUSH_PAUSED reason=distill_required>",
 		"",
-		"Before pushing, write a 'source' page that captures the reasoning trail behind",
-		"the knowledge pages in this batch. Then re-invoke ctx_push with the same args,",
-		"plus distill_done=true and source_slug=<the slug you used>.",
+		"Before pushing: capture the reasoning trail, then make sure every named system",
+		"in this batch has its own entity page. Do the three steps below in order, then",
+		"re-invoke ctx_push with distill_done=true.",
 		"",
 		"STEP 1 — call ctx_write_page with:",
 		fmt.Sprintf("  type:              \"source\""),
@@ -349,11 +353,17 @@ func (s *Server) buildDistillDirective(batch []*schema.Page) (string, bool) {
 		"",
 		"IMPORTANT: redact any API keys, tokens, passwords, or PII you encounter.",
 		"",
-		"STEP 2 — call ctx_push again with the same filter args plus:",
+		"STEP 2 — entity coverage: if the concept/analysis pages reference named",
+		"systems, services, libraries, products, or databases that don't already have",
+		"a page under wiki/entities/, create one for each with ctx_write_page(type=\"entity\").",
+		"Keep entity pages short: purpose, where it lives in this project, gotchas, and",
+		"links to related concepts. Skip this step if every named thing is already covered.",
+		"",
+		"STEP 3 — call ctx_push again with the same filter args plus:",
 		"  distill_done: true",
 		fmt.Sprintf("  source_slug:  %q", suggestedSlug),
 		"",
-		"That second call will link the source into each concept/analysis page's",
+		"That distill_done call will link the source into each concept/analysis page's",
 		"`sources:` frontmatter, archive the buffer, and push everything in one commit.",
 		"",
 		"---",

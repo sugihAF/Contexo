@@ -335,6 +335,52 @@ func TestCaptureSessionEmptyBuffer(t *testing.T) {
 	}
 }
 
+// TestWritePageToolDescribesEachType ensures the ctx_write_page tool tells
+// the agent when to pick each page type. Without this guidance agents
+// default to 'concept' and never author entity pages (observed in the
+// chompchat repo: 3 concept pages, 0 entity pages).
+func TestWritePageToolDescribesEachType(t *testing.T) {
+	srv, _ := setupCaptureServer(t, false, nil)
+	var desc string
+	for _, tool := range srv.ListTools() {
+		if tool.Name == "ctx_write_page" {
+			desc = tool.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("ctx_write_page tool not found in ListTools()")
+	}
+	for _, typ := range []string{"concept", "entity", "source", "analysis"} {
+		if !strings.Contains(desc, typ) {
+			t.Errorf("ctx_write_page description should explain when to use type %q; got:\n%s", typ, desc)
+		}
+	}
+}
+
+// TestPushHandshakeNudgesEntityCoverage ensures the PUSH_PAUSED directive
+// asks the agent to fill in missing entity pages before the final push,
+// so named systems/libraries/services get their own pages instead of
+// only being mentioned inside concept pages.
+func TestPushHandshakeNudgesEntityCoverage(t *testing.T) {
+	srv, _ := setupCaptureServer(t, true, httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("HTTP push must NOT be called when handshake should pause; got %s", r.URL.Path)
+	})))
+
+	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{
+		"feature": "foo",
+	})
+	if res == nil || res.IsError {
+		t.Fatalf("expected non-error PUSH_PAUSED, got %+v", res)
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "wiki/entities/") {
+		t.Errorf("handshake should point at wiki/entities/: %s", text)
+	}
+	if !strings.Contains(text, `type="entity"`) {
+		t.Errorf(`handshake should mention ctx_write_page(type="entity"): %s`, text)
+	}
+}
+
 // readAll is a tiny helper that avoids importing io for one use.
 func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
 	buf := make([]byte, 0, 4096)
