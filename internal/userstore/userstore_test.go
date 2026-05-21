@@ -1,9 +1,11 @@
 package userstore
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -202,4 +204,193 @@ func TestInviteKey_LifecycleAndIsolation(t *testing.T) {
 	if _, err := s.ResolveInviteKey(raw); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
+}
+
+func TestRemoveMember(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+	bob, _, _ := s.UpsertGoogleUser("bob@example.com", "B", "2")
+	if err := s.AddMember("repo-a", alice.ID, RoleOwner); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+	if err := s.AddMember("repo-a", bob.ID, RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	// An owner can remove a regular member.
+	if err := s.RemoveMember("repo-a", bob.ID); err != nil {
+		t.Fatalf("remove member: %v", err)
+	}
+	if ok, _ := s.IsMember("repo-a", bob.ID); ok {
+		t.Error("bob should no longer be a member")
+	}
+	if ok, _ := s.IsMember("repo-a", alice.ID); !ok {
+		t.Error("alice should still be a member")
+	}
+
+	// Removing someone who is not a member returns ErrNotFound.
+	if err := s.RemoveMember("repo-a", "ghost"); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound removing a non-member, got %v", err)
+	}
+}
+
+func TestRemoveMember_LastOwnerProtected(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+	_ = s.AddMember("repo-a", alice.ID, RoleOwner)
+
+	// The sole owner cannot be removed.
+	if err := s.RemoveMember("repo-a", alice.ID); err != ErrLastOwner {
+		t.Errorf("expected ErrLastOwner, got %v", err)
+	}
+	if ok, _ := s.IsMember("repo-a", alice.ID); !ok {
+		t.Error("the last owner must remain after a refused removal")
+	}
+
+	// With a second owner, an owner can be removed.
+	bob, _, _ := s.UpsertGoogleUser("bob@example.com", "B", "2")
+	_ = s.AddMember("repo-a", bob.ID, RoleOwner)
+	if err := s.RemoveMember("repo-a", alice.ID); err != nil {
+		t.Errorf("removing a non-last owner should succeed, got %v", err)
+	}
+}
+
+func TestListRepoMembers_IncludesEmail(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+	bob, _, _ := s.UpsertGoogleUser("bob@example.com", "B", "2")
+	_ = s.AddMember("repo-a", alice.ID, RoleOwner)
+	_ = s.AddMember("repo-a", bob.ID, RoleMember)
+
+	members, err := s.ListRepoMembers("repo-a")
+	if err != nil {
+		t.Fatalf("list members: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(members))
+	}
+	got := map[string]Membership{}
+	for _, m := range members {
+		got[m.Email] = m
+	}
+	if got["alice@example.com"].Role != RoleOwner {
+		t.Errorf("expected alice owner, got %q (members=%+v)", got["alice@example.com"].Role, members)
+	}
+	if got["bob@example.com"].Role != RoleMember {
+		t.Errorf("expected bob member, got %q", got["bob@example.com"].Role)
+	}
+	if got["alice@example.com"].UserID != alice.ID {
+		t.Errorf("expected alice user id %q, got %q", alice.ID, got["alice@example.com"].UserID)
+	}
+}
+
+func TestMintInviteKey_SetsExpiry(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+
+	before := time.Now()
+	k, _, err := s.MintInviteKey("repo-a", alice.ID, "team")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if !k.ExpiresAt.After(before) {
+		t.Errorf("expected expiry in the future, got %v", k.ExpiresAt)
+	}
+	// Expect a 7-day TTL, within a minute of slack.
+	want := before.Add(7 * 24 * time.Hour)
+	if k.ExpiresAt.Before(want.Add(-time.Minute)) || k.ExpiresAt.After(want.Add(time.Minute)) {
+		t.Errorf("expected ~7-day TTL near %v, got %v", want, k.ExpiresAt)
+	}
+}
+
+func TestResolveInviteKey_RejectsExpired(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+	k, raw, err := s.MintInviteKey("repo-a", alice.ID, "team")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	// A fresh key resolves fine.
+	if _, err := s.ResolveInviteKey(raw); err != nil {
+		t.Fatalf("fresh key should resolve: %v", err)
+	}
+
+	// Force the key into the past.
+	if _, err := s.DB().Exec(
+		`UPDATE repo_invite_keys SET expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Hour).Unix(), k.ID,
+	); err != nil {
+		t.Fatalf("expire key: %v", err)
+	}
+	if _, err := s.ResolveInviteKey(raw); err != ErrExpired {
+		t.Errorf("expected ErrExpired for an expired key, got %v", err)
+	}
+}
+
+func TestListInviteKeys_IncludesExpiry(t *testing.T) {
+	s := openTestStore(t)
+	alice, _, _ := s.UpsertGoogleUser("alice@example.com", "A", "1")
+	k, _, err := s.MintInviteKey("repo-a", alice.ID, "team")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	keys, err := s.ListInviteKeys("repo-a")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(keys))
+	}
+	if keys[0].ExpiresAt.Unix() != k.ExpiresAt.Unix() {
+		t.Errorf("expected ExpiresAt %v, got %v", k.ExpiresAt, keys[0].ExpiresAt)
+	}
+}
+
+func TestMigration_ExistingInviteKeysExpire(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+
+	// Simulate a database created before invite-key expiry existed:
+	// repo_invite_keys without an expires_at column.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE repo_invite_keys (
+    id          TEXT PRIMARY KEY,
+    repo_id     TEXT NOT NULL,
+    key_hash    TEXT UNIQUE NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);`); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	legacyRaw := InviteKeyPrefix + "legacy-key-value"
+	if _, err := raw.Exec(
+		`INSERT INTO repo_invite_keys (id, repo_id, key_hash, label, created_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"key-1", "repo-a", hashToken(legacyRaw), "old", "user-1", time.Now().Unix(),
+	); err != nil {
+		t.Fatalf("insert legacy key: %v", err)
+	}
+	raw.Close()
+
+	// Opening through userstore must migrate the schema and expire the old key.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open (migration): %v", err)
+	}
+	if _, err := s.ResolveInviteKey(legacyRaw); err != ErrExpired {
+		t.Errorf("expected legacy invite key to be expired, got %v", err)
+	}
+	s.Close()
+
+	// Re-opening must be safe (the ALTER tolerates the column already existing).
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("re-open after migration: %v", err)
+	}
+	s2.Close()
 }

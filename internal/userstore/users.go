@@ -23,6 +23,13 @@ type User struct {
 // ErrNotFound is returned when a lookup misses.
 var ErrNotFound = errors.New("userstore: not found")
 
+// ErrLastOwner is returned when removing a member would leave a repo with no
+// owner.
+var ErrLastOwner = errors.New("userstore: cannot remove the last owner")
+
+// ErrExpired is returned when an invite key exists but has passed its expiry.
+var ErrExpired = errors.New("userstore: invite key expired")
+
 // UpsertGoogleUser creates a user keyed by Google sub/email or updates the
 // existing row's name and last_login_at. Returns the resulting User and
 // whether this was a fresh insert (the very first sign-in for this email).

@@ -6,6 +6,7 @@ package userstore
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,7 +46,8 @@ CREATE TABLE IF NOT EXISTS repo_invite_keys (
     key_hash    TEXT UNIQUE NOT NULL,
     label       TEXT NOT NULL DEFAULT '',
     created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_invite_keys_repo ON repo_invite_keys(repo_id);
 `
@@ -69,7 +71,25 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("userstore: migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("userstore: migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate applies schema changes that CREATE TABLE IF NOT EXISTS cannot make to
+// databases created by older versions of Contexo.
+func migrate(db *sql.DB) error {
+	// expires_at was added to repo_invite_keys after the table first shipped.
+	// On databases that predate it, add the column; existing rows default to
+	// 0 (the Unix epoch), i.e. already expired. The ALTER errors once the
+	// column exists, which is expected on every subsequent open.
+	_, err := db.Exec(`ALTER TABLE repo_invite_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("add repo_invite_keys.expires_at: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database.

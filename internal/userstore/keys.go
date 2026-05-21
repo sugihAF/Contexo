@@ -14,6 +14,9 @@ import (
 // InviteKeyPrefix marks raw repo invite keys (separates them from PATs at a glance).
 const InviteKeyPrefix = "ctxi_"
 
+// inviteKeyTTL is how long a freshly minted invite key stays valid.
+const inviteKeyTTL = 7 * 24 * time.Hour
+
 // InviteKey is a stored row (no raw secret).
 type InviteKey struct {
 	ID        string
@@ -21,6 +24,7 @@ type InviteKey struct {
 	Label     string
 	CreatedBy string
 	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // MintInviteKey creates a new invite key for repo, returning the row and the
@@ -34,10 +38,11 @@ func (s *Store) MintInviteKey(repoID, createdBy, label string) (*InviteKey, stri
 	hash := hashToken(rawStr)
 	id := uuid.NewString()
 	now := time.Now().UTC()
+	expiresAt := now.Add(inviteKeyTTL)
 
 	_, err := s.db.Exec(
-		`INSERT INTO repo_invite_keys (id, repo_id, key_hash, label, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, repoID, hash, label, createdBy, now.Unix(),
+		`INSERT INTO repo_invite_keys (id, repo_id, key_hash, label, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, repoID, hash, label, createdBy, now.Unix(), expiresAt.Unix(),
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("userstore: insert invite key: %w", err)
@@ -48,22 +53,30 @@ func (s *Store) MintInviteKey(repoID, createdBy, label string) (*InviteKey, stri
 		Label:     label,
 		CreatedBy: createdBy,
 		CreatedAt: now,
+		ExpiresAt: expiresAt,
 	}, rawStr, nil
 }
 
-// ResolveInviteKey returns the repo_id for a raw invite key, or ErrNotFound.
+// ResolveInviteKey returns the repo_id for a raw invite key. It returns
+// ErrNotFound if the key is unknown, or ErrExpired if it has passed its TTL.
 func (s *Store) ResolveInviteKey(raw string) (string, error) {
 	hash := hashToken(raw)
-	var repoID string
+	var (
+		repoID    string
+		expiresAt int64
+	)
 	err := s.db.QueryRow(
-		`SELECT repo_id FROM repo_invite_keys WHERE key_hash = ?`,
+		`SELECT repo_id, expires_at FROM repo_invite_keys WHERE key_hash = ?`,
 		hash,
-	).Scan(&repoID)
+	).Scan(&repoID, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrNotFound
 		}
 		return "", fmt.Errorf("userstore: lookup invite key: %w", err)
+	}
+	if expiresAt <= time.Now().Unix() {
+		return "", ErrExpired
 	}
 	return repoID, nil
 }
@@ -71,7 +84,7 @@ func (s *Store) ResolveInviteKey(raw string) (string, error) {
 // ListInviteKeys returns every invite key for a repo (no raw values).
 func (s *Store) ListInviteKeys(repoID string) ([]InviteKey, error) {
 	rows, err := s.db.Query(
-		`SELECT id, repo_id, label, created_by, created_at FROM repo_invite_keys WHERE repo_id = ? ORDER BY created_at DESC`,
+		`SELECT id, repo_id, label, created_by, created_at, expires_at FROM repo_invite_keys WHERE repo_id = ? ORDER BY created_at DESC`,
 		repoID,
 	)
 	if err != nil {
@@ -83,11 +96,13 @@ func (s *Store) ListInviteKeys(repoID string) ([]InviteKey, error) {
 		var (
 			k         InviteKey
 			createdAt int64
+			expiresAt int64
 		)
-		if err := rows.Scan(&k.ID, &k.RepoID, &k.Label, &k.CreatedBy, &createdAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.RepoID, &k.Label, &k.CreatedBy, &createdAt, &expiresAt); err != nil {
 			return nil, fmt.Errorf("userstore: scan invite key: %w", err)
 		}
 		k.CreatedAt = time.Unix(createdAt, 0).UTC()
+		k.ExpiresAt = time.Unix(expiresAt, 0).UTC()
 		out = append(out, k)
 	}
 	return out, rows.Err()

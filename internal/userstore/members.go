@@ -20,6 +20,9 @@ type Membership struct {
 	UserID  string
 	Role    string
 	AddedAt time.Time
+	// Email is populated by ListRepoMembers (joined from the users table).
+	// Queries that do not join users leave it empty.
+	Email string
 }
 
 // AddMember adds userID to repoID with the given role (idempotent). If a row
@@ -92,10 +95,15 @@ func (s *Store) ListUserRepos(userID string) ([]Membership, error) {
 	return out, rows.Err()
 }
 
-// ListRepoMembers returns every member of a repo.
+// ListRepoMembers returns every member of a repo, with each member's email
+// joined in from the users table.
 func (s *Store) ListRepoMembers(repoID string) ([]Membership, error) {
 	rows, err := s.db.Query(
-		`SELECT repo_id, user_id, role, added_at FROM repo_members WHERE repo_id = ? ORDER BY added_at ASC`,
+		`SELECT m.repo_id, m.user_id, m.role, m.added_at, u.email
+		   FROM repo_members m
+		   JOIN users u ON u.id = m.user_id
+		  WHERE m.repo_id = ?
+		  ORDER BY m.added_at ASC`,
 		repoID,
 	)
 	if err != nil {
@@ -108,7 +116,7 @@ func (s *Store) ListRepoMembers(repoID string) ([]Membership, error) {
 			m       Membership
 			addedAt int64
 		)
-		if err := rows.Scan(&m.RepoID, &m.UserID, &m.Role, &addedAt); err != nil {
+		if err := rows.Scan(&m.RepoID, &m.UserID, &m.Role, &addedAt, &m.Email); err != nil {
 			return nil, fmt.Errorf("userstore: scan membership: %w", err)
 		}
 		m.AddedAt = time.Unix(addedAt, 0).UTC()
@@ -128,4 +136,33 @@ func (s *Store) RepoHasOwner(repoID string) (bool, error) {
 		return false, fmt.Errorf("userstore: count owners: %w", err)
 	}
 	return n > 0, nil
+}
+
+// RemoveMember removes userID from repoID. It returns ErrNotFound if the user
+// is not a member, or ErrLastOwner if removing them would leave the repo with
+// no owner.
+func (s *Store) RemoveMember(repoID, userID string) error {
+	role, err := s.GetRole(repoID, userID)
+	if err != nil {
+		return err // ErrNotFound when the user is not a member
+	}
+	if role == RoleOwner {
+		var owners int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM repo_members WHERE repo_id = ? AND role = ?`,
+			repoID, RoleOwner,
+		).Scan(&owners); err != nil {
+			return fmt.Errorf("userstore: count owners: %w", err)
+		}
+		if owners <= 1 {
+			return ErrLastOwner
+		}
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM repo_members WHERE repo_id = ? AND user_id = ?`,
+		repoID, userID,
+	); err != nil {
+		return fmt.Errorf("userstore: remove member: %w", err)
+	}
+	return nil
 }

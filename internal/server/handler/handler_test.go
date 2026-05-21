@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -73,6 +74,8 @@ func setupRig(t *testing.T) *testRig {
 	v1.POST("/repos", h.CreateRepo)
 	v1.POST("/repos/join", h.JoinRepo)
 	v1.POST("/repos/:id/invite-keys", h.MintInviteKey)
+	v1.GET("/repos/:id/members", h.ListMembers)
+	v1.DELETE("/repos/:id/members/:userId", h.RemoveMember)
 	v1.POST("/pats", h.CreatePAT)
 	v1.GET("/pats", h.ListPATs)
 
@@ -272,4 +275,121 @@ func signIn(t *testing.T, r http.Handler, idToken string) string {
 		t.Fatalf("decode: %v", err)
 	}
 	return resp.AccessToken
+}
+
+func TestE2E_ListMembers(t *testing.T) {
+	rig := setupRig(t)
+	aliceToken := signIn(t, rig.router, "alice-token")
+	w := doJSON(t, rig.router, "POST", "/v1/repos", aliceToken, map[string]string{"id": "team-repo"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create repo: %d %s", w.Code, w.Body.String())
+	}
+
+	w = doJSON(t, rig.router, "GET", "/v1/repos/team-repo/members", aliceToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list members: %d %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("alice@example.com")) ||
+		!bytes.Contains(w.Body.Bytes(), []byte("owner")) {
+		t.Errorf("expected alice as owner in members list, got %s", w.Body.String())
+	}
+}
+
+func TestE2E_RemoveMember(t *testing.T) {
+	rig := setupRig(t)
+	aliceToken := signIn(t, rig.router, "alice-token")
+	doJSON(t, rig.router, "POST", "/v1/repos", aliceToken, map[string]string{"id": "team-repo"})
+
+	// Alice mints a key; Bob joins as a member.
+	w := doJSON(t, rig.router, "POST", "/v1/repos/team-repo/invite-keys", aliceToken, map[string]string{"label": "for-bob"})
+	var mint struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &mint)
+	bobToken := signIn(t, rig.router, "bob-token")
+	w = doJSON(t, rig.router, "POST", "/v1/repos/join", bobToken, map[string]string{"key": mint.Token})
+	if w.Code != http.StatusOK {
+		t.Fatalf("bob join: %d %s", w.Code, w.Body.String())
+	}
+
+	// Resolve user ids from the members list.
+	w = doJSON(t, rig.router, "GET", "/v1/repos/team-repo/members", aliceToken, nil)
+	var members struct {
+		Members []struct {
+			UserID string `json:"user_id"`
+			Email  string `json:"email"`
+		} `json:"members"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &members)
+	var aliceID, bobID string
+	for _, m := range members.Members {
+		switch m.Email {
+		case "alice@example.com":
+			aliceID = m.UserID
+		case "bob@example.com":
+			bobID = m.UserID
+		}
+	}
+	if aliceID == "" || bobID == "" {
+		t.Fatalf("could not resolve user ids from %s", w.Body.String())
+	}
+
+	// A regular member cannot remove anyone.
+	w = doJSON(t, rig.router, "DELETE", "/v1/repos/team-repo/members/"+bobID, bobToken, nil)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("member removing -> want 403, got %d", w.Code)
+	}
+
+	// The owner removes Bob.
+	w = doJSON(t, rig.router, "DELETE", "/v1/repos/team-repo/members/"+bobID, aliceToken, nil)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("owner remove -> want 204, got %d %s", w.Code, w.Body.String())
+	}
+
+	// Bob no longer sees the repo.
+	w = doJSON(t, rig.router, "GET", "/v1/repos", bobToken, nil)
+	if bytes.Contains(w.Body.Bytes(), []byte("team-repo")) {
+		t.Error("bob still sees team-repo after removal")
+	}
+
+	// The last owner cannot be removed.
+	w = doJSON(t, rig.router, "DELETE", "/v1/repos/team-repo/members/"+aliceID, aliceToken, nil)
+	if w.Code != http.StatusConflict {
+		t.Errorf("last-owner removal -> want 409, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestE2E_InviteKeyExpiry(t *testing.T) {
+	rig := setupRig(t)
+	aliceToken := signIn(t, rig.router, "alice-token")
+	doJSON(t, rig.router, "POST", "/v1/repos", aliceToken, map[string]string{"id": "team-repo"})
+
+	// Minting returns a future expires_at.
+	w := doJSON(t, rig.router, "POST", "/v1/repos/team-repo/invite-keys", aliceToken, map[string]string{"label": "x"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var mint struct {
+		Token string `json:"token"`
+		Key   struct {
+			ExpiresAt int64 `json:"expires_at"`
+		} `json:"key"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &mint)
+	if mint.Key.ExpiresAt <= time.Now().Unix() {
+		t.Errorf("expected a future expires_at, got %d", mint.Key.ExpiresAt)
+	}
+
+	// Force the key to expire; a join must then be rejected with 410 Gone.
+	if _, err := rig.users.DB().Exec(
+		`UPDATE repo_invite_keys SET expires_at = ? WHERE repo_id = ?`,
+		time.Now().Add(-time.Hour).Unix(), "team-repo",
+	); err != nil {
+		t.Fatalf("expire key: %v", err)
+	}
+	bobToken := signIn(t, rig.router, "bob-token")
+	w = doJSON(t, rig.router, "POST", "/v1/repos/join", bobToken, map[string]string{"key": mint.Token})
+	if w.Code != http.StatusGone {
+		t.Errorf("expired-key join -> want 410, got %d %s", w.Code, w.Body.String())
+	}
 }

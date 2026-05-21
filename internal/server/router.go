@@ -52,5 +52,8 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver) *gin.Engine {
 	v1.GET("/repos/:id/invite-keys", h.ListInviteKeys)
 	v1.DELETE("/repos/:id/invite-keys/:keyId", h.DeleteInviteKey)
 
+	v1.GET("/repos/:id/members", h.ListMembers)
+	v1.DELETE("/repos/:id/members/:userId", h.RemoveMember)
+
 	return r
 }

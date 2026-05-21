@@ -14,6 +14,7 @@ type inviteKeyBody struct {
 	ID        string `json:"id"`
 	Label     string `json:"label"`
 	CreatedAt int64  `json:"created_at"`
+	ExpiresAt int64  `json:"expires_at"`
 }
 
 type mintInviteRequest struct {
@@ -109,11 +110,14 @@ func (h *Handler) JoinRepo(c *gin.Context) {
 	}
 	repoID, err := h.users.ResolveInviteKey(req.Key)
 	if err != nil {
-		if errors.Is(err, userstore.ErrNotFound) {
+		switch {
+		case errors.Is(err, userstore.ErrNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "invite key not recognized"})
-			return
+		case errors.Is(err, userstore.ErrExpired):
+			c.JSON(http.StatusGone, gin.H{"error": "invite key expired"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if err := h.users.AddMember(repoID, uid, userstore.RoleMember); err != nil {
@@ -129,5 +133,6 @@ func toInviteKeyBody(k userstore.InviteKey) inviteKeyBody {
 		ID:        k.ID,
 		Label:     k.Label,
 		CreatedAt: k.CreatedAt.Unix(),
+		ExpiresAt: k.ExpiresAt.Unix(),
 	}
 }
