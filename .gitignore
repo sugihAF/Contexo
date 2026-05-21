@@ -39,3 +39,6 @@ bin/
 
 # Contexo local knowledge (synced via ctx push/pull, not git)
 .contexo/
+
+# Local working docs
+docs/
