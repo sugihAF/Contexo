@@ -85,5 +85,11 @@ func (h *Handler) Evolution(c *gin.Context) {
 		entries = append(entries, EvolutionEntry{Commit: commit, Diff: d})
 	}
 
+	if c.Query("blame") == "true" {
+		for i := range entries {
+			_ = annotateBlame(h, repoID, path, &entries[i].Diff)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"path": path, "entries": entries})
 }

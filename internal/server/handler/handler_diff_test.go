@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -195,6 +196,61 @@ func TestEvolution_PathMissing(t *testing.T) {
 	w := get(t, r, "/v1/repos/empty/evolution/missing.md")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDiff_BlameAnnotatesSections(t *testing.T) {
+	store, r := minimalRig(t)
+	if err := store.Init("repo-blame"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+
+	// Commit 1: "Alice" introduces ## Decision
+	page1 := "---\nslug: x\ntype: concept\n---\n## Decision\nWe chose Stripe Billing.\n"
+	sha1, _, err := store.Write("repo-blame", "wiki/concepts/x.md",
+		[]byte(page1), "Alice", "alice@example.com", "initial decision", "")
+	if err != nil || sha1 == "" {
+		t.Fatalf("seed v1: err=%v sha=%q", err, sha1)
+	}
+
+	// Commit 2: "Bob" adds ## Refund handling
+	page2 := page1 + "\n## Refund handling\nIssue refunds via Stripe.\n"
+	sha2, _, err := store.Write("repo-blame", "wiki/concepts/x.md",
+		[]byte(page2), "Bob", "bob@example.com", "add refunds", sha1)
+	if err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+
+	// Commit 3: "Alice" modifies ## Decision
+	page3 := strings.Replace(page2, "We chose Stripe Billing.", "We chose Stripe Billing + metered.", 1)
+	_, _, err = store.Write("repo-blame", "wiki/concepts/x.md",
+		[]byte(page3), "Alice", "alice@example.com", "expand decision", sha2)
+	if err != nil {
+		t.Fatalf("seed v3: %v", err)
+	}
+
+	// Diff parent..head (the v2→v3 hop, which modified Decision). Blame should
+	// attribute Decision to Alice (commit 1, who introduced the heading) and
+	// Refund handling to Bob (commit 2, who introduced that heading).
+	w := get(t, r, "/v1/repos/repo-blame/diff/wiki/concepts/x.md?blame=true")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var d diff.SectionDiff
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, s := range d.Sections {
+		switch s.Heading {
+		case "## Decision":
+			if s.IntroducedBy == nil || s.IntroducedBy.Author != "Alice" {
+				t.Errorf("## Decision blame: got %+v, want Alice", s.IntroducedBy)
+			}
+		case "## Refund handling":
+			if s.IntroducedBy == nil || s.IntroducedBy.Author != "Bob" {
+				t.Errorf("## Refund handling blame: got %+v, want Bob", s.IntroducedBy)
+			}
+		}
 	}
 }
 

@@ -89,7 +89,60 @@ func (h *Handler) Diff(c *gin.Context) {
 	}
 
 	d := diff.PageSections(fromBytes, toBytes, fromSHA, toSHA)
+
+	if c.Query("blame") == "true" {
+		// Blame is best-effort; silently skip on failure rather than fail the
+		// whole diff response. The base SectionDiff is still useful.
+		_ = annotateBlame(h, repoID, path, &d)
+	}
+
 	c.JSON(http.StatusOK, d)
+}
+
+// annotateBlame walks the page's commit history oldest→newest and records the
+// first commit each ## heading appeared in. Each SectionChange whose heading
+// matches a recorded commit gets its IntroducedBy field populated.
+//
+// Walks up to a hard cap (200) for performance bound on pathological histories.
+// Failures to read individual revisions are skipped, not propagated.
+func annotateBlame(h *Handler, repoID, path string, d *diff.SectionDiff) error {
+	commits, err := h.store.LogPath(repoID, path, 200)
+	if err != nil {
+		return err
+	}
+	headingFirst := map[string]*diff.Commit{}
+	// commits are newest-first; walk reversed so older commits set the seen flag.
+	for i := len(commits) - 1; i >= 0; i-- {
+		commit := commits[i]
+		bytes, err := h.store.ReadAtSha(repoID, path, commit.SHA)
+		if err != nil {
+			continue
+		}
+		for _, heading := range diff.ParseHeadings(bytes) {
+			if _, seen := headingFirst[heading]; seen {
+				continue
+			}
+			headingFirst[heading] = &diff.Commit{
+				SHA: commit.SHA, Author: commit.Author, Email: commit.Email,
+				Time: commit.Time, Message: commit.Message,
+			}
+		}
+	}
+	for i := range d.Sections {
+		// Renamed sections were introduced under their *old* heading; prefer
+		// the old heading's blame if known, otherwise fall back to the new.
+		key := d.Sections[i].Heading
+		if d.Sections[i].Status == diff.StatusRenamed && d.Sections[i].OldHeading != "" {
+			if c, ok := headingFirst[d.Sections[i].OldHeading]; ok {
+				d.Sections[i].IntroducedBy = c
+				continue
+			}
+		}
+		if c, ok := headingFirst[key]; ok {
+			d.Sections[i].IntroducedBy = c
+		}
+	}
+	return nil
 }
 
 // readAtShaTolerant returns (bytes, pathExisted, err). On ErrPathNotAtSHA it

@@ -218,6 +218,27 @@ func TestPageSections_EmptyFromTreatedAsBlank(t *testing.T) {
 	}
 }
 
+func TestParseHeadings(t *testing.T) {
+	page := mustPage(t, fmBasic(), "intro\n\n## Decision\nfoo\n\n## Why\nbar\n\n## Refund\nbaz\n")
+	headings := ParseHeadings(page)
+	want := []string{"## Decision", "## Why", "## Refund"}
+	if len(headings) != len(want) {
+		t.Fatalf("got %d headings, want %d: %v", len(headings), len(want), headings)
+	}
+	for i, h := range want {
+		if headings[i] != h {
+			t.Errorf("headings[%d] = %q, want %q", i, headings[i], h)
+		}
+	}
+}
+
+func TestParseHeadings_MalformedFrontmatter(t *testing.T) {
+	headings := ParseHeadings([]byte("no frontmatter here\n## Decision\n"))
+	if headings != nil {
+		t.Errorf("expected nil on malformed frontmatter, got %v", headings)
+	}
+}
+
 func TestPageSections_PreambleModified(t *testing.T) {
 	from := mustPage(t, fmBasic(), "intro old\n\n## Decision\nfoo\n")
 	to := mustPage(t, fmBasic(), "intro new\n\n## Decision\nfoo\n")

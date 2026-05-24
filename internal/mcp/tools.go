@@ -122,6 +122,7 @@ func (s *Server) ListTools() []Tool {
 					"slug":  map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
 					"type":  map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
 					"limit": map[string]interface{}{"type": "integer", "description": "Max commits in the evolution (default 20)"},
+					"blame": map[string]interface{}{"type": "boolean", "description": "Annotate each section in each commit's diff with the commit that originally introduced its heading"},
 				},
 			},
 		},
@@ -131,16 +132,19 @@ func (s *Server) ListTools() []Tool {
 				"editing a page when you want to see exactly what changed in the most recent edit (defaults " +
 				"to parent..head for the page) or when comparing two specific shas from ctx_history. The " +
 				"diff is section-aware: frontmatter changes show as old→new per field, and each ## section " +
-				"is reported as added/removed/modified/unchanged. Agents make better edits when they see " +
-				"the page's trajectory, not just the snapshot.",
+				"is reported as added/removed/modified/unchanged/renamed. Pass blame=true to annotate each " +
+				"section with the commit that originally introduced its heading — useful for 'who wrote this " +
+				"section?' questions. Agents make better edits when they see the page's trajectory, not " +
+				"just the snapshot.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"slug"},
 				"properties": map[string]interface{}{
-					"slug": map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
-					"from": map[string]interface{}{"type": "string", "description": "Old sha (default: parent of `to`)"},
-					"to":   map[string]interface{}{"type": "string", "description": "New sha (default: HEAD-for-this-path)"},
-					"type": map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
+					"slug":  map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
+					"from":  map[string]interface{}{"type": "string", "description": "Old sha (default: parent of `to`)"},
+					"to":    map[string]interface{}{"type": "string", "description": "New sha (default: HEAD-for-this-path)"},
+					"type":  map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
+					"blame": map[string]interface{}{"type": "boolean", "description": "Annotate each section with the commit that originally introduced its heading (best-effort, adds latency on long histories)"},
 				},
 			},
 		},
@@ -801,6 +805,7 @@ func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
 	typ, _ := args["type"].(string)
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
+	blame, _ := args["blame"].(bool)
 
 	root := s.rootDir()
 	cfg, _ := config.Load(root)
@@ -813,7 +818,7 @@ func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
 		return errorResult("ctx_diff: " + err.Error())
 	}
 	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	d, err := client.PageDiff(cfg.RepoID, path, from, to)
+	d, err := client.PageDiff(cfg.RepoID, path, from, to, blame)
 	if err != nil {
 		return errorResult("ctx_diff: " + err.Error())
 	}
@@ -834,6 +839,7 @@ func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
 func (s *Server) toolEvolution(args map[string]interface{}) *ToolResult {
 	slug, _ := args["slug"].(string)
 	typ, _ := args["type"].(string)
+	blame, _ := args["blame"].(bool)
 	limit := 0
 	switch v := args["limit"].(type) {
 	case float64:
@@ -853,7 +859,7 @@ func (s *Server) toolEvolution(args map[string]interface{}) *ToolResult {
 		return errorResult("ctx_evolution: " + err.Error())
 	}
 	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	entries, err := client.PageEvolution(cfg.RepoID, path, limit)
+	entries, err := client.PageEvolution(cfg.RepoID, path, limit, blame)
 	if err != nil {
 		return errorResult("ctx_evolution: " + err.Error())
 	}

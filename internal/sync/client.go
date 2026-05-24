@@ -275,11 +275,19 @@ func (c *Client) PageHistory(repoID, filePath string, limit int) ([]Commit, erro
 // PageEvolution returns the full evolution for filePath: up to `limit` recent
 // commits touching the path, each paired with the section-aware diff against
 // its immediate prior commit. One round-trip replaces (history + N diffs)
-// when the caller wants the whole trajectory.
-func (c *Client) PageEvolution(repoID, filePath string, limit int) ([]EvolutionEntry, error) {
+// when the caller wants the whole trajectory. blame populates each diff's
+// section IntroducedBy field (best-effort, may add latency on long histories).
+func (c *Client) PageEvolution(repoID, filePath string, limit int, blame bool) ([]EvolutionEntry, error) {
 	u := fmt.Sprintf("%s/v1/repos/%s/evolution/%s", c.baseURL, repoID, escapePath(filePath))
+	q := url.Values{}
 	if limit > 0 {
-		u += fmt.Sprintf("?limit=%d", limit)
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if blame {
+		q.Set("blame", "true")
+	}
+	if encoded := q.Encode(); encoded != "" {
+		u += "?" + encoded
 	}
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -304,8 +312,9 @@ func (c *Client) PageEvolution(repoID, filePath string, limit int) ([]EvolutionE
 
 // PageDiff returns a structured diff of filePath between two commits. Empty
 // from/to defer to the server's defaults (to = HEAD-for-this-path, from =
-// parent of to).
-func (c *Client) PageDiff(repoID, filePath, from, to string) (*diff.SectionDiff, error) {
+// parent of to). When blame is true, each section in the result carries an
+// IntroducedBy field pointing at the commit where its heading first appeared.
+func (c *Client) PageDiff(repoID, filePath, from, to string, blame bool) (*diff.SectionDiff, error) {
 	u := fmt.Sprintf("%s/v1/repos/%s/diff/%s", c.baseURL, repoID, escapePath(filePath))
 	q := url.Values{}
 	if from != "" {
@@ -313,6 +322,9 @@ func (c *Client) PageDiff(repoID, filePath, from, to string) (*diff.SectionDiff,
 	}
 	if to != "" {
 		q.Set("to", to)
+	}
+	if blame {
+		q.Set("blame", "true")
 	}
 	if encoded := q.Encode(); encoded != "" {
 		u += "?" + encoded

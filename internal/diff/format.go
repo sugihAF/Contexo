@@ -127,23 +127,38 @@ func writeFrontmatterField(sb *strings.Builder, prefix, field string, v any) {
 func writeSectionSummary(sb *strings.Builder, s SectionChange) {
 	switch s.Status {
 	case StatusUnchanged:
-		fmt.Fprintf(sb, "  = %s\n", s.Heading)
+		fmt.Fprintf(sb, "  = %s%s\n", s.Heading, blameSuffix(s.IntroducedBy))
 	case StatusAdded:
-		fmt.Fprintf(sb, "  + %s (%d lines added)\n", s.Heading, countLines(s.To))
+		fmt.Fprintf(sb, "  + %s (%d lines added)%s\n", s.Heading, countLines(s.To), blameSuffix(s.IntroducedBy))
 	case StatusRemoved:
 		fmt.Fprintf(sb, "  - %s (%d lines removed)\n", s.Heading, countLines(s.From))
 	case StatusModified:
 		n := countChangedLines(s.LineDiff)
-		fmt.Fprintf(sb, "  ~ %s (%d line%s changed)\n", s.Heading, n, pluralS(n))
+		fmt.Fprintf(sb, "  ~ %s (%d line%s changed)%s\n", s.Heading, n, pluralS(n), blameSuffix(s.IntroducedBy))
 	case StatusRenamed:
 		if s.LineDiff != "" {
 			n := countChangedLines(s.LineDiff)
-			fmt.Fprintf(sb, "  ~> %s  (renamed from %q, %d line%s changed)\n",
-				s.Heading, s.OldHeading, n, pluralS(n))
+			fmt.Fprintf(sb, "  ~> %s  (renamed from %q, %d line%s changed)%s\n",
+				s.Heading, s.OldHeading, n, pluralS(n), blameSuffix(s.IntroducedBy))
 		} else {
-			fmt.Fprintf(sb, "  ~> %s  (renamed from %q)\n", s.Heading, s.OldHeading)
+			fmt.Fprintf(sb, "  ~> %s  (renamed from %q)%s\n",
+				s.Heading, s.OldHeading, blameSuffix(s.IntroducedBy))
 		}
 	}
+}
+
+// blameSuffix returns "" when no blame info is present, otherwise a
+// " — introduced by <author> at <sha>" suffix. Kept on a single line so the
+// section summary stays compact.
+func blameSuffix(c *Commit) string {
+	if c == nil {
+		return ""
+	}
+	short := c.SHA
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	return fmt.Sprintf(" — introduced by %s at %s", c.Author, short)
 }
 
 func writePreamble(sb *strings.Builder, p *SectionChange) {

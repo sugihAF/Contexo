@@ -62,14 +62,46 @@ type FrontmatterFieldChange struct {
 
 // SectionChange is one ## section's diff entry. Status determines which of
 // From/To/LineDiff/OldHeading are populated. OldHeading is set only on
-// StatusRenamed and carries the section's previous heading.
+// StatusRenamed and carries the section's previous heading. IntroducedBy is
+// set only when blame annotation is requested by the caller (e.g.
+// ?blame=true on the HTTP endpoint) — it points to the earliest commit in
+// the page's history where this section heading appeared.
 type SectionChange struct {
-	Heading    string `json:"heading"`
-	OldHeading string `json:"old_heading,omitempty"`
-	Status     string `json:"status"`
-	From       string `json:"from,omitempty"`
-	To         string `json:"to,omitempty"`
-	LineDiff   string `json:"line_diff,omitempty"`
+	Heading      string  `json:"heading"`
+	OldHeading   string  `json:"old_heading,omitempty"`
+	Status       string  `json:"status"`
+	From         string  `json:"from,omitempty"`
+	To           string  `json:"to,omitempty"`
+	LineDiff     string  `json:"line_diff,omitempty"`
+	IntroducedBy *Commit `json:"introduced_by,omitempty"`
+}
+
+// Commit is a minimal commit-metadata shape used by the diff package for
+// blame annotation. Mirrors gitstore.CommitMeta on the wire so the JSON
+// shape is stable across packages.
+type Commit struct {
+	SHA     string    `json:"sha"`
+	Author  string    `json:"author"`
+	Email   string    `json:"email"`
+	Time    time.Time `json:"time"`
+	Message string    `json:"message"`
+}
+
+// ParseHeadings returns the ## headings present in the page bytes in
+// occurrence order. Used by blame walks where the caller only needs the
+// heading set per revision (not section bodies). Pages with malformed or
+// missing frontmatter return nil.
+func ParseHeadings(data []byte) []string {
+	_, body, ok := splitFrontmatter(data)
+	if !ok {
+		return nil
+	}
+	_, sections := parseSections(body)
+	out := make([]string, len(sections))
+	for i, s := range sections {
+		out[i] = s.heading
+	}
+	return out
 }
 
 // PageSections computes the structured diff between two page byte slices.

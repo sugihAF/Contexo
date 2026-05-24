@@ -63,12 +63,17 @@ per-section diff inline, or `--no-preview` to skip the round-trip entirely.
 ```
 ctx history <slug> [--type=...] [--limit=N]    Commit timeline for one page
 ctx diff <slug> [--from=<sha>] [--to=<sha>]    Section-aware diff between two
-                [--type=...] [--json]          versions (defaults to parent..head)
+                [--type=...] [--json] [--blame]versions (defaults to parent..head)
 ctx diff <slug> --local                        Diff your local copy vs server HEAD
                                                (what `ctx push` would change)
 ctx evolution <slug> [--limit=N] [--show-diff] Full trajectory in one call: every
                      [--type=...] [--json]     commit + its per-commit diff
+                     [--blame]
 ```
+
+`--blame` annotates each section with the commit that originally introduced
+its heading (works on both `ctx diff` and `ctx evolution`) — useful for
+"who wrote this section?" questions.
 
 **Agent integration**
 

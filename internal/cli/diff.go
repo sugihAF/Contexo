@@ -16,7 +16,7 @@ import (
 
 func newDiffCmd() *cobra.Command {
 	var typ, from, to string
-	var asJSON, local bool
+	var asJSON, local, blame bool
 	cmd := &cobra.Command{
 		Use:   "diff <slug>",
 		Short: "Show the structured diff between two versions of a page",
@@ -55,12 +55,12 @@ func newDiffCmd() *cobra.Command {
 			var d *diff.SectionDiff
 			switch {
 			case local:
-				if from != "" || to != "" {
-					return fmt.Errorf("diff: --local is mutually exclusive with --from/--to")
+				if from != "" || to != "" || blame {
+					return fmt.Errorf("diff: --local is mutually exclusive with --from/--to/--blame")
 				}
 				d, err = diffLocalVsServer(client, cfg.RepoID, root, path)
 			default:
-				d, err = client.PageDiff(cfg.RepoID, path, from, to)
+				d, err = client.PageDiff(cfg.RepoID, path, from, to, blame)
 			}
 			if err != nil {
 				return err
@@ -83,6 +83,7 @@ func newDiffCmd() *cobra.Command {
 	cmd.Flags().StringVar(&to, "to", "", "new sha (default: HEAD-for-this-path)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit raw SectionDiff JSON instead of formatted text")
 	cmd.Flags().BoolVar(&local, "local", false, "diff your local .contexo/ copy against the server's HEAD (what `ctx push` would change)")
+	cmd.Flags().BoolVar(&blame, "blame", false, "annotate each section with the commit that introduced its heading (best-effort; adds latency on long histories)")
 	return cmd
 }
 

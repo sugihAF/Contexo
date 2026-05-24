@@ -15,7 +15,7 @@ import (
 func newEvolutionCmd() *cobra.Command {
 	var typ string
 	var limit int
-	var asJSON, showDiff bool
+	var asJSON, showDiff, blame bool
 	cmd := &cobra.Command{
 		Use:   "evolution <slug>",
 		Short: "Show the full evolution of a page: each commit + what it changed",
@@ -48,7 +48,7 @@ func newEvolutionCmd() *cobra.Command {
 				return fmt.Errorf("evolution: server URL or repo_id not configured")
 			}
 			client := sync.NewClient(serverURL, creds.Bearer())
-			entries, err := client.PageEvolution(cfg.RepoID, path, limit)
+			entries, err := client.PageEvolution(cfg.RepoID, path, limit, blame)
 			if err != nil {
 				return err
 			}
@@ -86,6 +86,7 @@ func newEvolutionCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 20, "max commits in the evolution")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit raw JSON instead of formatted text")
 	cmd.Flags().BoolVar(&showDiff, "show-diff", false, "include the full per-section diff under each commit")
+	cmd.Flags().BoolVar(&blame, "blame", false, "annotate each section with the commit that originally introduced its heading")
 	return cmd
 }
 
