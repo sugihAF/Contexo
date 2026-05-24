@@ -272,6 +272,79 @@ func TestListReposWithMeta(t *testing.T) {
 	}
 }
 
+func TestReadAtSha(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+
+	sha1, _, _ := s.Write("repo", "page.md", []byte("v1\n"), "A", "a@a", "v1", "")
+	sha2, _, _ := s.Write("repo", "page.md", []byte("v2\n"), "A", "a@a", "v2", sha1)
+
+	content, err := s.ReadAtSha("repo", "page.md", sha1)
+	if err != nil {
+		t.Fatalf("ReadAtSha sha1: %v", err)
+	}
+	if string(content) != "v1\n" {
+		t.Errorf("sha1 content: %q", string(content))
+	}
+
+	content, err = s.ReadAtSha("repo", "page.md", sha2)
+	if err != nil {
+		t.Fatalf("ReadAtSha sha2: %v", err)
+	}
+	if string(content) != "v2\n" {
+		t.Errorf("sha2 content: %q", string(content))
+	}
+
+	_, err = s.ReadAtSha("repo", "page.md", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	if !errors.Is(err, ErrUnknownSHA) {
+		t.Errorf("expected ErrUnknownSHA, got %v", err)
+	}
+
+	_, err = s.ReadAtSha("repo", "missing.md", sha1)
+	if !errors.Is(err, ErrPathNotAtSHA) {
+		t.Errorf("expected ErrPathNotAtSHA, got %v", err)
+	}
+}
+
+func TestResolveParentSHAForPath(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+	sha1, _, _ := s.Write("repo", "page.md", []byte("v1\n"), "A", "a@a", "v1", "")
+	sha2, _, _ := s.Write("repo", "page.md", []byte("v2\n"), "A", "a@a", "v2", sha1)
+
+	got, err := s.ResolveParentSHAForPath("repo", "page.md", sha2)
+	if err != nil {
+		t.Fatalf("ResolveParentSHAForPath sha2: %v", err)
+	}
+	if got != sha1 {
+		t.Errorf("parent of sha2: got %q, want sha1=%q", got, sha1)
+	}
+
+	got, err = s.ResolveParentSHAForPath("repo", "page.md", sha1)
+	if err != nil {
+		t.Fatalf("ResolveParentSHAForPath sha1: %v", err)
+	}
+	if got != "" {
+		t.Errorf("parent of sha1 (first version): got %q, want empty", got)
+	}
+}
+
+func TestHeadSHAForPath(t *testing.T) {
+	s := newStore(t)
+	s.Init("repo")
+	if got, _ := s.HeadSHAForPath("repo", "missing.md"); got != "" {
+		t.Errorf("HeadSHAForPath missing: %q", got)
+	}
+	sha1, _, _ := s.Write("repo", "page.md", []byte("v1\n"), "A", "a@a", "v1", "")
+	got, err := s.HeadSHAForPath("repo", "page.md")
+	if err != nil {
+		t.Fatalf("HeadSHAForPath: %v", err)
+	}
+	if got != sha1 {
+		t.Errorf("HeadSHAForPath got %q, want %q", got, sha1)
+	}
+}
+
 func TestSanitizeRepoID(t *testing.T) {
 	cases := map[string]string{
 		"chompchat":            "chompchat",

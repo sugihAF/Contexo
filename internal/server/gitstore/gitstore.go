@@ -148,6 +148,93 @@ func (s *Store) HeadSHA(repoID string) (string, error) {
 	return s.headSHA(s.repoDir(repoID))
 }
 
+// ErrUnknownSHA is returned by ReadAtSha when the given sha doesn't resolve.
+var ErrUnknownSHA = errors.New("gitstore: unknown sha")
+
+// ErrPathNotAtSHA is returned by ReadAtSha when the sha exists but the path
+// does not exist in that commit's tree.
+var ErrPathNotAtSHA = errors.New("gitstore: path not present at sha")
+
+// ResolveParentSHAForPath returns the parent commit sha that touched filePath
+// before `sha`. Returns "" with no error when there is no such parent (i.e.
+// `sha` introduced the file). Returns ErrUnknownSHA if `sha` itself doesn't
+// resolve.
+func (s *Store) ResolveParentSHAForPath(repoID, filePath, sha string) (string, error) {
+	if !s.Exists(repoID) {
+		return "", ErrRepoNotFound
+	}
+	dir := s.repoDir(repoID)
+	out, err := s.git(dir, "log", "-n2", "--format=%H", sha, "--", filePath)
+	if err != nil {
+		if isUnknownRev(out) {
+			return "", ErrUnknownSHA
+		}
+		return "", fmt.Errorf("gitstore: log parent: %w: %s", err, out)
+	}
+	lines := splitLines(out)
+	if len(lines) < 2 {
+		return "", nil
+	}
+	return lines[1], nil
+}
+
+// HeadSHAForPath returns the sha of the most recent commit that touched
+// filePath, or "" if the file has no history in the repo.
+func (s *Store) HeadSHAForPath(repoID, filePath string) (string, error) {
+	if !s.Exists(repoID) {
+		return "", ErrRepoNotFound
+	}
+	dir := s.repoDir(repoID)
+	out, err := s.git(dir, "log", "-n1", "--format=%H", "--", filePath)
+	if err != nil {
+		if isUnknownRev(out) || strings.Contains(out, "does not have any commits") {
+			return "", nil
+		}
+		return "", fmt.Errorf("gitstore: head for path: %w: %s", err, out)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ReadAtSha returns the contents of filePath at the given commit sha.
+// Returns ErrUnknownSHA if the sha doesn't resolve, or ErrPathNotAtSHA if the
+// commit exists but doesn't contain the file.
+func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
+	if !s.Exists(repoID) {
+		return nil, ErrRepoNotFound
+	}
+	if sha == "" {
+		return nil, ErrUnknownSHA
+	}
+	dir := s.repoDir(repoID)
+	// First verify the sha resolves so we can return a clean ErrUnknownSHA.
+	if out, err := s.git(dir, "rev-parse", "--verify", sha+"^{commit}"); err != nil {
+		if isUnknownRev(out) {
+			return nil, ErrUnknownSHA
+		}
+		return nil, fmt.Errorf("gitstore: rev-parse %s: %w: %s", sha, err, out)
+	}
+	cmd := exec.Command("git", "show", sha+":"+filePath)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// `git show` exits non-zero with "exists on disk, but not in" or
+		// "does not exist" when the path is absent at this revision.
+		s := string(out)
+		if strings.Contains(s, "exists on disk, but not in") || strings.Contains(s, "does not exist") {
+			return nil, ErrPathNotAtSHA
+		}
+		return nil, fmt.Errorf("gitstore: show %s:%s: %w: %s", sha, filePath, err, s)
+	}
+	return out, nil
+}
+
+func isUnknownRev(out string) bool {
+	return strings.Contains(out, "unknown revision") ||
+		strings.Contains(out, "ambiguous argument") ||
+		strings.Contains(out, "bad revision") ||
+		strings.Contains(out, "Needed a single revision")
+}
+
 // ChangedSince returns file paths changed since the given sha (or all files at
 // HEAD when since is empty), plus the current HEAD sha.
 func (s *Store) ChangedSince(repoID, since string) ([]string, string, error) {
