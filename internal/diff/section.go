@@ -7,9 +7,10 @@ package diff
 
 import (
 	"bufio"
-	"fmt"
+	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -332,8 +333,21 @@ func stringSetDiff(from, to []string) (added, removed []string) {
 	return added, removed
 }
 
+// scalarsEqual compares two frontmatter scalar values for equality. Uses
+// reflect.DeepEqual as the base, with a special case for time.Time since
+// time values with equivalent instants but different monotonic clock readings
+// or locations would otherwise compare unequal. Falls back to string repr
+// only when the types differ entirely.
 func scalarsEqual(a, b any) bool {
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+	if ta, ok := a.(time.Time); ok {
+		if tb, ok := b.(time.Time); ok {
+			return ta.Equal(tb)
+		}
+	}
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	return false
 }
 
 // diffSections pairs sections from each side by heading identity. Duplicate

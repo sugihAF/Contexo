@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -193,6 +195,48 @@ func TestEvolution_PathMissing(t *testing.T) {
 	w := get(t, r, "/v1/repos/empty/evolution/missing.md")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDiff_PageDeletedBetweenShas(t *testing.T) {
+	// Seed v1 + v2 of a page, then delete it. /diff from=v1&to=<HEAD-of-repo>
+	// (which is the delete commit) should still return a diff, treating the
+	// deleted side as empty so the differ emits clean removals.
+	store, r := minimalRig(t)
+	page := "---\nslug: x\ntype: concept\n---\n## Decision\nbody\n"
+	sha1 := seedPage(t, store, "repo", "wiki/concepts/x.md", page, "")
+
+	// Delete the file via a direct git operation (gitstore doesn't expose a
+	// delete primitive in this package; shell out via exec.Command for the
+	// test setup).
+	deleteFileInRepo(t, store, "repo", "wiki/concepts/x.md")
+	deleteSHA, _ := store.HeadSHA("repo")
+
+	w := get(t, r, "/v1/repos/repo/diff/wiki/concepts/x.md?from="+sha1+"&to="+deleteSHA)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (graceful diff on deleted target), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func deleteFileInRepo(t *testing.T, s *gitstore.Store, repo, path string) {
+	t.Helper()
+	repoDir := filepath.Join(s.Root, repo)
+	full := filepath.Join(repoDir, filepath.FromSlash(path))
+	if err := os.Remove(full); err != nil {
+		t.Fatalf("rm %s: %v", full, err)
+	}
+	mustGitInDir(t, repoDir, "add", "-A")
+	mustGitInDir(t, repoDir, "-c", "user.email=t@e", "-c", "user.name=Tester",
+		"commit", "-m", "delete "+path)
+}
+
+func mustGitInDir(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, string(out))
 	}
 }
 

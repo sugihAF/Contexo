@@ -69,34 +69,50 @@ func (h *Handler) Diff(c *gin.Context) {
 		fromSHA = parent
 	}
 
-	fromBytes, err := h.store.ReadAtSha(repoID, path, fromSHA)
+	// Tolerate page-absent-at-one-side: if a sha exists but the path is
+	// missing in that commit's tree, treat that side as an empty document so
+	// the differ emits clean adds/removes. Only error if BOTH sides lack the
+	// path (the file genuinely never existed in either revision).
+	fromBytes, fromPathOK, err := readAtShaTolerant(h, repoID, path, fromSHA)
 	if err != nil {
-		switch {
-		case errors.Is(err, gitstore.ErrUnknownSHA):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sha: " + fromSHA})
-		case errors.Is(err, gitstore.ErrPathNotAtSHA):
-			c.JSON(http.StatusNotFound, gin.H{"error": "path not present at sha " + fromSHA})
-		case errors.Is(err, gitstore.ErrRepoNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeReadAtShaError(c, err, fromSHA)
 		return
 	}
-
-	toBytes, err := h.store.ReadAtSha(repoID, path, toSHA)
+	toBytes, toPathOK, err := readAtShaTolerant(h, repoID, path, toSHA)
 	if err != nil {
-		switch {
-		case errors.Is(err, gitstore.ErrUnknownSHA):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sha: " + toSHA})
-		case errors.Is(err, gitstore.ErrPathNotAtSHA):
-			c.JSON(http.StatusNotFound, gin.H{"error": "path not present at sha " + toSHA})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeReadAtShaError(c, err, toSHA)
+		return
+	}
+	if !fromPathOK && !toPathOK {
+		c.JSON(http.StatusNotFound, gin.H{"error": "path not present at either sha"})
 		return
 	}
 
 	d := diff.PageSections(fromBytes, toBytes, fromSHA, toSHA)
 	c.JSON(http.StatusOK, d)
+}
+
+// readAtShaTolerant returns (bytes, pathExisted, err). On ErrPathNotAtSHA it
+// returns (nil, false, nil) so the caller can supply an empty document to the
+// differ and get clean adds/removes. Other errors propagate.
+func readAtShaTolerant(h *Handler, repoID, path, sha string) ([]byte, bool, error) {
+	b, err := h.store.ReadAtSha(repoID, path, sha)
+	if err == nil {
+		return b, true, nil
+	}
+	if errors.Is(err, gitstore.ErrPathNotAtSHA) {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+func writeReadAtShaError(c *gin.Context, err error, sha string) {
+	switch {
+	case errors.Is(err, gitstore.ErrUnknownSHA):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sha: " + sha})
+	case errors.Is(err, gitstore.ErrRepoNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
 }

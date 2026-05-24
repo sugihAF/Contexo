@@ -79,6 +79,31 @@ func TestToText_EmptyDiff(t *testing.T) {
 	}
 }
 
+func TestToText_MultilineFrontmatterValue(t *testing.T) {
+	d := SectionDiff{
+		FromSHA: "a1234567",
+		ToSHA:   "b1234567",
+		Frontmatter: FrontmatterDiff{
+			Changed: []FrontmatterFieldChange{
+				{Field: "reasoning_summary", From: "single line", To: "first line\nsecond line\nthird line"},
+			},
+		},
+	}
+	out := d.ToText("p")
+	// Should NOT have raw newlines inside the marker line; instead the value
+	// should be rendered with the YAML-style block marker `|` and continuation
+	// lines indented under the prefix.
+	if strings.Contains(out, "+ first line\nsecond line") {
+		t.Errorf("multiline value should be block-quoted, not dumped inline:\n%s", out)
+	}
+	if !strings.Contains(out, "      + |\n") {
+		t.Errorf("expected block marker `+ |` for the new multiline value:\n%s", out)
+	}
+	if !strings.Contains(out, "second line\n") {
+		t.Errorf("expected continuation line indented:\n%s", out)
+	}
+}
+
 func TestToText_ParseFallback(t *testing.T) {
 	d := SectionDiff{
 		FromSHA:       "a",

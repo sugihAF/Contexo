@@ -63,8 +63,8 @@ func writeFrontmatter(sb *strings.Builder, fm FrontmatterDiff) {
 	sort.Slice(changed, func(i, j int) bool { return changed[i].Field < changed[j].Field })
 	for _, c := range changed {
 		fmt.Fprintf(sb, "  ~ %s\n", c.Field)
-		fmt.Fprintf(sb, "      - %v\n", c.From)
-		fmt.Fprintf(sb, "      + %v\n", c.To)
+		writeFrontmatterValue(sb, "      - ", c.From)
+		writeFrontmatterValue(sb, "      + ", c.To)
 	}
 
 	added := append([]FrontmatterFieldChange{}, fm.Added...)
@@ -75,7 +75,7 @@ func writeFrontmatter(sb *strings.Builder, fm FrontmatterDiff) {
 		return fmt.Sprintf("%v", added[i].To) < fmt.Sprintf("%v", added[j].To)
 	})
 	for _, a := range added {
-		fmt.Fprintf(sb, "  + %s: %v\n", a.Field, a.To)
+		writeFrontmatterField(sb, "  + ", a.Field, a.To)
 	}
 
 	removed := append([]FrontmatterFieldChange{}, fm.Removed...)
@@ -86,7 +86,41 @@ func writeFrontmatter(sb *strings.Builder, fm FrontmatterDiff) {
 		return fmt.Sprintf("%v", removed[i].From) < fmt.Sprintf("%v", removed[j].From)
 	})
 	for _, r := range removed {
-		fmt.Fprintf(sb, "  - %s: %v\n", r.Field, r.From)
+		writeFrontmatterField(sb, "  - ", r.Field, r.From)
+	}
+}
+
+// writeFrontmatterValue renders one value (the right-hand side of a `- ` /
+// `+ ` line in the changed-field block) handling multiline scalars by
+// emitting them as a block-quoted indented continuation instead of dumping
+// embedded newlines into a single-line marker.
+func writeFrontmatterValue(sb *strings.Builder, prefix string, v any) {
+	s := fmt.Sprintf("%v", v)
+	if !strings.Contains(s, "\n") {
+		fmt.Fprintf(sb, "%s%s\n", prefix, s)
+		return
+	}
+	// Multiline: print the marker followed by `|` (mirroring YAML's block
+	// scalar marker) and indent each line beneath.
+	fmt.Fprintf(sb, "%s|\n", prefix)
+	indent := strings.Repeat(" ", len(prefix))
+	for _, line := range strings.Split(s, "\n") {
+		fmt.Fprintf(sb, "%s%s\n", indent, line)
+	}
+}
+
+// writeFrontmatterField renders an added/removed field (the "+/- field: value"
+// shape). For multiline values it uses the same block-quoted treatment.
+func writeFrontmatterField(sb *strings.Builder, prefix, field string, v any) {
+	s := fmt.Sprintf("%v", v)
+	if !strings.Contains(s, "\n") {
+		fmt.Fprintf(sb, "%s%s: %s\n", prefix, field, s)
+		return
+	}
+	fmt.Fprintf(sb, "%s%s: |\n", prefix, field)
+	indent := strings.Repeat(" ", len(prefix)+2)
+	for _, line := range strings.Split(s, "\n") {
+		fmt.Fprintf(sb, "%s%s\n", indent, line)
 	}
 }
 
