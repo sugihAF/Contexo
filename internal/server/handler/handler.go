@@ -237,11 +237,22 @@ func (h *Handler) Push(c *gin.Context) {
 			req.AuthorName, req.AuthorEmail, req.Message, file.ParentSHA)
 		if err != nil {
 			if errors.Is(err, gitstore.ErrConflict) {
+				// Layer 4 enrichment: read the ancestor content (the version
+				// the client's edit was based on) so the agent can three-way
+				// merge. Best-effort — if the ancestor sha doesn't resolve,
+				// the conflict is still returned, just without ancestor bytes.
+				var ancestor []byte
+				if conflict.ExpectedParentSHA != "" {
+					if b, ferr := h.store.ReadAtSha(repoID, conflict.Path, conflict.ExpectedParentSHA); ferr == nil {
+						ancestor = b
+					}
+				}
 				conflicts = append(conflicts, sync.Conflict{
 					Path:              conflict.Path,
 					CurrentSHA:        conflict.CurrentSHA,
 					CurrentContent:    conflict.CurrentContent,
 					ExpectedParentSHA: conflict.ExpectedParentSHA,
+					AncestorContent:   ancestor,
 				})
 				continue
 			}

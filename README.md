@@ -106,6 +106,12 @@ block summarizing what's new — the agent learns about drift before it edits
 without having to remember to check. Set `CONTEXO_DRIFT_DISABLE=1` to turn
 the check off; `ctx status` also lists drifted pages (pass `--no-drift` to skip).
 
+If `ctx_push` hits a 409 (someone else pushed first), the tool returns a
+`<MERGE_REQUIRED>` directive carrying the ancestor + your + server versions
+and a list of conflicting sections. The agent writes a reconciled version
+via `ctx_write_page` and re-invokes `ctx_push` — the local sync state is
+auto-updated so the re-push won't 409 for the same reason.
+
 ## Install
 
 Pure Go, no CGO. Works on Linux, macOS, and Windows.

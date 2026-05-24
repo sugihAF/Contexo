@@ -24,12 +24,16 @@ var ErrConflict = errors.New("gitstore: parent_sha conflict")
 // ErrRepoNotFound is returned for operations on an uninitialized repo.
 var ErrRepoNotFound = errors.New("gitstore: repo not initialized")
 
-// Conflict describes a non-fast-forward write attempt.
+// Conflict describes a non-fast-forward write attempt. AncestorContent is
+// populated by callers (see handler.Push) when they can resolve the
+// ExpectedParentSHA — the differ needs all three versions (yours, theirs,
+// ancestor) for a useful merge brief.
 type Conflict struct {
 	Path              string `json:"path"`
 	CurrentSHA        string `json:"current_sha"`
 	CurrentContent    []byte `json:"current_content"`
 	ExpectedParentSHA string `json:"expected_parent_sha"`
+	AncestorContent   []byte `json:"ancestor_content,omitempty"`
 }
 
 // CommitMeta describes a single commit returned by Log.

@@ -34,12 +34,15 @@ type PushedFile struct {
 	SHA  string `json:"sha"`
 }
 
-// Conflict mirrors gitstore.Conflict on the wire.
+// Conflict mirrors gitstore.Conflict on the wire. AncestorContent is
+// optional; it's populated when the server can locate the ExpectedParentSHA's
+// content, enabling three-way merge by the MCP agent (Layer 4).
 type Conflict struct {
 	Path              string `json:"path"`
 	CurrentSHA        string `json:"current_sha"`
 	CurrentContent    []byte `json:"current_content"`
 	ExpectedParentSHA string `json:"expected_parent_sha"`
+	AncestorContent   []byte `json:"ancestor_content,omitempty"`
 }
 
 // PullResponse is the response from GET /v1/repos/:id/sync/pull.

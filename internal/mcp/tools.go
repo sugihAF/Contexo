@@ -34,7 +34,12 @@ func (s *Server) ListTools() []Tool {
 				"feature (= tag), tag, or type to push a subset. If a capture buffer is present and the " +
 				"push includes concept/analysis pages, the tool will pause and ask you to write a source " +
 				"page first (a structured reasoning-trail page); then re-invoke with distill_done=true " +
-				"and source_slug set.",
+				"and source_slug set. " +
+				"If any file in the batch has been modified on the server since your last pull, the tool " +
+				"returns a <MERGE_REQUIRED> directive with the ancestor + your + server versions and a list " +
+				"of conflicting sections — write a reconciled version via ctx_write_page that incorporates " +
+				"BOTH sides' changes, then re-invoke ctx_push (local sync state is auto-updated so the " +
+				"re-push won't 409 for the same reason).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -329,12 +334,25 @@ func (s *Server) toolPush(args map[string]interface{}) *ToolResult {
 	for _, f := range resp.Pushed {
 		state.PageSHAs[f.Path] = f.SHA
 	}
-	_ = sync.SaveState(s.store.Root, state)
 
 	if len(resp.Conflicts) > 0 {
-		b, _ := json.Marshal(resp.Conflicts)
-		return errorResult(fmt.Sprintf("%d conflict(s): %s. Pull, merge, re-push.", len(resp.Conflicts), string(b)))
+		// Layer 4: instead of dumping the conflict JSON and aborting, build a
+		// structured MERGE_REQUIRED directive the agent can act on. Bump the
+		// local sync state for each conflicting file to the server's current
+		// sha so the re-push (with the agent's merged content) will not 409
+		// for the same reason.
+		localByPath := map[string][]byte{}
+		for _, f := range files {
+			localByPath[f.Path] = []byte(f.Content)
+		}
+		for _, cf := range resp.Conflicts {
+			state.PageSHAs[cf.Path] = cf.CurrentSHA
+		}
+		_ = sync.SaveState(s.store.Root, state)
+		return textResult(buildMergeDirective(resp.Conflicts, localByPath))
 	}
+
+	_ = sync.SaveState(s.store.Root, state)
 	head := resp.NewHead
 	if len(head) > 8 {
 		head = head[:8]
