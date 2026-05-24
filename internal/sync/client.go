@@ -219,6 +219,32 @@ func (c *Client) ListInviteKeys(repoID string) ([]InviteKey, error) {
 	return wrapper.Keys, nil
 }
 
+// ErrPageNotFound is returned by ReadPage when the path doesn't exist on the
+// server. Callers use it to distinguish "new page" from real errors.
+var ErrPageNotFound = fmt.Errorf("sync: page not found")
+
+// ReadPage fetches the current content of a single page from the server.
+// Returns ErrPageNotFound if the path isn't tracked yet. The page's last-touch
+// sha is returned via the X-Page-SHA response header.
+func (c *Client) ReadPage(repoID, filePath string) ([]byte, string, error) {
+	u := fmt.Sprintf("%s/v1/repos/%s/pages/%s", c.baseURL, repoID, escapePath(filePath))
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("sync: read page: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", ErrPageNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("sync: read page (%d): %s", resp.StatusCode, string(body))
+	}
+	return body, resp.Header.Get("X-Page-SHA"), nil
+}
+
 // PageHistory returns the commits that touched filePath, newest first.
 // limit <= 0 lets the server pick a default.
 func (c *Client) PageHistory(repoID, filePath string, limit int) ([]Commit, error) {

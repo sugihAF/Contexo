@@ -46,10 +46,17 @@ ctx remote get                 Show current server + repo
 
 ```
 ctx push [--feature X] [--tag Y] [--type concept|entity|source|analysis] [--dry-run]
+         [--yes] [--show-diff] [--no-preview]
 ctx pull [--full]
 ctx status                     Local vs server delta
 ctx log                        Server timeline (who changed what when)
 ```
+
+Before pushing, `ctx push` previews each file as `[NEW]`, `[EDIT]`, or `[SAME]`
+and shows a per-section summary of what your push will change on the server.
+If any `[EDIT]` rows appear, it asks for confirmation. Pass `--yes` to skip
+the prompt (required for non-interactive use), `--show-diff` to see the full
+per-section diff inline, or `--no-preview` to skip the round-trip entirely.
 
 **Inspect a page's evolution**
 

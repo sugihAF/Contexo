@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,9 @@ func newPushCmd() *cobra.Command {
 		message        string
 		dryRun         bool
 		fallbackServer bool
+		yes            bool
+		showDiff       bool
+		noPreview      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push",
@@ -96,6 +100,25 @@ func newPushCmd() *cobra.Command {
 			}
 
 			client := sync.NewClient(serverURL, creds.Bearer())
+
+			if !noPreview {
+				previews := computePushPreview(client, cfg.RepoID, files)
+				hasEdits := renderPreview(cmd.OutOrStdout(), cfg.RepoID, previews, showDiff)
+				if hasEdits && !yes {
+					if !stdinIsTTY() {
+						return fmt.Errorf("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm")
+					}
+					ok, err := confirm(os.Stdin, cmd.OutOrStdout(), "Proceed?")
+					if err != nil {
+						return err
+					}
+					if !ok {
+						fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+						return nil
+					}
+				}
+			}
+
 			resp, err := client.PushPages(cfg.RepoID, &sync.PushRequest{
 				AuthorName:  creds.UserName,
 				AuthorEmail: creds.UserEmail,
@@ -137,6 +160,9 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&message, "message", "m", "", "commit message (default: 'ctx push (N pages)')")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pushed without sending")
 	cmd.Flags().BoolVar(&fallbackServer, "fallback-server", false, "(planned) route reasoning-trail distillation to the Contexo server; currently errors")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the pre-push confirmation prompt (required for non-interactive use when editing existing pages)")
+	cmd.Flags().BoolVar(&showDiff, "show-diff", false, "print the full per-section diff in the preview, not just a one-line summary")
+	cmd.Flags().BoolVar(&noPreview, "no-preview", false, "skip the pre-push preview entirely (faster; loses the heads-up about what changes)")
 	return cmd
 }
 
