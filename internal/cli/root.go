@@ -29,6 +29,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newAuthCmd())
 	cmd.AddCommand(newLoginCmd())
 	cmd.AddCommand(newJoinCmd())
+	cmd.AddCommand(newInviteCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newLogCmd())
 	cmd.AddCommand(newCaptureCmd())

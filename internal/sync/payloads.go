@@ -67,3 +67,13 @@ type RepoOption struct {
 	ID   string `json:"id"`
 	Role string `json:"role,omitempty"`
 }
+
+// InviteKey is one entry in /v1/repos/:id/invite-keys responses (mint + list).
+// Mirrors handler.inviteKeyBody on the wire. CreatedAt and ExpiresAt are Unix
+// seconds.
+type InviteKey struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	CreatedAt int64  `json:"created_at"`
+	ExpiresAt int64  `json:"expires_at"`
+}

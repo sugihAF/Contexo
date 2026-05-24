@@ -165,3 +165,70 @@ func (c *Client) Timeline(repoID string, limit int) ([]Commit, error) {
 	}
 	return wrapper.Commits, nil
 }
+
+// MintInviteKey creates an invite key on repoID with the given label. Returns
+// the persisted key metadata plus the raw token (only returned once).
+func (c *Client) MintInviteKey(repoID, label string) (*InviteKey, string, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/invite-keys", c.baseURL, repoID)
+	body, _ := json.Marshal(map[string]string{"label": label})
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("sync: mint invite key: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("sync: mint invite key failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+	var wrapper struct {
+		Key   InviteKey `json:"key"`
+		Token string    `json:"token"`
+	}
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
+		return nil, "", fmt.Errorf("sync: parse mint response: %w", err)
+	}
+	return &wrapper.Key, wrapper.Token, nil
+}
+
+// ListInviteKeys returns the active invite keys for repoID (no raw tokens).
+func (c *Client) ListInviteKeys(repoID string) ([]InviteKey, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/invite-keys", c.baseURL, repoID)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: list invite keys: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: list invite keys (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Keys []InviteKey `json:"keys"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse list invite keys: %w", err)
+	}
+	return wrapper.Keys, nil
+}
+
+// DeleteInviteKey revokes the invite key with id keyID on repoID.
+func (c *Client) DeleteInviteKey(repoID, keyID string) error {
+	url := fmt.Sprintf("%s/v1/repos/%s/invite-keys/%s", c.baseURL, repoID, keyID)
+	req, _ := http.NewRequest("DELETE", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("sync: delete invite key: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sync: delete invite key (%d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
