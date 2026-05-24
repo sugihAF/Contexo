@@ -272,6 +272,36 @@ func (c *Client) PageHistory(repoID, filePath string, limit int) ([]Commit, erro
 	return wrapper.Commits, nil
 }
 
+// PageEvolution returns the full evolution for filePath: up to `limit` recent
+// commits touching the path, each paired with the section-aware diff against
+// its immediate prior commit. One round-trip replaces (history + N diffs)
+// when the caller wants the whole trajectory.
+func (c *Client) PageEvolution(repoID, filePath string, limit int) ([]EvolutionEntry, error) {
+	u := fmt.Sprintf("%s/v1/repos/%s/evolution/%s", c.baseURL, repoID, escapePath(filePath))
+	if limit > 0 {
+		u += fmt.Sprintf("?limit=%d", limit)
+	}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: page evolution: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: page evolution (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Path    string           `json:"path"`
+		Entries []EvolutionEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse evolution: %w", err)
+	}
+	return wrapper.Entries, nil
+}
+
 // PageDiff returns a structured diff of filePath between two commits. Empty
 // from/to defer to the server's defaults (to = HEAD-for-this-path, from =
 // parent of to).

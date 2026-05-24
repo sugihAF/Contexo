@@ -1,6 +1,10 @@
 package sync
 
-import "time"
+import (
+	"time"
+
+	"github.com/sugihAF/contexo/internal/diff"
+)
 
 // PushRequest is sent to POST /v1/repos/:id/sync/push.
 type PushRequest struct {
@@ -58,6 +62,13 @@ type Commit struct {
 	Email   string    `json:"email"`
 	Time    time.Time `json:"time"`
 	Message string    `json:"message"`
+}
+
+// EvolutionEntry pairs one commit with its diff against the prior commit for
+// the same path. Mirrors handler.EvolutionEntry on the wire.
+type EvolutionEntry struct {
+	Commit Commit           `json:"commit"`
+	Diff   diff.SectionDiff `json:"diff"`
 }
 
 // RepoOption is one entry in the response from GET /v1/repos as the CLI

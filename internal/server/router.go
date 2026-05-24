@@ -48,6 +48,7 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver) *gin.Engine {
 	v1.GET("/repos/:id/timeline", h.Timeline)
 	v1.GET("/repos/:id/history/*path", h.History)
 	v1.GET("/repos/:id/diff/*path", h.Diff)
+	v1.GET("/repos/:id/evolution/*path", h.Evolution)
 
 	v1.POST("/repos/:id/invite-keys", h.MintInviteKey)
 	v1.GET("/repos/:id/invite-keys", h.ListInviteKeys)

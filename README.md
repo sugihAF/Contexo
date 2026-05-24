@@ -66,6 +66,8 @@ ctx diff <slug> [--from=<sha>] [--to=<sha>]    Section-aware diff between two
                 [--type=...] [--json]          versions (defaults to parent..head)
 ctx diff <slug> --local                        Diff your local copy vs server HEAD
                                                (what `ctx push` would change)
+ctx evolution <slug> [--limit=N] [--show-diff] Full trajectory in one call: every
+                     [--type=...] [--json]     commit + its per-commit diff
 ```
 
 **Agent integration**
@@ -90,6 +92,8 @@ Tools (agent-invokable):
 - `ctx_push`, `ctx_pull`, `ctx_status` — sync against the team server
 - `ctx_history`, `ctx_diff` — see how a page evolved before editing it
   (structured, section-aware diff rather than line-based git diff)
+- `ctx_evolution` — full trajectory of a page (every commit + diff) in one call,
+  for when you want the whole story before making any edit
 
 ## Install
 

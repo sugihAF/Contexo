@@ -109,6 +109,23 @@ func (s *Server) ListTools() []Tool {
 			},
 		},
 		{
+			Name: "ctx_evolution",
+			Description: "Return the full evolution of a page in one call: each commit touching the page, " +
+				"paired with the structured diff against its prior version. Use this when you want the " +
+				"whole trajectory of a topic — every change, every author, what each commit actually did — " +
+				"without N round-trips of ctx_history + ctx_diff. Ideal first call when picking up work " +
+				"on a feature that has been edited multiple times.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"slug"},
+				"properties": map[string]interface{}{
+					"slug":  map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
+					"type":  map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
+					"limit": map[string]interface{}{"type": "integer", "description": "Max commits in the evolution (default 20)"},
+				},
+			},
+		},
+		{
 			Name: "ctx_diff",
 			Description: "Return a structured diff between two versions of a Contexo page. Use this BEFORE " +
 				"editing a page when you want to see exactly what changed in the most recent edit (defaults " +
@@ -172,6 +189,8 @@ func (s *Server) HandleToolCall(ctx context.Context, name string, args map[strin
 		return s.toolHistory(args)
 	case "ctx_diff":
 		return s.toolDiff(args)
+	case "ctx_evolution":
+		return s.toolEvolution(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -810,6 +829,43 @@ func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
 		shortMCPSHA(d.ToSHA),
 		string(js),
 	))
+}
+
+func (s *Server) toolEvolution(args map[string]interface{}) *ToolResult {
+	slug, _ := args["slug"].(string)
+	typ, _ := args["type"].(string)
+	limit := 0
+	switch v := args["limit"].(type) {
+	case float64:
+		limit = int(v)
+	case int:
+		limit = v
+	}
+
+	root := s.rootDir()
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
+	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
+		return errorResult("ctx_evolution: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	}
+	path, err := s.resolveMCPSlug(slug, typ)
+	if err != nil {
+		return errorResult("ctx_evolution: " + err.Error())
+	}
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+	entries, err := client.PageEvolution(cfg.RepoID, path, limit)
+	if err != nil {
+		return errorResult("ctx_evolution: " + err.Error())
+	}
+	if len(entries) == 0 {
+		return textResult(fmt.Sprintf("No evolution found for %s", path))
+	}
+	js, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return errorResult("ctx_evolution: marshal: " + err.Error())
+	}
+	return textResult(fmt.Sprintf("Evolution of %s (%d commits, newest first):\n\n%s",
+		path, len(entries), string(js)))
 }
 
 func shortMCPSHA(s string) string {

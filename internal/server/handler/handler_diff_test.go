@@ -14,8 +14,9 @@ import (
 	"github.com/sugihAF/contexo/internal/server/gitstore"
 )
 
-// minimalRig wires only the routes needed by the diff/history tests. It uses
-// legacy auth (bearer = "legacy-key") so we don't have to create users.
+// minimalRig wires only the routes needed by the diff/history/evolution
+// tests. It uses legacy auth (bearer = "legacy-key") so we don't have to
+// create users.
 func minimalRig(t *testing.T) (*gitstore.Store, *gin.Engine) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -31,7 +32,15 @@ func minimalRig(t *testing.T) (*gitstore.Store, *gin.Engine) {
 	v1.Use(auth.GinMiddleware(resolver.Validator()))
 	v1.GET("/repos/:id/diff/*path", h.Diff)
 	v1.GET("/repos/:id/history/*path", h.History)
+	v1.GET("/repos/:id/evolution/*path", h.Evolution)
 	return store, r
+}
+
+// minimalRigWithEvolution is kept as a named alias for tests that want to be
+// explicit about needing the evolution route; functionally identical to
+// minimalRig now that evolution is on the default rig.
+func minimalRigWithEvolution(t *testing.T) (*gitstore.Store, *gin.Engine) {
+	return minimalRig(t)
 }
 
 func get(t *testing.T, r http.Handler, path string) *httptest.ResponseRecorder {
@@ -136,6 +145,54 @@ func TestDiff_NoParentForFirstCommit(t *testing.T) {
 	w := get(t, r, "/v1/repos/repo/diff/wiki/concepts/x.md?to="+sha)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 (no parent), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEvolution_HappyPath(t *testing.T) {
+	store, r := minimalRigWithEvolution(t)
+	page1 := "---\nslug: x\ntype: concept\n---\nv1 body\n"
+	page2 := "---\nslug: x\ntype: concept\n---\n## Decision\nadded\n"
+	page3 := "---\nslug: x\ntype: concept\nreasoning_summary: rs\n---\n## Decision\nchanged\n"
+	sha1 := seedPage(t, store, "repo", "wiki/concepts/x.md", page1, "")
+	sha2 := seedPage(t, store, "repo", "wiki/concepts/x.md", page2, sha1)
+	seedPage(t, store, "repo", "wiki/concepts/x.md", page3, sha2)
+
+	w := get(t, r, "/v1/repos/repo/evolution/wiki/concepts/x.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Path    string `json:"path"`
+		Entries []struct {
+			Commit struct {
+				SHA     string `json:"sha"`
+				Message string `json:"message"`
+			} `json:"commit"`
+			Diff map[string]any `json:"diff"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(resp.Entries))
+	}
+	// Newest first, each entry has a non-nil diff
+	for i, e := range resp.Entries {
+		if e.Commit.SHA == "" {
+			t.Errorf("entry[%d] missing sha", i)
+		}
+		if e.Diff == nil {
+			t.Errorf("entry[%d] missing diff", i)
+		}
+	}
+}
+
+func TestEvolution_PathMissing(t *testing.T) {
+	_, r := minimalRigWithEvolution(t)
+	w := get(t, r, "/v1/repos/empty/evolution/missing.md")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
