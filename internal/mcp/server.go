@@ -26,11 +26,15 @@ type ResourceTemplate struct {
 // Server serves Contexo knowledge pages over MCP from a local .contexo/ tree.
 type Server struct {
 	store *pagestore.Store
+	drift *driftChecker
 }
 
 // NewServer creates a Server backed by the given local pagestore.
 func NewServer(store *pagestore.Store) *Server {
-	return &Server{store: store}
+	return &Server{
+		store: store,
+		drift: newDriftChecker(store.Root),
+	}
 }
 
 // ListResources returns the resource templates this server publishes.
@@ -125,11 +129,20 @@ func (s *Server) readFile(relPath, mimeType string) ([]byte, string, error) {
 func (s *Server) readBySlug(slug string, types []schema.PageType) ([]byte, string, error) {
 	for _, t := range types {
 		fm := schema.PageFrontmatter{Type: t, Slug: slug}
-		p, err := s.store.Read(fm.RelPath())
+		relPath := fm.RelPath()
+		p, err := s.store.Read(relPath)
 		if err == nil {
 			data, err := schema.SerializePage(p)
 			if err != nil {
 				return nil, "", fmt.Errorf("mcp: serialize: %w", err)
+			}
+			// Layer 3: prepend a drift notice when the server's version of this
+			// page is ahead of the locally-pulled one. Best-effort — silently
+			// no-op when unconfigured or the network call fails.
+			if s.drift != nil {
+				if notice := s.drift.maybeNotice(relPath); notice != "" {
+					data = append([]byte(notice+"\n\n---\n\n"), data...)
+				}
 			}
 			return data, "text/markdown", nil
 		}

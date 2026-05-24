@@ -100,6 +100,12 @@ Tools (agent-invokable):
 - `ctx_evolution` — full trajectory of a page (every commit + diff) in one call,
   for when you want the whole story before making any edit
 
+When the agent reads `ctx://wiki/<slug>` and the page has changed on the server
+since the last `ctx pull`, the response is prefixed with a `<DRIFT_NOTICE>`
+block summarizing what's new — the agent learns about drift before it edits
+without having to remember to check. Set `CONTEXO_DRIFT_DISABLE=1` to turn
+the check off; `ctx status` also lists drifted pages (pass `--no-drift` to skip).
+
 ## Install
 
 Pure Go, no CGO. Works on Linux, macOS, and Windows.

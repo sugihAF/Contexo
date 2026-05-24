@@ -7,12 +7,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/schema"
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var noDrift bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show .contexo status and local-vs-server delta",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -69,7 +71,54 @@ func newStatusCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Pages never pushed: %d\n", unpushed)
 
+			if !noDrift && creds != nil && creds.Bearer() != "" && cfg.ServerURL != "" && cfg.RepoID != "" {
+				drifted := computeDriftedPages(cfg, creds, pages, state)
+				if len(drifted) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "Pages drifted on server: 0")
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Pages drifted on server (run `ctx pull` to refresh): %d\n", len(drifted))
+					for _, p := range drifted {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s   (local %s → server %s)\n",
+							p.Path, shortSHA(p.LocalSHA), shortSHA(p.ServerSHA))
+					}
+				}
+			}
+
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&noDrift, "no-drift", false, "skip the per-page server-drift check (faster; offline-friendly)")
+	return cmd
+}
+
+// driftedPage describes a page that has changed on the server since the local
+// last-pulled sha. Used by `ctx status` to list a heads-up of pages that
+// would 409 on push (or surprise the user on read).
+type driftedPage struct {
+	Path      string
+	LocalSHA  string
+	ServerSHA string
+}
+
+// computeDriftedPages walks every locally-tracked page, asks the server for
+// its current sha, and returns the subset that has moved. Pages never pulled
+// (no entry in state.PageSHAs) are skipped — drift implies a baseline. Errors
+// per page are silently skipped; failure to detect drift should never break
+// the status output.
+func computeDriftedPages(cfg *config.Config, creds *config.Credentials, pages []*schema.Page, state *sync.State) []driftedPage {
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+	var drifted []driftedPage
+	for _, p := range pages {
+		path := p.Frontmatter.RelPath()
+		localSHA, ok := state.PageSHAs[path]
+		if !ok || localSHA == "" {
+			continue
+		}
+		_, serverSHA, err := client.ReadPage(cfg.RepoID, path)
+		if err != nil || serverSHA == "" || serverSHA == localSHA {
+			continue
+		}
+		drifted = append(drifted, driftedPage{Path: path, LocalSHA: localSHA, ServerSHA: serverSHA})
+	}
+	return drifted
 }
