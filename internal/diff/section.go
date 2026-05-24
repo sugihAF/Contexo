@@ -20,7 +20,16 @@ const (
 	StatusAdded     = "added"
 	StatusRemoved   = "removed"
 	StatusModified  = "modified"
+	StatusRenamed   = "renamed"
 )
+
+// renameSimilarityThreshold is the minimum content overlap (0..1) required to
+// treat an unmatched (removed, added) section pair as a rename instead of a
+// genuine delete + new section. 0.7 is conservative: clear renames (heading
+// changed, body 90%+ identical) easily clear it; light edits to a renamed
+// section still cross it; truly distinct sections that happen to share a few
+// words don't.
+const renameSimilarityThreshold = 0.7
 
 // SectionDiff is the structured diff between two page versions. It is the
 // single value the differ produces; HTTP, CLI, and MCP each render it
@@ -51,13 +60,15 @@ type FrontmatterFieldChange struct {
 }
 
 // SectionChange is one ## section's diff entry. Status determines which of
-// From/To/LineDiff are populated.
+// From/To/LineDiff/OldHeading are populated. OldHeading is set only on
+// StatusRenamed and carries the section's previous heading.
 type SectionChange struct {
-	Heading  string `json:"heading"`
-	Status   string `json:"status"`
-	From     string `json:"from,omitempty"`
-	To       string `json:"to,omitempty"`
-	LineDiff string `json:"line_diff,omitempty"`
+	Heading    string `json:"heading"`
+	OldHeading string `json:"old_heading,omitempty"`
+	Status     string `json:"status"`
+	From       string `json:"from,omitempty"`
+	To         string `json:"to,omitempty"`
+	LineDiff   string `json:"line_diff,omitempty"`
 }
 
 // PageSections computes the structured diff between two page byte slices.
@@ -382,6 +393,135 @@ func diffSections(from, to []section) []SectionChange {
 			continue
 		}
 		out = append(out, SectionChange{Heading: s.heading, Status: StatusRemoved, From: s.body})
+	}
+
+	// Post-pass: pair high-similarity (removed, added) sections as renames so
+	// "## Decision" → "## Final Decision" doesn't show as a remove + an add.
+	out = detectRenames(out)
+	return out
+}
+
+// detectRenames replaces high-similarity (removed, added) pairs in changes
+// with single StatusRenamed entries. The pairing is greedy: iterate removed
+// entries and match each with the most-similar still-available added entry
+// whose similarity clears renameSimilarityThreshold. Stable: pairs are
+// emitted in the order of the first surviving entry of the pair.
+func detectRenames(changes []SectionChange) []SectionChange {
+	type idx struct{ i int }
+	var removedIdx, addedIdx []idx
+	for i, c := range changes {
+		switch c.Status {
+		case StatusRemoved:
+			removedIdx = append(removedIdx, idx{i})
+		case StatusAdded:
+			addedIdx = append(addedIdx, idx{i})
+		}
+	}
+	if len(removedIdx) == 0 || len(addedIdx) == 0 {
+		return changes
+	}
+
+	// For each removed, find best added by Jaccard similarity on word tokens.
+	type pair struct {
+		rem, add   int
+		similarity float64
+	}
+	used := make(map[int]bool)
+	var pairs []pair
+	for _, r := range removedIdx {
+		best := pair{rem: r.i, add: -1, similarity: 0}
+		for _, a := range addedIdx {
+			if used[a.i] {
+				continue
+			}
+			sim := bodySimilarity(changes[r.i].From, changes[a.i].To)
+			if sim > best.similarity {
+				best = pair{rem: r.i, add: a.i, similarity: sim}
+			}
+		}
+		if best.add >= 0 && best.similarity >= renameSimilarityThreshold {
+			pairs = append(pairs, best)
+			used[best.add] = true
+		}
+	}
+	if len(pairs) == 0 {
+		return changes
+	}
+
+	// Build the output: replace each removed entry with a renamed entry at
+	// the removed's position; drop the matched added entry.
+	renamedFromIdx := map[int]pair{}
+	for _, p := range pairs {
+		renamedFromIdx[p.rem] = p
+	}
+	skipAdd := map[int]bool{}
+	for _, p := range pairs {
+		skipAdd[p.add] = true
+	}
+
+	out := make([]SectionChange, 0, len(changes))
+	for i, c := range changes {
+		if p, ok := renamedFromIdx[i]; ok {
+			added := changes[p.add]
+			fromBody := c.From
+			toBody := added.To
+			entry := SectionChange{
+				Heading:    added.Heading,
+				OldHeading: c.Heading,
+				Status:     StatusRenamed,
+				From:       fromBody,
+				To:         toBody,
+			}
+			if fromBody != toBody {
+				entry.LineDiff = lineDiff(fromBody, toBody)
+			}
+			out = append(out, entry)
+			continue
+		}
+		if skipAdd[i] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// bodySimilarity scores two section bodies on [0..1] via word-token Jaccard.
+// Empty-on-both is treated as 1.0 (sections share no content but are
+// trivially equal in vacuity — heading-only rename, e.g. an empty placeholder
+// renamed before being filled in). Empty-on-one is 0.
+func bodySimilarity(a, b string) float64 {
+	if a == "" && b == "" {
+		return 1
+	}
+	if a == "" || b == "" {
+		return 0
+	}
+	aw := tokenSet(a)
+	bw := tokenSet(b)
+	if len(aw) == 0 && len(bw) == 0 {
+		return 1
+	}
+	inter := 0
+	for w := range aw {
+		if _, ok := bw[w]; ok {
+			inter++
+		}
+	}
+	union := len(aw) + len(bw) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+func tokenSet(s string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, w := range strings.Fields(s) {
+		w = strings.ToLower(strings.Trim(w, ".,;:!?\"'()[]{}"))
+		if w != "" {
+			out[w] = struct{}{}
+		}
 	}
 	return out
 }

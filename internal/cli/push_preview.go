@@ -115,6 +115,8 @@ func summarizeDiff(d *diff.SectionDiff) string {
 			parts = append(parts, "- "+trimHeading(s.Heading))
 		case diff.StatusModified:
 			parts = append(parts, "~ "+trimHeading(s.Heading))
+		case diff.StatusRenamed:
+			parts = append(parts, "~> "+trimHeading(s.Heading))
 		}
 	}
 	if d.Preamble != nil && d.Preamble.Status != diff.StatusUnchanged {

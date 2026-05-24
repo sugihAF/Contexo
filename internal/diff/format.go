@@ -99,7 +99,16 @@ func writeSectionSummary(sb *strings.Builder, s SectionChange) {
 	case StatusRemoved:
 		fmt.Fprintf(sb, "  - %s (%d lines removed)\n", s.Heading, countLines(s.From))
 	case StatusModified:
-		fmt.Fprintf(sb, "  ~ %s (%d line%s changed)\n", s.Heading, countChangedLines(s.LineDiff), pluralS(countChangedLines(s.LineDiff)))
+		n := countChangedLines(s.LineDiff)
+		fmt.Fprintf(sb, "  ~ %s (%d line%s changed)\n", s.Heading, n, pluralS(n))
+	case StatusRenamed:
+		if s.LineDiff != "" {
+			n := countChangedLines(s.LineDiff)
+			fmt.Fprintf(sb, "  ~> %s  (renamed from %q, %d line%s changed)\n",
+				s.Heading, s.OldHeading, n, pluralS(n))
+		} else {
+			fmt.Fprintf(sb, "  ~> %s  (renamed from %q)\n", s.Heading, s.OldHeading)
+		}
 	}
 }
 

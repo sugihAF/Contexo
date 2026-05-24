@@ -148,6 +148,60 @@ func TestPageSections_MalformedFrontmatterFallback(t *testing.T) {
 	}
 }
 
+func TestPageSections_SectionRenamed(t *testing.T) {
+	// Heading change with body unchanged → should pair as renamed.
+	from := mustPage(t, fmBasic(), "## Decision\nWe chose Stripe Billing over Connect for tax handling clarity.\n")
+	to := mustPage(t, fmBasic(), "## Final Decision\nWe chose Stripe Billing over Connect for tax handling clarity.\n")
+	d := PageSections(from, to, "f", "t")
+	if len(d.Sections) != 1 {
+		t.Fatalf("expected 1 section (renamed), got %d: %+v", len(d.Sections), d.Sections)
+	}
+	if d.Sections[0].Status != StatusRenamed {
+		t.Errorf("expected StatusRenamed, got %s", d.Sections[0].Status)
+	}
+	if d.Sections[0].Heading != "## Final Decision" || d.Sections[0].OldHeading != "## Decision" {
+		t.Errorf("rename headings wrong: %+v", d.Sections[0])
+	}
+	if d.Sections[0].LineDiff != "" {
+		t.Errorf("expected no LineDiff when bodies identical, got %q", d.Sections[0].LineDiff)
+	}
+}
+
+func TestPageSections_RenamedWithBodyEdit(t *testing.T) {
+	// Heading change AND a small body edit → still detected as rename, with
+	// LineDiff populated.
+	from := mustPage(t, fmBasic(), "## Decision\nUse Stripe Billing for the subscription with metered voice minutes.\n")
+	to := mustPage(t, fmBasic(), "## Final Decision\nUse Stripe Billing for the subscription with metered voice minutes plus tax.\n")
+	d := PageSections(from, to, "f", "t")
+	if len(d.Sections) != 1 {
+		t.Fatalf("expected 1 renamed section, got %d: %+v", len(d.Sections), d.Sections)
+	}
+	if d.Sections[0].Status != StatusRenamed {
+		t.Errorf("expected StatusRenamed, got %s", d.Sections[0].Status)
+	}
+	if d.Sections[0].LineDiff == "" {
+		t.Errorf("expected non-empty LineDiff when body also changed")
+	}
+}
+
+func TestPageSections_DissimilarHeadingsNotPaired(t *testing.T) {
+	// Two truly unrelated sections (different headings, different content)
+	// should remain a remove + add, NOT a rename.
+	from := mustPage(t, fmBasic(), "## Decision\nA decision about Stripe billing logic.\n")
+	to := mustPage(t, fmBasic(), "## Refund handling\nHow we issue refunds when a charge fails.\n")
+	d := PageSections(from, to, "f", "t")
+	statuses := map[string]int{}
+	for _, s := range d.Sections {
+		statuses[s.Status]++
+	}
+	if statuses[StatusRemoved] != 1 || statuses[StatusAdded] != 1 {
+		t.Errorf("expected 1 removed + 1 added, got %+v", statuses)
+	}
+	if statuses[StatusRenamed] != 0 {
+		t.Errorf("should not pair dissimilar sections as renames: %+v", d.Sections)
+	}
+}
+
 func TestPageSections_EmptyFromTreatedAsBlank(t *testing.T) {
 	// Empty `from` (e.g. local-vs-server diff when the page is new on the
 	// server) should produce clean section adds, not a parse-fallback.
