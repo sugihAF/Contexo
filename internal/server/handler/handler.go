@@ -203,6 +203,24 @@ func (h *Handler) Push(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
 		return
 	}
+	// Author attribution fallback chain:
+	//   1. Use what the client sent (browser-login CLI rounds these through).
+	//   2. If empty and the request is from a real authenticated user, look
+	//      up their stored name/email — we have the user_id from auth
+	//      middleware, so a PAT-only client (no browser login) still gets
+	//      proper attribution instead of "unknown".
+	//   3. Only fall through to the "unknown" sentinel if both the request
+	//      and the user lookup are empty (legacy auth without user identity).
+	if (req.AuthorName == "" || req.AuthorEmail == "") && !auth.IsLegacy(uid) && h.users != nil {
+		if u, lerr := h.users.GetUserByID(uid); lerr == nil {
+			if req.AuthorName == "" {
+				req.AuthorName = u.Name
+			}
+			if req.AuthorEmail == "" {
+				req.AuthorEmail = u.Email
+			}
+		}
+	}
 	if req.AuthorName == "" {
 		req.AuthorName = "unknown"
 	}
