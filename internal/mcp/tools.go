@@ -93,6 +93,41 @@ func (s *Server) ListTools() []Tool {
 			},
 		},
 		{
+			Name: "ctx_history",
+			Description: "Return the commit timeline for a single Contexo page so you can see how the team's " +
+				"understanding of a topic evolved. Call this BEFORE editing a page when the topic has " +
+				"deep history (e.g. before changing 'stripe-subscription' to know who added tax handling " +
+				"and when). Pass --type only when the slug is ambiguous across page types.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"slug"},
+				"properties": map[string]interface{}{
+					"slug":  map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
+					"type":  map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
+					"limit": map[string]interface{}{"type": "integer", "description": "Max commits (default 50)"},
+				},
+			},
+		},
+		{
+			Name: "ctx_diff",
+			Description: "Return a structured diff between two versions of a Contexo page. Use this BEFORE " +
+				"editing a page when you want to see exactly what changed in the most recent edit (defaults " +
+				"to parent..head for the page) or when comparing two specific shas from ctx_history. The " +
+				"diff is section-aware: frontmatter changes show as old→new per field, and each ## section " +
+				"is reported as added/removed/modified/unchanged. Agents make better edits when they see " +
+				"the page's trajectory, not just the snapshot.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"slug"},
+				"properties": map[string]interface{}{
+					"slug": map[string]interface{}{"type": "string", "description": "Page slug, e.g. 'stripe-subscription'"},
+					"from": map[string]interface{}{"type": "string", "description": "Old sha (default: parent of `to`)"},
+					"to":   map[string]interface{}{"type": "string", "description": "New sha (default: HEAD-for-this-path)"},
+					"type": map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}, "description": "Only needed when the same slug exists under multiple types"},
+				},
+			},
+		},
+		{
 			Name: "ctx_capture_session",
 			Description: "Produce a template + the local capture buffer so you can author a structured source " +
 				"page (raw/sessions/<date>-<slug>.md) capturing the reasoning trail of the current session. " +
@@ -133,6 +168,10 @@ func (s *Server) HandleToolCall(ctx context.Context, name string, args map[strin
 		return s.toolWritePage(args)
 	case "ctx_capture_session":
 		return s.toolCaptureSession(args)
+	case "ctx_history":
+		return s.toolHistory(args)
+	case "ctx_diff":
+		return s.toolDiff(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
@@ -656,6 +695,128 @@ func stringArr(v interface{}) []string {
 		}
 	}
 	return out
+}
+
+// resolveMCPSlug is the MCP-side analogue of cli.resolveSlugPath. We can't
+// import the CLI package from here, so this is a small duplicate; both walk
+// the same four .contexo/ subdirectories with the same ambiguity rules.
+func (s *Server) resolveMCPSlug(slug, typ string) (string, error) {
+	if slug == "" {
+		return "", fmt.Errorf("slug is required")
+	}
+	dirs := []struct{ typ, dir string }{
+		{"concept", "wiki/concepts"},
+		{"entity", "wiki/entities"},
+		{"analysis", "wiki/analyses"},
+		{"source", "raw/sessions"},
+	}
+	var hits []string
+	for _, d := range dirs {
+		if typ != "" && d.typ != typ {
+			continue
+		}
+		rel := d.dir + "/" + slug + ".md"
+		abs := filepath.Join(s.store.Root, filepath.FromSlash(rel))
+		if _, err := os.Stat(abs); err == nil {
+			hits = append(hits, rel)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return "", fmt.Errorf("slug %q not found under .contexo/ (looked in wiki/{concepts,entities,analyses}/ and raw/sessions/)", slug)
+	case 1:
+		return hits[0], nil
+	default:
+		return "", fmt.Errorf("slug %q is ambiguous (matches %v); pass type to disambiguate", slug, hits)
+	}
+}
+
+func (s *Server) toolHistory(args map[string]interface{}) *ToolResult {
+	slug, _ := args["slug"].(string)
+	typ, _ := args["type"].(string)
+	limit := 0
+	switch v := args["limit"].(type) {
+	case float64:
+		limit = int(v)
+	case int:
+		limit = v
+	}
+
+	root := s.rootDir()
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
+	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
+		return errorResult("ctx_history: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	}
+	path, err := s.resolveMCPSlug(slug, typ)
+	if err != nil {
+		return errorResult("ctx_history: " + err.Error())
+	}
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+	commits, err := client.PageHistory(cfg.RepoID, path, limit)
+	if err != nil {
+		return errorResult("ctx_history: " + err.Error())
+	}
+	if len(commits) == 0 {
+		return textResult(fmt.Sprintf("No commits found for %s", path))
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Commits for %s (newest first):\n\n", path)
+	for _, c := range commits {
+		short := c.SHA
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		fmt.Fprintf(&sb, "%s  %s  %s — %s\n",
+			short,
+			c.Time.Format(time.DateOnly),
+			c.Author,
+			c.Message,
+		)
+	}
+	return textResult(sb.String())
+}
+
+func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
+	slug, _ := args["slug"].(string)
+	typ, _ := args["type"].(string)
+	from, _ := args["from"].(string)
+	to, _ := args["to"].(string)
+
+	root := s.rootDir()
+	cfg, _ := config.Load(root)
+	creds, _ := config.LoadCredentials(root)
+	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
+		return errorResult("ctx_diff: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	}
+	path, err := s.resolveMCPSlug(slug, typ)
+	if err != nil {
+		return errorResult("ctx_diff: " + err.Error())
+	}
+	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+	d, err := client.PageDiff(cfg.RepoID, path, from, to)
+	if err != nil {
+		return errorResult("ctx_diff: " + err.Error())
+	}
+	// Return JSON so the agent can introspect the structure. Wrap it in a
+	// short text intro so the model gets the framing.
+	js, err := d.ToJSON()
+	if err != nil {
+		return errorResult("ctx_diff: marshal: " + err.Error())
+	}
+	return textResult(fmt.Sprintf("Diff for %s (%s..%s):\n\n%s",
+		path,
+		shortMCPSHA(d.FromSHA),
+		shortMCPSHA(d.ToSHA),
+		string(js),
+	))
+}
+
+func shortMCPSHA(s string) string {
+	if len(s) <= 7 {
+		return s
+	}
+	return s[:7]
 }
 
 func errorResult(msg string) *ToolResult {

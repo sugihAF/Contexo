@@ -79,6 +79,8 @@ Resources (read-only):
 Tools (agent-invokable):
 - `ctx_write_page` — write a knowledge page with frontmatter
 - `ctx_push`, `ctx_pull`, `ctx_status` — sync against the team server
+- `ctx_history`, `ctx_diff` — see how a page evolved before editing it
+  (structured, section-aware diff rather than line-based git diff)
 
 ## Install
 
