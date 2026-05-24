@@ -64,6 +64,8 @@ per-section diff inline, or `--no-preview` to skip the round-trip entirely.
 ctx history <slug> [--type=...] [--limit=N]    Commit timeline for one page
 ctx diff <slug> [--from=<sha>] [--to=<sha>]    Section-aware diff between two
                 [--type=...] [--json]          versions (defaults to parent..head)
+ctx diff <slug> --local                        Diff your local copy vs server HEAD
+                                               (what `ctx push` would change)
 ```
 
 **Agent integration**

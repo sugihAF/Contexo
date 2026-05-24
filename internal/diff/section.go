@@ -97,7 +97,14 @@ func PageSections(from, to []byte, fromSHA, toSHA string) SectionDiff {
 // the input does not have a recognizable YAML frontmatter block. Frontmatter
 // values are kept as generic Go values so that any field (not just schema
 // fields) can be diffed.
+//
+// An empty input is treated as an empty-but-valid page (zero frontmatter,
+// zero body) so that diffing nil/[] against a real page emits clean section
+// adds instead of triggering the malformed-frontmatter fallback path.
 func splitFrontmatter(data []byte) (map[string]any, string, bool) {
+	if len(data) == 0 {
+		return map[string]any{}, "", true
+	}
 	s := strings.ReplaceAll(string(data), "\r\n", "\n")
 	if !strings.HasPrefix(s, "---\n") {
 		return nil, s, false

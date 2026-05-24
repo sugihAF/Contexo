@@ -148,6 +148,22 @@ func TestPageSections_MalformedFrontmatterFallback(t *testing.T) {
 	}
 }
 
+func TestPageSections_EmptyFromTreatedAsBlank(t *testing.T) {
+	// Empty `from` (e.g. local-vs-server diff when the page is new on the
+	// server) should produce clean section adds, not a parse-fallback.
+	to := mustPage(t, fmBasic(), "## Decision\nbody\n")
+	d := PageSections(nil, to, "", "x")
+	if d.ParseFallback {
+		t.Errorf("empty `from` must not trigger ParseFallback")
+	}
+	if len(d.Sections) != 1 || d.Sections[0].Status != StatusAdded {
+		t.Errorf("expected 1 added section, got %+v", d.Sections)
+	}
+	if len(d.Frontmatter.Added) == 0 {
+		t.Errorf("expected frontmatter fields to surface as added")
+	}
+}
+
 func TestPageSections_PreambleModified(t *testing.T) {
 	from := mustPage(t, fmBasic(), "intro old\n\n## Decision\nfoo\n")
 	to := mustPage(t, fmBasic(), "intro new\n\n## Decision\nfoo\n")

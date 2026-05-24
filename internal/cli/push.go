@@ -87,19 +87,25 @@ func newPushCmd() *cobra.Command {
 				})
 			}
 
+			client := sync.NewClient(serverURL, creds.Bearer())
+
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "Would push %d page(s):\n", len(files))
-				for _, f := range files {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s  (parent=%s)\n", f.Path, shortSHA(f.ParentSHA))
+				if noPreview {
+					fmt.Fprintf(cmd.OutOrStdout(), "Would push %d page(s):\n", len(files))
+					for _, f := range files {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s  (parent=%s)\n", f.Path, shortSHA(f.ParentSHA))
+					}
+					return nil
 				}
+				previews := computePushPreview(client, cfg.RepoID, files)
+				renderPreview(cmd.OutOrStdout(), cfg.RepoID, previews, showDiff)
+				fmt.Fprintln(cmd.OutOrStdout(), "(dry-run; no changes sent)")
 				return nil
 			}
 
 			if message == "" {
 				message = fmt.Sprintf("ctx push (%d pages)", len(files))
 			}
-
-			client := sync.NewClient(serverURL, creds.Bearer())
 
 			if !noPreview {
 				previews := computePushPreview(client, cfg.RepoID, files)
