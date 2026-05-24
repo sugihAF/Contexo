@@ -51,6 +51,14 @@ ctx status                     Local vs server delta
 ctx log                        Server timeline (who changed what when)
 ```
 
+**Inspect a page's evolution**
+
+```
+ctx history <slug> [--type=...] [--limit=N]    Commit timeline for one page
+ctx diff <slug> [--from=<sha>] [--to=<sha>]    Section-aware diff between two
+                [--type=...] [--json]          versions (defaults to parent..head)
+```
+
 **Agent integration**
 
 ```

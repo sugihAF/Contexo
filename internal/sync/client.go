@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+
+	"github.com/sugihAF/contexo/internal/diff"
 )
 
 // Client speaks HTTP to the Contexo server.
@@ -214,6 +217,103 @@ func (c *Client) ListInviteKeys(repoID string) ([]InviteKey, error) {
 		return nil, fmt.Errorf("sync: parse list invite keys: %w", err)
 	}
 	return wrapper.Keys, nil
+}
+
+// PageHistory returns the commits that touched filePath, newest first.
+// limit <= 0 lets the server pick a default.
+func (c *Client) PageHistory(repoID, filePath string, limit int) ([]Commit, error) {
+	u := fmt.Sprintf("%s/v1/repos/%s/history/%s", c.baseURL, repoID, escapePath(filePath))
+	if limit > 0 {
+		u += fmt.Sprintf("?limit=%d", limit)
+	}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: page history: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: page history (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Commits []Commit `json:"commits"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse history: %w", err)
+	}
+	return wrapper.Commits, nil
+}
+
+// PageDiff returns a structured diff of filePath between two commits. Empty
+// from/to defer to the server's defaults (to = HEAD-for-this-path, from =
+// parent of to).
+func (c *Client) PageDiff(repoID, filePath, from, to string) (*diff.SectionDiff, error) {
+	u := fmt.Sprintf("%s/v1/repos/%s/diff/%s", c.baseURL, repoID, escapePath(filePath))
+	q := url.Values{}
+	if from != "" {
+		q.Set("from", from)
+	}
+	if to != "" {
+		q.Set("to", to)
+	}
+	if encoded := q.Encode(); encoded != "" {
+		u += "?" + encoded
+	}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: page diff: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: page diff (%d): %s", resp.StatusCode, string(body))
+	}
+	var d diff.SectionDiff
+	if err := json.Unmarshal(body, &d); err != nil {
+		return nil, fmt.Errorf("sync: parse diff: %w", err)
+	}
+	return &d, nil
+}
+
+// escapePath URL-encodes each path segment so slashes survive the wire but
+// any non-ASCII / reserved characters within a segment are escaped. The
+// server's wildcard route accepts the slashes literally.
+func escapePath(p string) string {
+	parts := splitPath(p)
+	for i, seg := range parts {
+		parts[i] = url.PathEscape(seg)
+	}
+	return joinPath(parts)
+}
+
+func splitPath(p string) []string {
+	var out []string
+	cur := ""
+	for _, r := range p {
+		if r == '/' {
+			out = append(out, cur)
+			cur = ""
+			continue
+		}
+		cur += string(r)
+	}
+	out = append(out, cur)
+	return out
+}
+
+func joinPath(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += "/"
+		}
+		out += p
+	}
+	return out
 }
 
 // DeleteInviteKey revokes the invite key with id keyID on repoID.
