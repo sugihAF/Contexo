@@ -25,9 +25,14 @@ type ResourceTemplate struct {
 
 // Server serves Contexo knowledge pages over MCP from a local .contexo/ tree.
 type Server struct {
-	store *pagestore.Store
-	drift *driftChecker
+	store      *pagestore.Store
+	drift      *driftChecker
+	clientName string
 }
+
+// SetClientName records the calling agent's name (from the MCP initialize
+// clientInfo) so pulls can be attributed to it.
+func (s *Server) SetClientName(name string) { s.clientName = name }
 
 // NewServer creates a Server backed by the given local pagestore.
 func NewServer(store *pagestore.Store) *Server {

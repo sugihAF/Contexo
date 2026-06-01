@@ -91,3 +91,29 @@ type InviteKey struct {
 	CreatedAt int64  `json:"created_at"`
 	ExpiresAt int64  `json:"expires_at"`
 }
+
+// Member is one entry in /v1/repos/:id/members responses. Mirrors
+// handler.memberBody on the wire. AddedAt is Unix seconds.
+type Member struct {
+	UserID  string `json:"user_id"`
+	Email   string `json:"email"`
+	Role    string `json:"role"`
+	AddedAt int64  `json:"added_at"`
+}
+
+// ActivityDetail carries the extra context for an event: the pages a push
+// touched, or the client/agent that pulled. Both fields are optional.
+type ActivityDetail struct {
+	Paths  []string `json:"paths,omitempty"`
+	Client string   `json:"client,omitempty"`
+}
+
+// ActivityEvent is one entry in /v1/repos/:id/activity responses. Mirrors
+// handler.activityBody on the wire. CreatedAt is Unix seconds.
+type ActivityEvent struct {
+	UserID    string          `json:"user_id"`
+	Email     string          `json:"email"`
+	Action    string          `json:"action"`
+	Detail    *ActivityDetail `json:"detail,omitempty"`
+	CreatedAt int64           `json:"created_at"`
+}

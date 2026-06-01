@@ -289,6 +289,10 @@ func (h *Handler) Push(c *gin.Context) {
 	if len(conflicts) > 0 {
 		status = http.StatusConflict
 	}
+	// Record a "push" only when at least one file was actually committed.
+	if len(pushed) > 0 {
+		h.recordActivity(c, repoID, "push", pushDetail(pushed))
+	}
 	c.JSON(status, sync.PushResponse{
 		NewHead:   newHead,
 		Pushed:    pushed,
@@ -323,6 +327,11 @@ func (h *Handler) Pull(c *gin.Context) {
 		files = append(files, sync.PullFile{Path: p, Content: string(content), SHA: sha})
 	}
 
+	// Record a "pull" only when pages were actually received, so no-op
+	// "already up to date" polls don't flood the feed.
+	if len(files) > 0 {
+		h.recordActivity(c, repoID, "pull", pullDetail(c.Request.Header.Get("X-Contexo-Client")))
+	}
 	c.JSON(http.StatusOK, sync.PullResponse{NewHead: head, Files: files})
 }
 

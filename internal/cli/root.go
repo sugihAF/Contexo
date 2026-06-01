@@ -30,6 +30,8 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newLoginCmd())
 	cmd.AddCommand(newJoinCmd())
 	cmd.AddCommand(newInviteCmd())
+	cmd.AddCommand(newMembersCmd())
+	cmd.AddCommand(newActivityCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newLogCmd())
 	cmd.AddCommand(newHistoryCmd())

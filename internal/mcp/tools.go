@@ -527,6 +527,7 @@ func (s *Server) toolPull(args map[string]interface{}) *ToolResult {
 	}
 
 	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
+	client.SetClientName(s.clientName)
 	resp, err := client.PullPages(cfg.RepoID, since)
 	if err != nil {
 		return errorResult(err.Error())

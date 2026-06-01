@@ -55,6 +55,7 @@ func newPullCmd() *cobra.Command {
 			}
 
 			client := sync.NewClient(serverURL, creds.Bearer())
+			client.SetClientName("ctx-cli")
 			resp, err := client.PullPages(cfg.RepoID, since)
 			if err != nil {
 				return err

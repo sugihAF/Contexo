@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS repo_invite_keys (
     expires_at  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_invite_keys_repo ON repo_invite_keys(repo_id);
+
+CREATE TABLE IF NOT EXISTS repo_activity (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id    TEXT NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action     TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_repo_activity_repo ON repo_activity(repo_id, id);
 `
 
 // Store wraps the SQLite database holding access metadata.

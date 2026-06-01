@@ -69,9 +69,27 @@ func runMCPStdio(srv *mcpserver.Server) error {
 	return scanner.Err()
 }
 
+// parseClientName extracts clientInfo.name from an MCP initialize request's
+// params, or "" if absent. Used to attribute pulls to the calling agent.
+func parseClientName(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var p struct {
+		ClientInfo struct {
+			Name string `json:"name"`
+		} `json:"clientInfo"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ""
+	}
+	return p.ClientInfo.Name
+}
+
 func handleMCPRequest(srv *mcpserver.Server, req *MCPRequest) *MCPResponse {
 	switch req.Method {
 	case "initialize":
+		srv.SetClientName(parseClientName(req.Params))
 		return &MCPResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,

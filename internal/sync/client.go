@@ -13,10 +13,15 @@ import (
 
 // Client speaks HTTP to the Contexo server.
 type Client struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	baseURL    string
+	apiKey     string
+	clientName string
+	http       *http.Client
 }
+
+// SetClientName sets the X-Contexo-Client identifier sent on pulls so the
+// server can attribute who/what pulled (e.g. "ctx-cli", "claude-code").
+func (c *Client) SetClientName(name string) { c.clientName = name }
 
 // NewClient creates a sync client.
 func NewClient(baseURL, apiKey string) *Client {
@@ -79,6 +84,9 @@ func (c *Client) PullPages(repoID, since string) (*PullResponse, error) {
 	}
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.clientName != "" {
+		req.Header.Set("X-Contexo-Client", c.clientName)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("sync: pull: %w", err)
@@ -399,4 +407,99 @@ func (c *Client) DeleteInviteKey(repoID, keyID string) error {
 		return fmt.Errorf("sync: delete invite key (%d): %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// Sentinel errors for RemoveMember so the CLI can map the known refusal cases
+// to friendly messages without string-matching status codes.
+var (
+	ErrNotOwner       = fmt.Errorf("sync: owner role required")
+	ErrMemberNotFound = fmt.Errorf("sync: not a member of this repo")
+	ErrLastOwner      = fmt.Errorf("sync: cannot remove the last owner")
+)
+
+// ListMembers returns every member of repoID with their email and role. Any
+// member of the repo may call this.
+func (c *Client) ListMembers(repoID string) ([]Member, error) {
+	url := fmt.Sprintf("%s/v1/repos/%s/members", c.baseURL, repoID)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sync: list members: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sync: list members (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Members []Member `json:"members"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("sync: parse list members: %w", err)
+	}
+	return wrapper.Members, nil
+}
+
+// RemoveMember removes userID from repoID. Only an owner may do this. It
+// returns ErrNotOwner (403), ErrMemberNotFound (404), or ErrLastOwner (409)
+// for the known refusal cases.
+func (c *Client) RemoveMember(repoID, userID string) error {
+	u := fmt.Sprintf("%s/v1/repos/%s/members/%s", c.baseURL, repoID, url.PathEscape(userID))
+	req, _ := http.NewRequest("DELETE", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("sync: remove member: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		return nil
+	case http.StatusForbidden:
+		return ErrNotOwner
+	case http.StatusNotFound:
+		return ErrMemberNotFound
+	case http.StatusConflict:
+		return ErrLastOwner
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sync: remove member (%d): %s", resp.StatusCode, string(body))
+	}
+}
+
+// ListActivity returns a page of the repo's push/pull events (newest first)
+// plus the total event count for pagination. limit <= 0 lets the server pick
+// its default; offset <= 0 starts at the newest.
+func (c *Client) ListActivity(repoID string, limit, offset int) ([]ActivityEvent, int, error) {
+	u := fmt.Sprintf("%s/v1/repos/%s/activity", c.baseURL, repoID)
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if offset > 0 {
+		q.Set("offset", fmt.Sprintf("%d", offset))
+	}
+	if enc := q.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sync: list activity: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("sync: list activity (%d): %s", resp.StatusCode, string(body))
+	}
+	var wrapper struct {
+		Events []ActivityEvent `json:"events"`
+		Total  int             `json:"total"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, 0, fmt.Errorf("sync: parse list activity: %w", err)
+	}
+	return wrapper.Events, wrapper.Total, nil
 }
