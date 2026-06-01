@@ -12,7 +12,11 @@ import (
 // preflight OPTIONS without auth); /v1/auth/google is unauthenticated (it
 // establishes the session). All other /v1/* requires a Bearer token that the
 // resolver can map to a user_id (session JWT, PAT, or legacy API key).
-func NewRouter(h *handler.Handler, resolver *auth.Resolver) *gin.Engine {
+//
+// extras are open-core seam hooks: a private build (contexo-backend) passes
+// registrars that mount cloud-only routes on the authenticated /v1 group. The
+// OSS server calls NewRouter with no extras and behaves identically.
+func NewRouter(h *handler.Handler, resolver *auth.Resolver, extras ...func(v1 *gin.RouterGroup)) *gin.Engine {
 	r := gin.Default()
 	r.Use(CORS())
 
@@ -57,6 +61,12 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver) *gin.Engine {
 
 	v1.GET("/repos/:id/members", h.ListMembers)
 	v1.DELETE("/repos/:id/members/:userId", h.RemoveMember)
+
+	// Open-core seam: cloud-only routes from a private build mount here, on the
+	// same authenticated /v1 group (so they see the resolved user_id).
+	for _, add := range extras {
+		add(v1)
+	}
 
 	return r
 }
