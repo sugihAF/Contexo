@@ -114,7 +114,7 @@ auto-updated so the re-push won't 409 for the same reason.
 
 ## Install
 
-Pure Go, no CGO. Works on Linux, macOS, and Windows.
+Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64). **No Go toolchain required.**
 
 **Easiest (one line, handles PATH for you):**
 
@@ -126,17 +126,29 @@ curl -fsSL https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/instal
 iwr -useb https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.ps1 | iex
 ```
 
-Both scripts require **Go 1.25+** already installed. They run `go install`, detect where the binary landed (`$GOPATH/bin` or `$GOBIN`), and append that directory to your shell's PATH if it's not already there. Idempotent — safe to re-run.
+These download a checksum-verified binary from the latest [GitHub Release](https://github.com/sugihAF/Contexo/releases), drop it in a user-writable dir (`~/.local/bin`, or `%LOCALAPPDATA%\Programs\contexo` on Windows), and add that dir to your PATH if needed. Idempotent — safe to re-run.
 
-**Manual (control PATH yourself):**
+**Manual (download a binary yourself):** grab the archive for your platform from the [Releases page](https://github.com/sugihAF/Contexo/releases/latest), verify it against `checksums.txt`, extract `ctx`, and put it on your PATH.
+
+**With Go (if you already have the toolchain):**
 
 ```bash
 go install github.com/sugihAF/Contexo/cmd/ctx@latest
-# binary goes to $GOPATH/bin (typically ~/go/bin on Linux/macOS, %USERPROFILE%\go\bin on Windows)
-# add that directory to PATH yourself, then open a new terminal
 ```
 
-**From source, into a local `bin/` dir:**
+> A `go install` build reports its version as `dev` and can't self-update — reinstall with the script (or `go install` again) to upgrade.
+
+## Updating
+
+```bash
+ctx update           # download + install the latest release in place
+ctx update --check   # just report whether a newer version exists
+ctx version          # show the installed version
+```
+
+`ctx update` verifies the new binary's checksum before swapping it in. On interactive commands, `ctx` also prints a one-line note when a newer version is available — set `CONTEXO_NO_UPDATE_CHECK=1` to silence it.
+
+**Build from source (server + CLI):**
 
 ```bash
 # Linux / macOS
@@ -174,10 +186,16 @@ ctx detach -y                # skip the confirmation
 
 `ctx detach` warns if local pages haven't been pushed yet so you can `ctx push` first.
 
-**The CLI itself:**
+**The CLI itself** — delete the binary the installer placed:
 
 ```bash
-# Linux / macOS / Windows
+# macOS / Linux
+rm ~/.local/bin/ctx
+
+# Windows (PowerShell)
+Remove-Item "$env:LOCALAPPDATA\Programs\contexo\ctx.exe"
+
+# installed with `go install` instead? remove it from there:
 rm "$(go env GOPATH)/bin/ctx"      # ctx.exe on Windows
 ```
 

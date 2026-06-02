@@ -1,0 +1,63 @@
+# GoReleaser config — builds prebuilt ctx binaries for every platform and
+# publishes them (plus checksums) as GitHub Release assets on each v* tag.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: contexo
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ctx
+    main: ./cmd/ctx
+    binary: ctx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # No prebuilt Windows/arm64 yet; AssetFor returns a clean error if asked.
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/sugihAF/contexo/internal/version.Version={{ .Version }}
+      - -X github.com/sugihAF/contexo/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/sugihAF/contexo/internal/version.Date={{ .CommitDate }}
+
+archives:
+  - id: default
+    ids:
+      - ctx
+    # Must match internal/updater AssetFor(): ctx_<version>_<os>_<arch>.<ext>
+    name_template: "ctx_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: sugihAF
+    name: Contexo
+  draft: false
+  # A v1.2.3-rc1 tag publishes as a prerelease, so GitHub's "latest" (and
+  # therefore `ctx update`) keeps pointing at the last stable release.
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
