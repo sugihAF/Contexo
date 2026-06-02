@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/sugihAF/Contexo/main/.github/assets/contexo-hero.svg" alt="Contexo — git-like AI Agent context versioning and synchronization" width="100%">
+</p>
+
 # Contexo
 
 **GitHub for AI agent knowledge, scoped per project.**
@@ -81,6 +85,13 @@ its heading (works on both `ctx diff` and `ctx evolution`) — useful for
 ctx mcp                        Start MCP server for the local agent
 ctx hooks install|uninstall|status   Manage the Claude Code Stop hook
 ctx capture status             Show pending capture buffers
+```
+
+**Maintenance**
+
+```
+ctx update [--check]           Self-update to the latest release (--check: report only)
+ctx version [--short]          Print the installed version
 ```
 
 ## MCP
