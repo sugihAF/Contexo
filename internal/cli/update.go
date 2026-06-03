@@ -24,7 +24,7 @@ func newUpdateCmd() *cobra.Command {
 			if version.IsDevBuild() {
 				fmt.Fprintln(out, "This is a dev build (no version stamp), so ctx can't self-update.")
 				fmt.Fprintln(out, "Reinstall with the install script, or:")
-				fmt.Fprintln(out, "  go install github.com/sugihAF/Contexo/cmd/ctx@latest")
+				fmt.Fprintln(out, "  go install github.com/sugihAF/contexo/cmd/ctx@latest")
 				return nil
 			}
 

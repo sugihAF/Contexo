@@ -144,7 +144,7 @@ These download a checksum-verified binary from the latest [GitHub Release](https
 **With Go (if you already have the toolchain):**
 
 ```bash
-go install github.com/sugihAF/Contexo/cmd/ctx@latest
+go install github.com/sugihAF/contexo/cmd/ctx@latest
 ```
 
 > A `go install` build reports its version as `dev` and can't self-update — reinstall with the script (or `go install` again) to upgrade.
