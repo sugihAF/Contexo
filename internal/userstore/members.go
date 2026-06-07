@@ -125,6 +125,56 @@ func (s *Store) ListRepoMembers(repoID string) ([]Membership, error) {
 	return out, rows.Err()
 }
 
+// CountOwnedRepos returns how many distinct repos the user owns (role=owner).
+// The hosted quota policy compares this against the free-tier repo cap.
+func (s *Store) CountOwnedRepos(userID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(DISTINCT repo_id) FROM repo_members WHERE user_id = ? AND role = ?`,
+		userID, RoleOwner,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("userstore: count owned repos: %w", err)
+	}
+	return n, nil
+}
+
+// CountRepoMembers returns the number of people with any role in repo. The
+// owner counts as a member, matching the free-tier "N members per repo" cap.
+func (s *Store) CountRepoMembers(repoID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM repo_members WHERE repo_id = ?`,
+		repoID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("userstore: count repo members: %w", err)
+	}
+	return n, nil
+}
+
+// RepoOwners returns the user IDs of every owner of repo (possibly empty). The
+// hosted quota policy treats a repo as uncapped if any owner is subscribed.
+func (s *Store) RepoOwners(repoID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT user_id FROM repo_members WHERE repo_id = ? AND role = ?`,
+		repoID, RoleOwner,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("userstore: repo owners: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("userstore: scan owner: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // RepoHasOwner reports whether at least one row exists for repo with role=owner.
 func (s *Store) RepoHasOwner(repoID string) (bool, error) {
 	var n int

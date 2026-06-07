@@ -21,6 +21,7 @@ import (
 	"github.com/sugihAF/contexo/internal/server/gitstore"
 	"github.com/sugihAF/contexo/internal/server/handler"
 	"github.com/sugihAF/contexo/internal/userstore"
+	"github.com/sugihAF/contexo/quota"
 )
 
 // Registrar mounts extra routes on the authenticated /v1 group. The handler
@@ -29,10 +30,63 @@ import (
 // separate module can implement one without importing Contexo internals.
 type Registrar func(v1 *gin.RouterGroup)
 
+// RootRegistrar mounts routes on the engine root, outside the /v1 auth
+// middleware — for endpoints that authenticate themselves (e.g. a Stripe
+// webhook verified by signature rather than a bearer token).
+type RootRegistrar func(root *gin.RouterGroup)
+
+// Option configures Run. It is the open-core seam: a private build passes
+// WithRegistrar (authenticated cloud routes), WithRootRegistrar (unauthenticated
+// cloud routes), and/or WithQuota (hosted usage limits); the OSS server calls
+// Run with no options and behaves exactly as before.
+type Option func(*options)
+
+type options struct {
+	registrars     []Registrar
+	rootRegistrars []RootRegistrar
+	quota          quota.Policy
+}
+
+func collectOptions(opts ...Option) options {
+	var cfg options
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+// WithRegistrar mounts cloud-only routes on the authenticated /v1 group. Nil
+// registrars are ignored; it may be passed more than once.
+func WithRegistrar(r Registrar) Option {
+	return func(o *options) {
+		if r != nil {
+			o.registrars = append(o.registrars, r)
+		}
+	}
+}
+
+// WithRootRegistrar mounts an unauthenticated route group on the engine root
+// (e.g. payment webhooks). Nil registrars are ignored; it may be passed more
+// than once.
+func WithRootRegistrar(r RootRegistrar) Option {
+	return func(o *options) {
+		if r != nil {
+			o.rootRegistrars = append(o.rootRegistrars, r)
+		}
+	}
+}
+
+// WithQuota installs a hosted usage-limit policy (repo/member caps). Without it
+// the server is uncapped — the correct default for OSS/self-host builds.
+func WithQuota(p quota.Policy) Option {
+	return func(o *options) { o.quota = p }
+}
+
 // Run boots the Contexo server from environment configuration and blocks
-// serving HTTP. extras let a private build add cloud-only routes; the OSS
-// server calls Run with none and behaves exactly as before.
-func Run(extras ...Registrar) error {
+// serving HTTP. Options let a private build add cloud-only routes and usage
+// limits; the OSS server calls Run with none and behaves exactly as before.
+func Run(opts ...Option) error {
+	cfg := collectOptions(opts...)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -90,12 +144,19 @@ func Run(extras ...Registrar) error {
 
 	resolver := auth.NewResolver(signer, users, legacyKey)
 	h := handler.New(store, users, signer, googleVerifier)
-
-	routeExtras := make([]func(*gin.RouterGroup), len(extras))
-	for i := range extras {
-		routeExtras[i] = extras[i]
+	if cfg.quota != nil {
+		h.SetQuota(cfg.quota)
 	}
-	router := server.NewRouter(h, resolver, routeExtras...)
+
+	routeExtras := make([]func(*gin.RouterGroup), len(cfg.registrars))
+	for i := range cfg.registrars {
+		routeExtras[i] = cfg.registrars[i]
+	}
+	rootExtras := make([]func(*gin.RouterGroup), len(cfg.rootRegistrars))
+	for i := range cfg.rootRegistrars {
+		rootExtras[i] = cfg.rootRegistrars[i]
+	}
+	router := server.NewRouter(h, resolver, routeExtras, rootExtras)
 
 	log.Printf("Contexo server starting on :%s (data: %s)", port, dataRoot)
 	return router.Run(fmt.Sprintf(":%s", port))

@@ -66,6 +66,9 @@ func (c *Client) PushPages(repoID string, req *PushRequest) (*PushResponse, erro
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return nil, quotaError(body)
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
 		return nil, fmt.Errorf("sync: push failed (%d): %s", resp.StatusCode, string(body))
 	}
@@ -117,6 +120,9 @@ func (c *Client) JoinRepo(key string) (string, string, error) {
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return "", "", quotaError(respBody)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("sync: join failed (%d): %s", resp.StatusCode, string(respBody))
 	}
@@ -128,6 +134,21 @@ func (c *Client) JoinRepo(key string) (string, string, error) {
 		return "", "", fmt.Errorf("sync: parse join response: %w", err)
 	}
 	return wrapper.RepoID, wrapper.Role, nil
+}
+
+// quotaError turns a 402 Payment Required body ({"error","upgrade_url",...})
+// into a clean upgrade prompt, so hosted plan-limit rejections reach the user
+// as a readable message instead of raw JSON. Used wherever a request can hit a
+// hosted usage cap (today: ctx join).
+func quotaError(body []byte) error {
+	var q struct {
+		Error      string `json:"error"`
+		UpgradeURL string `json:"upgrade_url"`
+	}
+	if json.Unmarshal(body, &q) == nil && q.Error != "" {
+		return fmt.Errorf("%s", q.Error)
+	}
+	return fmt.Errorf("upgrade required (402): %s", string(body))
 }
 
 // ListRepos returns the repos the authenticated user can see. Used by the

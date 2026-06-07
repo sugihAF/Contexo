@@ -39,6 +39,7 @@ type testRig struct {
 	verifier fakeVerifier
 	resolver *auth.Resolver
 	router   *gin.Engine
+	h        *Handler
 }
 
 func setupRig(t *testing.T) *testRig {
@@ -86,6 +87,7 @@ func setupRig(t *testing.T) *testRig {
 		verifier: verifier,
 		resolver: resolver,
 		router:   r,
+		h:        h,
 	}
 }
 

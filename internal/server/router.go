@@ -13,10 +13,12 @@ import (
 // establishes the session). All other /v1/* requires a Bearer token that the
 // resolver can map to a user_id (session JWT, PAT, or legacy API key).
 //
-// extras are open-core seam hooks: a private build (contexo-backend) passes
-// registrars that mount cloud-only routes on the authenticated /v1 group. The
-// OSS server calls NewRouter with no extras and behaves identically.
-func NewRouter(h *handler.Handler, resolver *auth.Resolver, extras ...func(v1 *gin.RouterGroup)) *gin.Engine {
+// v1Extras and rootExtras are open-core seam hooks. v1Extras mount cloud-only
+// routes on the authenticated /v1 group (they see the resolved user_id).
+// rootExtras mount on the engine root, outside the auth middleware, for routes
+// that authenticate themselves — e.g. payment webhooks verified by signature.
+// The OSS server passes nil for both and behaves identically.
+func NewRouter(h *handler.Handler, resolver *auth.Resolver, v1Extras []func(v1 *gin.RouterGroup), rootExtras []func(root *gin.RouterGroup)) *gin.Engine {
 	r := gin.Default()
 	r.Use(CORS())
 
@@ -64,8 +66,15 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver, extras ...func(v1 *g
 
 	// Open-core seam: cloud-only routes from a private build mount here, on the
 	// same authenticated /v1 group (so they see the resolved user_id).
-	for _, add := range extras {
+	for _, add := range v1Extras {
 		add(v1)
+	}
+
+	// Root seam: unauthenticated cloud routes (e.g. a Stripe webhook that
+	// authenticates by signature, not a bearer token) mount on the engine root,
+	// outside the /v1 auth middleware.
+	for _, add := range rootExtras {
+		add(&r.RouterGroup)
 	}
 
 	return r

@@ -37,7 +37,8 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"})
 		return
 	}
-	if h.store.Exists(req.ID) {
+	exists := h.store.Exists(req.ID)
+	if exists {
 		// If repo already exists on disk but has no owner, claim it.
 		hasOwner, err := h.users.RepoHasOwner(req.ID)
 		if err != nil {
@@ -48,7 +49,16 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "repo already exists"})
 			return
 		}
-	} else {
+	}
+
+	// The caller is about to become a new owner (of a fresh repo or an orphan
+	// claim). Consult the quota before creating anything, so a rejection leaves
+	// no orphan repo on disk. On the OSS build the policy is Unlimited.
+	if !h.enforceRepoQuota(c, uid) {
+		return
+	}
+
+	if !exists {
 		if err := h.store.Init(req.ID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

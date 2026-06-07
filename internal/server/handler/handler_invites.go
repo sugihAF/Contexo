@@ -120,6 +120,33 @@ func (h *Handler) JoinRepo(c *gin.Context) {
 		}
 		return
 	}
+	// Re-joining is idempotent (AddMember is INSERT OR IGNORE) and must not be
+	// blocked by the member cap. Only a genuinely new member counts against it.
+	alreadyMember, err := h.users.IsMember(repoID, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !alreadyMember {
+		count, err := h.users.CountRepoMembers(repoID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		owners, err := h.users.RepoOwners(repoID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := h.quota.AllowMemberAdd(repoID, owners, count); err != nil {
+			if h.writeQuotaError(c, err) {
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	if err := h.users.AddMember(repoID, uid, userstore.RoleMember); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
