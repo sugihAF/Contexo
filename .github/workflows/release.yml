@@ -16,20 +16,39 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0 # full history for the changelog
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.25'
 
+      # Set up minisign signing only when the MINISIGN_KEY secret is present;
+      # otherwise tell GoReleaser to skip the signing step so releases still
+      # work before signing has been configured.
+      - name: Configure release signing
+        id: sign
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -n "$MINISIGN_KEY" ]; then
+            sudo apt-get update && sudo apt-get install -y minisign
+            printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+            echo "MINISIGN_SECRET_KEY_FILE=$RUNNER_TEMP/minisign.key" >> "$GITHUB_ENV"
+            echo "skip=" >> "$GITHUB_OUTPUT"
+            echo "Release signing: ENABLED"
+          else
+            echo "skip=--skip=sign" >> "$GITHUB_OUTPUT"
+            echo "Release signing: DISABLED (add the MINISIGN_KEY secret to enable)"
+          fi
+
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          args: release --clean ${{ steps.sign.outputs.skip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

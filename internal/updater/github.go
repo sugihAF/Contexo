@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"runtime"
 	"time"
+
+	"aead.dev/minisign"
 )
 
 const releaseAPIURL = "https://api.github.com/repos/" + repoOwner + "/" + repoName + "/releases/latest"
@@ -71,13 +73,7 @@ func FetchVerifiedBinary(ctx context.Context, rel *Release) ([]byte, error) {
 }
 
 func verifyChecksum(ctx context.Context, rel *Release, assetName string, archive []byte) error {
-	var sumAsset *Asset
-	for i := range rel.Assets {
-		if rel.Assets[i].Name == "checksums.txt" {
-			sumAsset = &rel.Assets[i]
-			break
-		}
-	}
+	sumAsset := assetNamed(rel, "checksums.txt")
 	if sumAsset == nil {
 		return fmt.Errorf("release has no checksums.txt; refusing to install an unverified binary")
 	}
@@ -85,6 +81,23 @@ func verifyChecksum(ctx context.Context, rel *Release, assetName string, archive
 	if err != nil {
 		return fmt.Errorf("download checksums: %w", err)
 	}
+
+	// When a signing key is pinned, the checksums file itself must carry a valid
+	// minisign signature before any hash in it can be trusted — fail closed.
+	if minisignPublicKey != "" {
+		sigAsset := assetNamed(rel, "checksums.txt.minisig")
+		if sigAsset == nil {
+			return fmt.Errorf("release has no checksums.txt.minisig but a signing key is pinned; refusing to install")
+		}
+		sigData, err := downloadBytes(ctx, sigAsset.URL)
+		if err != nil {
+			return fmt.Errorf("download checksums signature: %w", err)
+		}
+		if err := verifyMinisigSignature(minisignPublicKey, sumData, sigData); err != nil {
+			return err
+		}
+	}
+
 	want := parseChecksums(sumData)[assetName]
 	if want == "" {
 		return fmt.Errorf("no checksum listed for %s", assetName)
@@ -92,6 +105,29 @@ func verifyChecksum(ctx context.Context, rel *Release, assetName string, archive
 	sum := sha256.Sum256(archive)
 	if got := hex.EncodeToString(sum[:]); got != want {
 		return fmt.Errorf("checksum mismatch for %s (got %s, want %s)", assetName, got, want)
+	}
+	return nil
+}
+
+// verifyMinisigSignature checks that signature (the contents of a .minisig file)
+// is a valid minisign signature over message under the given base64 public key.
+func verifyMinisigSignature(pubKeyText string, message, signature []byte) error {
+	var pk minisign.PublicKey
+	if err := pk.UnmarshalText([]byte(pubKeyText)); err != nil {
+		return fmt.Errorf("invalid pinned minisign public key: %w", err)
+	}
+	if !minisign.Verify(pk, message, signature) {
+		return fmt.Errorf("checksums.txt signature does not verify against the pinned key; refusing to install")
+	}
+	return nil
+}
+
+// assetNamed returns the release asset with the exact given name, or nil.
+func assetNamed(rel *Release, name string) *Asset {
+	for i := range rel.Assets {
+		if rel.Assets[i].Name == name {
+			return &rel.Assets[i]
+		}
 	}
 	return nil
 }

@@ -71,12 +71,32 @@ if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL="$(sha256sum "$TMP/$ASSET" | awk '{print $1}')"
 elif command -v shasum >/dev/null 2>&1; then
   ACTUAL="$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  ACTUAL="$(openssl dgst -sha256 "$TMP/$ASSET" | awk '{print $NF}')"
 else
-  warn "No sha256 tool found; skipping checksum verification."
-  ACTUAL="$EXPECTED"
+  die "No sha256 tool found (need sha256sum, shasum, or openssl). Refusing to install an unverified binary."
 fi
 [ "$ACTUAL" = "$EXPECTED" ] || die "Checksum mismatch for $ASSET (got $ACTUAL, want $EXPECTED)."
 printf "  Verified checksum.\n"
+
+# 5a. Verify signature (minisign) -------------------------------------------
+# When a pinned public key is configured, checksums.txt must carry a valid
+# minisign signature — so a tampered GitHub release alone cannot ship a
+# trojaned binary. Hardcode the key below (the "Public key:" value from
+# `minisign -G`) or pass CONTEXO_MINISIGN_PUBKEY; empty = not yet configured.
+MINISIGN_PUBKEY="${CONTEXO_MINISIGN_PUBKEY:-}"
+if [ -n "$MINISIGN_PUBKEY" ]; then
+  if command -v minisign >/dev/null 2>&1; then
+    download "${BASE}/checksums.txt.minisig" "$TMP/checksums.txt.minisig" \
+      || die "Signing is enabled but checksums.txt.minisig is missing; refusing to install."
+    minisign -V -P "$MINISIGN_PUBKEY" -m "$TMP/checksums.txt" -x "$TMP/checksums.txt.minisig" >/dev/null 2>&1 \
+      || die "checksums.txt failed minisign signature verification; refusing to install."
+    printf "  Verified signature.\n"
+  else
+    warn "A signing key is configured but 'minisign' is not installed; skipping signature check (checksum still enforced)."
+    warn "Install minisign (https://jedisct1.github.io/minisign/) for full supply-chain verification."
+  fi
+fi
 
 # 6. Extract + install ------------------------------------------------------
 tar -xzf "$TMP/$ASSET" -C "$TMP"
