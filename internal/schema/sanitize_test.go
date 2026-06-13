@@ -13,11 +13,14 @@ func TestSanitizeContent(t *testing.T) {
 	zwsp := string(rune(0x200b)) // zero-width space
 	bom := string(rune(0xfeff))  // BOM / zero-width no-break space
 	nul := string(rune(0x00))    // NUL
+	zwj := string(rune(0x200d))  // zero-width joiner (legit in emoji + Indic)
+	zwnj := string(rune(0x200c)) // zero-width non-joiner (legit in Persian/Arabic)
 
 	in := "Hello\tworld\nNext line.\r\n" +
 		"ansi:" + esc + "[31mred" + esc + "[0m " +
 		"bidi:" + rlo + "EVIL" + pdf + " " +
 		"zw:foo" + zwsp + "bar " +
+		"emoji:a" + zwj + "b nonjoin:x" + zwnj + "y " +
 		"bom:" + bom + " end " +
 		"nul:" + nul + "here"
 	out := SanitizeContent(in)
@@ -26,6 +29,13 @@ func TestSanitizeContent(t *testing.T) {
 	for _, keep := range []string{"Hello\tworld", "Next line.\r\n", "red", "EVIL", "foobar", "end", "nul:here"} {
 		if !strings.Contains(out, keep) {
 			t.Errorf("expected output to keep %q; got %q", keep, out)
+		}
+	}
+	// Legitimate joiners (ZWJ/ZWNJ) MUST be preserved — they are valid in emoji
+	// sequences and Persian/Indic text; stripping them corrupts content.
+	for _, keep := range []string{zwj, zwnj} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("expected joiner %q to be preserved", keep)
 		}
 	}
 	// Obfuscation / control characters are removed.

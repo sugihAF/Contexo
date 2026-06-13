@@ -25,16 +25,18 @@ func SanitizeContent(s string) string {
 			return -1
 		case r >= 0x80 && r <= 0x9f: // C1 controls
 			return -1
-		case r >= 0x200b && r <= 0x200f: // zero-width + LTR/RTL marks
+		case r == 0x200b: // zero-width space
 			return -1
-		case r >= 0x202a && r <= 0x202e: // bidi embeddings / overrides
+		case r >= 0x202a && r <= 0x202e: // bidi embeddings / overrides (Trojan Source)
 			return -1
-		case r >= 0x2060 && r <= 0x2064: // word joiner + invisible operators
+		case r >= 0x2066 && r <= 0x2069: // bidi isolates (Trojan Source)
 			return -1
-		case r >= 0x2066 && r <= 0x2069: // bidi isolates
+		case r == 0xfeff: // BOM / zero-width no-break space
 			return -1
-		case r == 0xfeff: // zero-width no-break space / BOM
-			return -1
+		// NOTE: U+200C/U+200D (ZWNJ/ZWJ joiners), U+200E/U+200F (LTR/RTL marks)
+		// and U+2060 (word joiner) are intentionally KEPT — they are legitimate in
+		// emoji ZWJ sequences and Persian/Arabic/Indic scripts. The Trojan-Source
+		// attack relies on the bidi overrides/isolates above, which are stripped.
 		default:
 			return r
 		}
