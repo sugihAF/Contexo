@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,9 @@ func (fm *PageFrontmatter) Validate() error {
 	if fm.Slug == "" {
 		return fmt.Errorf("page: slug required")
 	}
+	if !validSlug(fm.Slug) {
+		return fmt.Errorf("page: invalid slug %q (use letters, digits, '-', '_', '.'; no '/', '\\', '..', or leading '-'/'.')", fm.Slug)
+	}
 	switch fm.Type {
 	case TypeConcept, TypeEntity, TypeSource, TypeAnalysis:
 	case "":
@@ -57,6 +61,29 @@ func (fm *PageFrontmatter) Validate() error {
 		return fmt.Errorf("page: created timestamp required")
 	}
 	return nil
+}
+
+// validSlug reports whether a page slug is safe to embed in a filesystem path.
+// The slug becomes part of RelPath() ("wiki/concepts/<slug>.md"), so it must be
+// a single clean path component: no separators, no "..", no leading dash/dot,
+// no control characters. This stops a crafted ctx_write_page slug from escaping
+// the local .contexo store and from constructing a traversal push path.
+func validSlug(s string) bool {
+	if s == "" || len(s) > 200 {
+		return false
+	}
+	if s[0] == '-' || s[0] == '.' {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return !strings.Contains(s, "..")
 }
 
 // RelPath returns the path under .contexo/ where a page of this type and slug lives.

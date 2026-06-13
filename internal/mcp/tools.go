@@ -458,8 +458,32 @@ func (s *Server) buildDistillDirective(batch []*schema.Page) (string, bool) {
 	}, "\n"), true
 }
 
+// safeSessionID reports whether a client-supplied session_id is a single safe
+// filename component. A session_id is joined into the capture buffer path, so a
+// value like "../../etc/passwd" must not be allowed to escape the pending dir.
+func safeSessionID(s string) bool {
+	if s == "" || len(s) > 200 || strings.Contains(s, "..") {
+		return false
+	}
+	if s[0] == '-' || s[0] == '.' {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) toolCaptureSession(args map[string]interface{}) *ToolResult {
 	sessionID, _ := args["session_id"].(string)
+	if sessionID != "" && !safeSessionID(sessionID) {
+		return errorResult(fmt.Sprintf("ctx_capture_session: invalid session_id %q", sessionID))
+	}
 	var buf *capture.Buffer
 	if sessionID != "" {
 		buf = capture.Open(s.store.Root, sessionID)

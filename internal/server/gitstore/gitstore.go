@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -23,6 +24,12 @@ var ErrConflict = errors.New("gitstore: parent_sha conflict")
 
 // ErrRepoNotFound is returned for operations on an uninitialized repo.
 var ErrRepoNotFound = errors.New("gitstore: repo not initialized")
+
+// ErrUnsafePath is returned when a caller-supplied file path could escape the
+// repo working tree or be parsed by git as an option (path traversal / git
+// argument injection). Every public method that forwards a file path to git or
+// the filesystem validates it with validatePagePath first.
+var ErrUnsafePath = errors.New("gitstore: unsafe file path")
 
 // Conflict describes a non-fast-forward write attempt. AncestorContent is
 // populated by callers (see handler.Push) when they can resolve the
@@ -91,6 +98,9 @@ func (s *Store) Write(repoID, filePath string, content []byte, authorName, autho
 	if !s.Exists(repoID) {
 		return "", nil, ErrRepoNotFound
 	}
+	if err := validatePagePath(filePath); err != nil {
+		return "", nil, err
+	}
 	dir := s.repoDir(repoID)
 
 	currentSHA, currentContent, _ := s.lastCommitForPath(dir, filePath)
@@ -110,7 +120,7 @@ func (s *Store) Write(repoID, filePath string, content []byte, authorName, autho
 	if err := os.WriteFile(abs, content, 0o644); err != nil {
 		return "", nil, fmt.Errorf("gitstore: write: %w", err)
 	}
-	if out, err := s.git(dir, "add", filePath); err != nil {
+	if out, err := s.git(dir, "add", "--", filePath); err != nil {
 		return "", nil, fmt.Errorf("gitstore: add: %w: %s", err, out)
 	}
 
@@ -132,6 +142,9 @@ func (s *Store) Write(repoID, filePath string, content []byte, authorName, autho
 func (s *Store) Read(repoID, filePath string) ([]byte, string, error) {
 	if !s.Exists(repoID) {
 		return nil, "", ErrRepoNotFound
+	}
+	if err := validatePagePath(filePath); err != nil {
+		return nil, "", err
 	}
 	dir := s.repoDir(repoID)
 	sha, content, err := s.lastCommitForPath(dir, filePath)
@@ -167,6 +180,12 @@ func (s *Store) ResolveParentSHAForPath(repoID, filePath, sha string) (string, e
 	if !s.Exists(repoID) {
 		return "", ErrRepoNotFound
 	}
+	if err := validatePagePath(filePath); err != nil {
+		return "", err
+	}
+	if !isHexRef(sha) {
+		return "", ErrUnknownSHA
+	}
 	dir := s.repoDir(repoID)
 	out, err := s.git(dir, "log", "-n2", "--format=%H", sha, "--", filePath)
 	if err != nil {
@@ -188,6 +207,9 @@ func (s *Store) HeadSHAForPath(repoID, filePath string) (string, error) {
 	if !s.Exists(repoID) {
 		return "", ErrRepoNotFound
 	}
+	if err := validatePagePath(filePath); err != nil {
+		return "", err
+	}
 	dir := s.repoDir(repoID)
 	out, err := s.git(dir, "log", "-n1", "--format=%H", "--", filePath)
 	if err != nil {
@@ -207,6 +229,12 @@ func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
 		return nil, ErrRepoNotFound
 	}
 	if sha == "" {
+		return nil, ErrUnknownSHA
+	}
+	if err := validatePagePath(filePath); err != nil {
+		return nil, err
+	}
+	if !isHexRef(sha) {
 		return nil, ErrUnknownSHA
 	}
 	dir := s.repoDir(repoID)
@@ -260,7 +288,10 @@ func (s *Store) ChangedSince(repoID, since string) ([]string, string, error) {
 	if since == head {
 		return nil, head, nil
 	}
-	out, err := s.git(dir, "diff", "--name-only", since, head)
+	if !isHexRef(since) {
+		return nil, "", ErrUnknownSHA
+	}
+	out, err := s.git(dir, "diff", "--name-only", since, head, "--")
 	if err != nil {
 		return nil, "", fmt.Errorf("gitstore: diff: %w: %s", err, out)
 	}
@@ -403,6 +434,9 @@ func (s *Store) LogPath(repoID, filePath string, limit int) ([]CommitMeta, error
 	if !s.Exists(repoID) {
 		return nil, ErrRepoNotFound
 	}
+	if err := validatePagePath(filePath); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 50
 	}
@@ -437,6 +471,71 @@ func sanitize(repoID string) string {
 			return -1
 		}
 	}, repoID)
+}
+
+// validatePagePath rejects any caller-supplied page path that could escape the
+// repo working tree or be parsed by git as an option. Legitimate page paths are
+// clean, relative, forward-slash paths such as "wiki/concepts/foo.md". This is
+// the load-bearing server-side guard against the path-traversal write and the
+// git-argument-injection bugs: every entry point (CLI push, MCP ctx_push, the
+// public sync API) funnels its file paths through gitstore, so validating here
+// closes them all regardless of what an untrusted client sends.
+func validatePagePath(p string) error {
+	if p == "" {
+		return ErrUnsafePath
+	}
+	// Reject NUL and other control bytes outright, so the boundary returns a
+	// clean ErrUnsafePath (HTTP 400) instead of relying on the kernel rejecting
+	// the pathname later with EINVAL (a 500-class error). Page paths never
+	// legitimately contain control characters.
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return ErrUnsafePath
+		}
+	}
+	// Normalize Windows separators so the checks are OS-independent (a self-host
+	// server may run on Windows, where "\" is also a path separator).
+	norm := strings.ReplaceAll(p, `\`, "/")
+	if strings.HasPrefix(norm, "/") {
+		return ErrUnsafePath // absolute path
+	}
+	for _, seg := range strings.Split(norm, "/") {
+		// Reject empty (//, leading/trailing /), "." / ".." traversal, and any
+		// segment that git could read as a flag.
+		if seg == "" || seg == "." || seg == ".." || strings.HasPrefix(seg, "-") {
+			return ErrUnsafePath
+		}
+		// Never let a page path descend into a repo's ".git" directory: writing
+		// .git/hooks/* or .git/config is a server-side code-exec / tamper vector
+		// even without leaving the repo. Case-folded for case-insensitive FSes.
+		if strings.EqualFold(seg, ".git") {
+			return ErrUnsafePath
+		}
+	}
+	// The cleaned slash path must equal the input (no ".."/"."/double-slash
+	// normalization), and filepath.IsLocal must agree it stays in-tree.
+	if path.Clean(norm) != norm {
+		return ErrUnsafePath
+	}
+	if !filepath.IsLocal(filepath.FromSlash(norm)) {
+		return ErrUnsafePath
+	}
+	return nil
+}
+
+// isHexRef reports whether s is a valid git object id: empty or up to 64 hex
+// characters. It blocks flag injection (--output=, -G, --all) and ref names
+// (HEAD) from reaching git as a revision argument via the since/from/to params.
+func isHexRef(s string) bool {
+	if len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) git(dir string, args ...string) (string, error) {

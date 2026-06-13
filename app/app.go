@@ -11,8 +11,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -158,6 +160,24 @@ func Run(opts ...Option) error {
 	}
 	router := server.NewRouter(h, resolver, routeExtras, rootExtras)
 
-	log.Printf("Contexo server starting on :%s (data: %s)", port, dataRoot)
-	return router.Run(fmt.Sprintf(":%s", port))
+	// Use an explicit http.Server with timeouts instead of router.Run (gin's
+	// default has none): without ReadHeaderTimeout/IdleTimeout a single client
+	// can hold connections open indefinitely (Slowloris) and exhaust the
+	// WAF-less origin. Listen address is overridable so prod can bind loopback
+	// (CONTEXO_LISTEN_ADDR=127.0.0.1:8080) and let Caddy be the only ingress.
+	addr := os.Getenv("CONTEXO_LISTEN_ADDR")
+	if addr == "" {
+		addr = fmt.Sprintf(":%s", port)
+	}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	log.Printf("Contexo server starting on %s (data: %s)", addr, dataRoot)
+	return srv.ListenAndServe()
 }

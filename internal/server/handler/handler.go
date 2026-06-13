@@ -337,6 +337,10 @@ func (h *Handler) Push(c *gin.Context) {
 				})
 				continue
 			}
+			if errors.Is(err, gitstore.ErrUnsafePath) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path: " + file.Path})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
