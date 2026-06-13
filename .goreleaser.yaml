@@ -49,6 +49,25 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# Sign checksums.txt with minisign so write access to a GitHub release alone
+# cannot ship a trojaned binary: the in-binary updater and install.sh verify the
+# signature against a pinned public key. The release workflow provides
+# MINISIGN_SECRET_KEY_FILE from the MINISIGN_KEY secret and runs goreleaser with
+# `--skip=sign` when that secret is absent, so this never blocks a release.
+signs:
+  - id: minisign
+    artifacts: checksum
+    cmd: minisign
+    args:
+      - "-S"
+      - "-s"
+      - "{{ .Env.MINISIGN_SECRET_KEY_FILE }}"
+      - "-m"
+      - "${artifact}"
+      - "-x"
+      - "${signature}"
+    signature: "${artifact}.minisig"
+
 release:
   github:
     owner: sugihAF

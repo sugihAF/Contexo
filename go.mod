@@ -3,6 +3,7 @@ module github.com/sugihAF/contexo
 go 1.25.0
 
 require (
+	aead.dev/minisign v0.2.0
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -16,7 +17,6 @@ require (
 )
 
 require (
-	aead.dev/minisign v0.2.0 // indirect
 	github.com/bytedance/sonic v1.11.6 // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect

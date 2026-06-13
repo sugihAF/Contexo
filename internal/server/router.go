@@ -20,14 +20,41 @@ import (
 // The OSS server passes nil for both and behaves identically.
 func NewRouter(h *handler.Handler, resolver *auth.Resolver, v1Extras []func(v1 *gin.RouterGroup), rootExtras []func(root *gin.RouterGroup)) *gin.Engine {
 	r := gin.Default()
+	// Trust only the local reverse proxy (Caddy) for X-Forwarded-For, so the
+	// rate-limit key is the real client IP and cannot be spoofed via a header
+	// by a direct client. Self-host behind a different proxy: set
+	// CONTEXO_TRUSTED_PROXIES (comma-separated) to that proxy's address(es).
+	_ = r.SetTrustedProxies(trustedProxies())
+
+	// DoS resilience: cap request bodies and rate-limit per client IP. The
+	// origin has no CDN/WAF, so these app-side controls are the only defense.
+	r.Use(MaxBody(envInt64("CONTEXO_MAX_BODY_BYTES", defaultMaxBodyBytes)))
+	if rateLimitingEnabled() {
+		general := newRateLimiter(
+			envInt("CONTEXO_RATELIMIT_PER_MIN", defaultRatePerMin),
+			envInt("CONTEXO_RATELIMIT_BURST", defaultRateBurst),
+		)
+		r.Use(RateLimit(general))
+	}
+
 	r.Use(CORS())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// Unauthenticated: establishes identity.
-	r.POST("/v1/auth/google", h.GoogleAuth)
+	// Unauthenticated: establishes identity. Rate-limited harder than the rest
+	// because each call runs an RS256 id_token verification plus DB writes — a
+	// prime target for credential-stuffing / cost-burn floods.
+	if rateLimitingEnabled() {
+		authLimiter := newRateLimiter(
+			envInt("CONTEXO_AUTH_RATELIMIT_PER_MIN", defaultAuthRatePerMin),
+			envInt("CONTEXO_AUTH_RATELIMIT_BURST", defaultAuthRateBurst),
+		)
+		r.POST("/v1/auth/google", RateLimit(authLimiter), h.GoogleAuth)
+	} else {
+		r.POST("/v1/auth/google", h.GoogleAuth)
+	}
 
 	// Authenticated routes.
 	v1 := r.Group("/v1")
