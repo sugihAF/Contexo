@@ -221,5 +221,3 @@ rm "$(go env GOPATH)/bin/ctx"      # ctx.exe on Windows
 
 - [`docs/usage.md`](docs/usage.md) — **start here** — admin setup + developer onboarding + daily flow
 - [`docs/vision.md`](docs/vision.md) — what Contexo is and the page format
-- [`docs/migration.md`](docs/migration.md) — file-by-file map from the previous MVP-1 architecture
-- [`docs/mvp-build-sequence.md`](docs/mvp-build-sequence.md) — 11-step build sequence with acceptance criteria

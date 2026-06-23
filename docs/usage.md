@@ -2,71 +2,162 @@
 
 Concrete end-to-end flow from zero. Two roles:
 
-- **Admin** (one-time setup): runs the Contexo server, hands out API keys.
-- **Developer** (per dev, per project): installs the CLI, points it at the server, wires it into their AI agent.
+- **Admin** (one-time setup): runs the Contexo server and invites developers (Google sign-in, invite keys, or — for simple instances — a legacy shared key).
+- **Developer** (per dev, per project): installs the CLI, points it at the server, signs in, and wires it into their AI agent.
 
 Then the daily flow: Dev A researches with their agent, Dev A shares to the team, Dev B picks up the work, Dev B's agent sees Dev A's reasoning.
+
+> Most people don't self-host. The hosted server lives at `https://api.contexo.live` with the dashboard at `https://contexo-web.pages.dev`, and `ctx login` targets it by default. If that's you, skip Part 1 and start at Part 2.
 
 ---
 
 ## Part 1 — Server setup (one-time, by admin)
 
-### 1.1 Build the binaries
+Only needed if you're self-hosting. Using hosted Contexo? Skip to Part 2.
+
+### 1.1 Get the binaries
+
+The **CLI** (`ctx`) installs as a prebuilt binary — no Go toolchain (see the README's Install section):
 
 ```
-git clone <this repo>
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.sh | sh
+# Windows (PowerShell)
+iwr -useb https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.ps1 | iex
+```
+
+The **server** (`contexo-server`) runs two ways: with Docker (**§1.2**, recommended) or from a binary you build yourself (**§1.3**). To build from source:
+
+```
+git clone https://github.com/sugihAF/contexo
 cd contexo
-go build -o bin/ctx ./cmd/ctx
 go build -o bin/contexo-server ./cmd/contexo-server
+go build -o bin/ctx ./cmd/ctx        # optional — the install script is easier
 ```
 
-Pure Go, no CGO. The server needs `git` on PATH (used internally for the per-repo storage).
+Pure Go, no CGO. The server shells out to `git` for the per-repo storage, so `git` must be on PATH (the Docker image bundles it).
 
-### 1.2 Run the server
+### 1.2 Run the server with Docker (recommended)
+
+The repo ships a single-container setup in [`docker/`](../docker): a multi-stage build (Go → Alpine) that bundles `git`, runs as a non-root user, and ships a `/health` healthcheck.
 
 ```
-mkdir -p /var/contexo/repos
-CONTEXO_DATA_ROOT=/var/contexo/repos \
-CONTEXO_API_KEY=team-secret-key-here \
-PORT=8080 \
-./bin/contexo-server
+cd docker
+cp .env.example .env
+# edit .env — at minimum set CONTEXO_API_KEY to a real secret
+docker compose up -d
+docker compose logs -f
 ```
 
-That's it. The server is now listening on `:8080`. Health check:
+Health check:
 
 ```
 curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-### 1.3 What state lives where
+`docker compose` reads these from `.env` (only `CONTEXO_API_KEY` is required — compose refuses to start without it):
 
-- `/var/contexo/repos/<repo_id>/` — one git working repository per project. Real `git log` works in there; you can inspect history with normal git tools.
-- `CONTEXO_API_KEY` — single shared key for the team (MVP). Multi-user keys with per-user identities are a deferred feature.
-- No database. The git repos are the source of truth.
+| `.env` key | Purpose | Default |
+|---|---|---|
+| `CONTEXO_API_KEY` | **Required.** Legacy shared key; rotate away from `dev-key`. | — |
+| `CONTEXO_SESSION_SECRET` | Persistent session-signing secret (`openssl rand -hex 32`). Unset → ephemeral per boot. | unset |
+| `GOOGLE_OAUTH_CLIENT_ID` | Enables Google sign-in from the dashboard. | unset |
+| `CONTEXO_CORS_ORIGINS` | Comma-separated dashboard origins allowed by CORS. | `http://localhost:5173,http://localhost:3000` |
+| `CTXHUB_PORT` | Host port to publish (the container always listens on 8080). | `8080` |
 
-Back-ups: `rsync /var/contexo/repos/ <backup-target>/`. That's the whole thing.
+Knowledge and metadata persist in the named volume `contexo_data` (mounted at `/data` — i.e. `CONTEXO_DATA_ROOT` inside the container); it survives rebuilds.
 
-### 1.4 Production deployment
+**Update** to a newer version:
 
-For real use, put it behind nginx with HTTPS and rotate `CONTEXO_API_KEY` away from `dev-key`:
+```
+git pull
+docker compose build --no-cache
+docker compose up -d        # the /data volume persists
+```
+
+The [`docker/README.md`](../docker/README.md) has the volume back-up recipe and a production nginx/TLS server block.
+
+### 1.3 Run the server from a binary
+
+Minimal:
+
+```
+mkdir -p /var/contexo/data
+CONTEXO_DATA_ROOT=/var/contexo/data \
+PORT=8080 \
+./bin/contexo-server
+```
+
+Health check:
+
+```
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+The server reads these environment variables:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `CONTEXO_DATA_ROOT` | Where the per-project git repos and the SQLite DB live | `./contexo-data` |
+| `PORT` | HTTP listen port | `8080` |
+| `CONTEXO_SESSION_SECRET` | HMAC secret that signs session tokens. **Set this in production** — when unset the server generates a new random secret each boot, so sessions don't survive a restart. | random per boot |
+| `GOOGLE_OAUTH_CLIENT_ID` | Enables Google sign-in (`POST /v1/auth/google`). Unset → that endpoint returns 503 and only token / legacy-key auth works. | unset |
+| `CONTEXO_API_KEY` | Legacy shared API key (back-compat). Anyone presenting it authenticates as a single `legacy:admin` identity — no per-user attribution. | `dev-key` |
+| `CONTEXO_LISTEN_ADDR` | Explicit bind address. Set `127.0.0.1:8080` to bind loopback behind a reverse proxy. | `:$PORT` |
+| `CONTEXO_CORS_ORIGINS` | Comma-separated dashboard origins allowed by CORS (browser clients only). | `http://localhost:5173,http://localhost:3000` |
+
+For a quick private/test instance, `CONTEXO_DATA_ROOT` + `PORT` + a strong `CONTEXO_API_KEY` is enough — developers authenticate with that one key (the "legacy" path in 2.3). For real per-user identity and attribution, set `CONTEXO_SESSION_SECRET` and `GOOGLE_OAUTH_CLIENT_ID`, and point a dashboard at this server.
+
+### 1.4 What state lives where
+
+- `CONTEXO_DATA_ROOT/<repo_id>/` — one git repository per project. Real `git log` works in there; the git history is the source of truth for **knowledge pages**.
+- `CONTEXO_DATA_ROOT/contexo.db` — a SQLite database holding everything that *isn't* a knowledge page: **users**, **personal access tokens**, **repo members + roles**, **invite keys**, and the **activity feed**.
+
+Back-ups: snapshot the whole data root (`rsync -a /var/contexo/data/ <backup-target>/`) — that captures both the git repos and `contexo.db` in one shot. Under Docker the data root is the `contexo_data` volume (mounted at `/data`); back it up with the `docker run … tar` recipe in [`docker/README.md`](../docker/README.md).
+
+### 1.5 Production deployment
+
+Put the server behind a reverse proxy that terminates HTTPS (Caddy or nginx), bind the app to loopback, and set a persistent session secret:
+
+```
+CONTEXO_DATA_ROOT=/var/contexo/data \
+CONTEXO_LISTEN_ADDR=127.0.0.1:8080 \
+CONTEXO_SESSION_SECRET=$(openssl rand -hex 32) \
+GOOGLE_OAUTH_CLIENT_ID=<your-oauth-client-id> \
+./bin/contexo-server
+```
+
+nginx sketch (Caddy is similar and auto-issues the cert):
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
 }
 ```
 
 A systemd unit, a small VM (1 CPU, 2 GB RAM is plenty for hundreds of pages and dozens of devs), and you're done.
 
-### 1.5 Hand out credentials
+### 1.6 Invite developers
 
-Tell each developer:
-- Server URL: `https://contexo.yourcompany.com` (or `http://localhost:8080` for local testing)
-- API key: `team-secret-key-here`
-- Repo ID for each project: e.g. `chompchat`, `acme-api`, etc.
+Two ways to onboard a developer onto a repo:
+
+- **Google sign-in** (requires `GOOGLE_OAUTH_CLIENT_ID`): the developer opens the dashboard, signs in with Google, and mints a personal access token from the Settings page. That gives them an identity; they join a specific repo by redeeming an invite key (below).
+- **Invite key**: an owner mints a repo invite key and shares it with the developer:
+
+```
+$ ctx invite mint --label "alice laptop"
+ctxi_8f2c…           # send this to the developer (revocable; see `ctx invite list` / `revoke`)
+```
+
+  The developer redeems it with `ctx join ctxi_…` (see 2.3).
+
+Either way, tell each developer the **server URL** (`https://contexo.yourcompany.com`) and the **repo ID** for each project (e.g. `chompchat`, `acme-api`).
+
+For a simple self-hosted or test instance you can skip identity entirely and hand out the **legacy `CONTEXO_API_KEY`** — everyone then shares one `legacy:admin` identity. Fine for a personal server; not for per-author attribution across a team.
 
 ---
 
@@ -74,10 +165,18 @@ Tell each developer:
 
 ### 2.1 Get the CLI
 
+Prebuilt binary, no Go required:
+
 ```
-go install github.com/sugihAF/contexo/cmd/ctx@latest
-# or copy bin/ctx from the build above
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.sh | sh
+# Windows (PowerShell)
+iwr -useb https://raw.githubusercontent.com/sugihAF/Contexo/main/scripts/install.ps1 | iex
 ```
+
+(Already have the Go toolchain? `go install github.com/sugihAF/contexo/cmd/ctx@latest` works too — but a `go install` build reports its version as `dev` and can't self-update.)
+
+Keep it current with `ctx update` (or `ctx update --check` to just look).
 
 ### 2.2 Initialize the project
 
@@ -89,12 +188,13 @@ $ ctx init
 Initialized .contexo in /home/sugih/code/chompchat
 ```
 
-You now have a `.contexo/` tree:
+`ctx init` creates the `.contexo/` tree, writes a `.mcp.json` so your agent can reach Contexo, and installs the Claude Code Stop hook used for session capture:
 
 ```
 .contexo/
-├── config.json
-├── index.md            ← always loaded into the AI's context
+├── config.json          ← server URL, repo_id, dashboard URL, last-pull marker
+├── credentials.json     ← auth token + identity (written by `ctx login`; chmod 600, git-ignored)
+├── index.md             ← always loaded into the AI's context
 ├── tags.md
 ├── raw/sessions/
 └── wiki/
@@ -103,32 +203,59 @@ You now have a `.contexo/` tree:
     └── entities/
 ```
 
-Add `.contexo/.sync/` to `.gitignore` if you want — it's local sync metadata, not knowledge.
+`credentials.json` holds your token and should never be committed — `ctx init` adds it to `.gitignore`. To reverse everything `ctx init` did, run `ctx detach` (`--keep-knowledge` preserves `.contexo/`).
 
-### 2.3 Point at the server and authenticate
+### 2.3 Point at the server and sign in
+
+**Hosted Contexo** (`api.contexo.live`) is the default, so just sign in:
+
+```
+$ ctx login
+Opening https://contexo-web.pages.dev in your browser…
+Signed in as sugihAF <sugih@yourcompany.com>
+```
+
+`ctx login` opens the dashboard, you sign in with Google, and a freshly-minted personal access token (`ctxp_…`) is copied back to the CLI over a loopback redirect — no copy-pasting. Your name and email come from the Google session and become the git author on every push.
+
+**Self-hosted server** — point at it first (or pass `--server` / `--dashboard` to `ctx login`):
 
 ```
 $ ctx remote set https://contexo.yourcompany.com
-Server: https://contexo.yourcompany.com
-
-$ ctx remote set-repo chompchat
-Repo: chompchat
-
-$ ctx auth login \
-    --api-key team-secret-key-here \
-    --name "sugihAF" \
-    --email "sugih@yourcompany.com"
-Authenticated (server: https://contexo.yourcompany.com) (repo: chompchat)
+$ ctx login --dashboard https://dash.yourcompany.com
 ```
 
-`--name` and `--email` become the git commit author on every push, so teammates can see who contributed each piece of knowledge.
+**No browser** (CI, headless, remote box) — paste a token instead:
+
+```
+$ ctx login --no-browser
+Token: ctxp_…              # a PAT minted from the dashboard's Settings page
+```
+
+…or pass it directly with `ctx login --token ctxp_…`.
+
+**Legacy shared key** (simple self-hosted instances) — still supported, deprecated:
+
+```
+$ ctx login --server https://contexo.yourcompany.com \
+    --api-key "$CONTEXO_API_KEY" --name "sugihAF" --email "sugih@yourcompany.com"
+```
+
+Then select the repo — redeem an invite key, or pick one you already have access to:
+
+```
+$ ctx join ctxi_8f2c…       # if an owner gave you an invite key
+Joined repo chompchat (role: member)
+
+# — or —
+$ ctx remote set-repo chompchat    # omit the id for an interactive picker
+```
 
 Verify:
 
 ```
 $ ctx status
 Initialized: yes
-Server: https://contexo.yourcompany.com
+Server: https://api.contexo.live
 Repo: chompchat
 Authenticated: yes
 User: sugihAF <sugih@yourcompany.com>
@@ -139,9 +266,9 @@ Pages never pushed: 0
 
 ### 2.4 Wire it into your AI agent
 
-Contexo exposes both **resources** (read-only knowledge) and **tools** (`ctx_push`, `ctx_pull`, `ctx_status`, `ctx_write_page`) over MCP. The agent reaches it by running `ctx mcp` in the project directory.
+`ctx init` already wrote `.mcp.json`, so most agents pick Contexo up automatically. The agent runs `ctx mcp` in the project directory and gets Contexo's **eight tools** and **five resources** over MCP.
 
-**Claude Code** — create `.mcp.json` in the project root (or add to `~/.claude.json`):
+If you need to register it by hand (Cursor, Windsurf, or adding to `~/.claude.json`):
 
 ```json
 {
@@ -154,15 +281,13 @@ Contexo exposes both **resources** (read-only knowledge) and **tools** (`ctx_pus
 }
 ```
 
-Or via the CLI:
+Or via the Claude Code CLI:
 
 ```
 claude mcp add contexo -- ctx mcp
 ```
 
-**Cursor / Windsurf / other MCP clients**: same idea — register a server named `contexo` whose command is `ctx mcp` and whose working directory is the project root.
-
-The first time the agent starts in this project, it will see the four `ctx_*` tools and the five `ctx://...` resources available.
+The tools the agent sees are `ctx_write_page`, `ctx_push`, `ctx_pull`, `ctx_status`, `ctx_history`, `ctx_diff`, `ctx_evolution`, and `ctx_capture_session`; the resources are `ctx://index`, `ctx://tags`, `ctx://wiki/{slug}`, `ctx://raw/{session-id}`, and `ctx://search?q=&type=&tag=`. (Full descriptions in the README's MCP section.)
 
 ### 2.5 Pull what's already there
 
@@ -202,7 +327,7 @@ $ ctx log
 1a320e1d  2026-05-14 16:42  sugihAF — agent push (1 pages)
 ```
 
-Or do it manually if you prefer not to trust the agent with the push:
+(or `ctx activity` for the fuller push/pull timeline). Or do the push manually if you prefer not to trust the agent with it:
 
 ```
 $ ctx push --feature stripe --dry-run
@@ -264,35 +389,36 @@ As Dev B implements, they learn something new — say, that Stripe's `usage_reco
 
 > *"Update the stripe-subscription page with what we learned about usage_record_summaries caching."*
 
-Claude reads the page, edits the body, and calls `ctx_push`. The server returns 200 with a new commit attributed to Dev B. Dev A pulls later and sees Dev B's addition.
+Claude reads the page, edits the body, and calls `ctx_push`. The server returns a new commit attributed to Dev B. Dev A pulls later and sees Dev B's addition.
 
 ---
 
 ## Part 4 — Conflict resolution
 
-If Dev A and Dev B both edit the same page locally before either pushes, whoever pushes second gets a conflict:
+If two people edit the same page from the same starting version and both push, the second push is rejected — the server never silently overwrites the first:
 
 ```
 $ ctx push --feature stripe
 1 conflict(s):
   wiki/concepts/stripe-subscription.md: current=af84a79f expected_parent=1a320e1d
 Resolve by running 'ctx pull', merging the conflicting pages, then 'ctx push' again.
-Error: push: 1 conflict(s) remain
 ```
 
-The fix:
+When the **agent** drives the push, the `ctx_push` tool instead returns a `<MERGE_REQUIRED>` directive carrying three versions — the common ancestor, your local edit, and the server's current page — plus the list of conflicting sections. The agent writes a reconciled page with `ctx_write_page` and re-invokes `ctx_push`; the local sync state is updated so the re-push won't 409 for the same reason.
+
+By hand it's the same shape:
 
 ```
 $ ctx pull --full
 ```
 
-Now both versions exist locally — the server's version overwrites yours since `parent_sha` was stale. **Read both versions** (your `git diff` or just your memory of what you wrote vs. the pulled content), merge them by hand or by asking Claude to merge them intelligently:
+…brings down the server's version, then you reconcile the two — or ask your agent to:
 
-> *"The pulled stripe-subscription page diverged from my version. Read both versions and merge them coherently — keep both authors' insights."*
+> *"The pulled stripe-subscription page diverged from mine. Read both versions and merge them coherently — keep both authors' insights."*
 
-Claude rewrites the page with the merged content. Then `ctx push` again.
+…then `ctx push` again. For markdown prose, an agent that understands each section's *intent* merges better than git's line-based diff.
 
-For markdown prose this works better than git's line-based merge because the agent can understand the *intent* of each section.
+> Heads-up before you even get here: when the agent reads `ctx://wiki/<slug>` and the page changed on the server since your last pull, the response is prefixed with a `<DRIFT_NOTICE>` summarizing what's new — so it usually learns about divergence *before* editing. `ctx status` lists drifted pages too (`CONTEXO_DRIFT_DISABLE=1` turns the check off).
 
 ---
 
@@ -301,11 +427,12 @@ For markdown prose this works better than git's line-based merge because the age
 | Symptom | Fix |
 |---|---|
 | `mcp: open store: no such file or directory` | Run `ctx init` in the project root first. |
-| `push: no credentials, run 'ctx auth login' first` | `ctx auth login --api-key ...` |
-| `push: no server URL configured` | `ctx remote set <url>` |
-| `push: no repo_id configured` | `ctx remote set-repo <id>` |
-| Server returns 401 | Wrong API key, or server isn't running with `CONTEXO_API_KEY` set. |
-| Server returns 404 on push | Probably fine — push auto-creates the repo. If on pull, the repo has no commits yet. |
+| `push: no credentials, run 'ctx login' first` | `ctx login` (or `ctx login --token ctxp_…`). |
+| `push: no server URL configured` | `ctx remote set <url>` (hosted users can skip — it defaults to `api.contexo.live`). |
+| `push: no repo_id configured` | `ctx remote set-repo <id>`, or `ctx join <invite-key>`. |
+| Server returns 401 | Token expired or invalid — run `ctx login` again. (Legacy path: wrong `CONTEXO_API_KEY`, or the server isn't running with it set.) |
+| Server returns 403 on invite/members | You're not an owner — only owners mint invite keys or remove members. |
+| Server returns 404 on push | Probably fine — push auto-creates the repo. On pull, it means the repo has no commits yet. |
 | Agent says it can't find `ctx_push` | Check `.mcp.json` is registered and the `ctx` binary is on PATH for the agent's environment. |
 | `git: command not found` (server side) | Install git on the server machine. Contexo shells out to it. |
 
@@ -313,10 +440,10 @@ For markdown prose this works better than git's line-based merge because the age
 
 ## Part 6 — What this is NOT
 
-Things you might expect but won't find:
+Things you might expect but won't find (or won't find the way you'd expect):
 
-- **Automatic capture.** The agent has to write pages explicitly (via `ctx_write_page` or by editing files). There's no daemon recording every conversation.
-- **Multi-user access control.** Single shared API key per server. Per-user roles are deferred.
-- **Web UI.** The local markdown files + your AI agent are the UI. If you want to browse server-side, `git log` and `git show` in `/var/contexo/repos/<repo>/` work.
+- **Silent capture.** Capture is *assisted*, not automatic: a Claude Code Stop hook can buffer each session's turns (`ctx capture`), and `ctx_capture_session` hands the agent that buffer plus a page template — but the agent still has to distill and write the page. There's no daemon archiving full conversation transcripts.
+- **A full authoring Web UI.** The hosted **dashboard** lets you browse repos, members, and activity and mint tokens / invite keys — but you don't author knowledge pages in it. The local markdown files + your AI agent remain the authoring surface; `git log` / `git show` in the server's `<repo>` dir also work for raw inspection.
+- **Per-page access control.** Access is per *repo* — you're a member (with an owner/member role) or you're not. There are no per-page or per-directory ACLs.
 - **Full-text search ranking.** `ctx://search?q=...` does substring + tag/type filtering. No relevance ranking. The agent + `grep` is fine until proven otherwise.
 - **Cross-project knowledge.** Contexo is per-project. Cross-project knowledge (Anthropic API, general patterns) stays in your personal `llm-wiki` or equivalent.

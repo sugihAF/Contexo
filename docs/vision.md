@@ -23,7 +23,7 @@ The format is the same as the personal `llm-wiki` knowledge base — markdown pa
 ```
 chompchat/                            ← any project repo
 └── .contexo/                          ← per-project local knowledge (mirrors llm-wiki)
-    ├── config.json                   ← server URL, repo_id, api_key path
+    ├── config.json                   ← server URL, repo_id, dashboard URL (token lives in credentials.json)
     ├── index.md                      ← always pre-loaded into AI context
     ├── tags.md                       ← tag → page lookup
     ├── raw/sessions/
@@ -36,13 +36,13 @@ chompchat/                            ← any project repo
         └── analyses/
 
 Contexo server (single instance, many projects)
-└── /var/contexo/repos/
+└── $CONTEXO_DATA_ROOT/
     ├── chompchat/                    ← git repo per project
     ├── ralph-loop/
     └── ...
 ```
 
-Each project's server-side store is a real git repository. History, authorship, timeline, and conflict resolution come for free from git.
+Each project's server-side store is a real git repository — history, authorship, timeline, and conflict resolution come for free from git. Identity, membership, invite keys, and the activity feed live in a small SQLite database (`contexo.db`) next to the repos under `$CONTEXO_DATA_ROOT`; git stays the source of truth for the knowledge pages themselves.
 
 ---
 
@@ -56,7 +56,7 @@ schema: ctx.page.v1
 slug: stripe-subscription
 type: concept          # one of: concept, entity, source, analysis
 author: sugihAF        # human who owns this knowledge
-agent: claude-opus-4-7 # model that wrote / last-edited the page
+agent: claude-opus-4-8 # model that wrote / last-edited the page
 created: 2026-05-14T10:00:00Z
 updated: 2026-05-14T15:30:00Z
 parent_sha: ""         # git sha this revision was built on; "" on first write
@@ -123,7 +123,7 @@ The server is built on git. Every requirement falls out naturally:
 |---|---|
 | Latest knowledge | `HEAD` of the server-side repo |
 | Timeline | `git log` |
-| Author per change | Commit author resolved from API key on push |
+| Author per change | Commit author resolved from the signed-in user (PAT / Google identity) on push |
 | Conflict resolution | `git merge` — server returns 409 + both versions if push can't fast-forward |
 | Diff / history per page | `git log -- wiki/concepts/<slug>.md` |
 | Rollback | `git revert` |
@@ -144,7 +144,7 @@ On conflict, the client doesn't have to do the merge manually — the AI itself 
 ## Out of scope (deferred indefinitely)
 
 - Real-time multi-user editing (Google-Docs style). Push/pull is enough.
-- Web UI for browsing knowledge. The local markdown files + AI agent are the UI.
+- A web UI for **authoring** knowledge. A hosted dashboard now browses repos, members, and activity and mints tokens / invite keys — but pages are still authored as local markdown through your agent.
 - Full-text search with relevance ranking. `grep` over the corpus is sufficient until proven otherwise.
-- Encryption at rest. API-key auth + HTTPS is the MVP security boundary.
+- Encryption at rest. Per-user token / OAuth auth + HTTPS is the security boundary; the data root and `contexo.db` aren't encrypted.
 - Branch/experiment management on knowledge pages. Pages don't fork; they evolve.
