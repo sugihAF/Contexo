@@ -2,6 +2,13 @@
   <img src="https://raw.githubusercontent.com/sugihAF/Contexo/main/.github/assets/contexo-hero.svg" alt="Contexo — git-like AI Agent context versioning and synchronization" width="100%">
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"></a>
+  <a href="https://github.com/sugihAF/Contexo/releases/latest"><img src="https://img.shields.io/github/v/release/sugihAF/Contexo?color=blue" alt="Latest release"></a>
+  <a href="https://contexo.live"><img src="https://img.shields.io/badge/website-contexo.live-FF7A00" alt="Website: contexo.live"></a>
+  <a href="https://x.com/Contexo_live"><img src="https://img.shields.io/badge/follow-%40Contexo__live-000000?logo=x&logoColor=white" alt="Follow @Contexo_live on X"></a>
+</p>
+
 # Contexo
 
 **GitHub for AI agent knowledge, scoped per project.**
