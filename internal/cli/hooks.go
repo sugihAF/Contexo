@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sugihAF/contexo/internal/cli/agentwire"
 	"github.com/sugihAF/contexo/internal/config"
 )
 
@@ -30,7 +31,7 @@ const hookCommand = "ctx capture turn"
 func newHooksCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hooks",
-		Short: "Manage Claude Code Stop-hook integration for Contexo capture",
+		Short: "Manage the Contexo capture hook (Claude Code, Codex)",
 	}
 	cmd.AddCommand(newHooksInstallCmd())
 	cmd.AddCommand(newHooksUninstallCmd())
@@ -39,45 +40,195 @@ func newHooksCmd() *cobra.Command {
 }
 
 func newHooksInstallCmd() *cobra.Command {
-	return &cobra.Command{
+	var tool string
+	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Register the Contexo capture Stop-hook in .claude/settings.json",
+		Short: "Install the Contexo capture hook for an agent (claude|codex|all)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := GetRootDir()
-			return installHook(cmd, root)
+			return runHooksInstall(cmd, GetRootDir(), tool)
 		},
 	}
+	cmd.Flags().StringVar(&tool, "tool", "all", "agent: claude|codex|cursor|all")
+	return cmd
 }
 
 func newHooksUninstallCmd() *cobra.Command {
-	return &cobra.Command{
+	var tool string
+	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the Contexo capture Stop-hook from .claude/settings.json",
+		Short: "Remove the Contexo capture hook for an agent (claude|codex|all)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := GetRootDir()
-			return uninstallHook(cmd, root)
+			return runHooksUninstall(cmd, GetRootDir(), tool)
 		},
 	}
+	cmd.Flags().StringVar(&tool, "tool", "all", "agent: claude|codex|cursor|all")
+	return cmd
 }
 
 func newHooksStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var tool string
+	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show whether the Contexo capture Stop-hook is currently installed",
+		Short: "Show whether the Contexo capture hook is installed per agent",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := GetRootDir()
-			installed, err := hookInstalled(root)
+			return runHooksStatus(cmd, GetRootDir(), tool)
+		},
+	}
+	cmd.Flags().StringVar(&tool, "tool", "all", "agent: claude|codex|cursor|all")
+	return cmd
+}
+
+// expandHookTools turns a --tool value into the concrete capture-hook targets.
+// (Cursor has no capture support yet, so it's not a valid hook tool.)
+func expandHookTools(tool string) ([]string, error) {
+	switch tool {
+	case "claude", "codex", "cursor":
+		return []string{tool}, nil
+	case "all", "":
+		return []string{"claude", "codex", "cursor"}, nil
+	default:
+		return nil, fmt.Errorf("unknown --tool %q (want claude, codex, cursor, or all)", tool)
+	}
+}
+
+func runHooksInstall(cmd *cobra.Command, root, tool string) error {
+	if _, err := os.Stat(config.ContexoDirPath(root)); err != nil {
+		return fmt.Errorf("hooks install: not a Contexo project (run 'ctx init' first)")
+	}
+	tools, err := expandHookTools(tool)
+	if err != nil {
+		return err
+	}
+	explicitCodex := tool == "codex"
+	explicitCursor := tool == "cursor"
+	for _, t := range tools {
+		switch t {
+		case "claude":
+			if err := installHook(cmd, root); err != nil {
+				return err
+			}
+		case "codex":
+			// Under --tool=all, only wire Codex when it's actually installed.
+			if !explicitCodex && !detectCodex() {
+				continue
+			}
+			if err := installCodexCaptureHooks(cmd, root); err != nil {
+				return err
+			}
+		case "cursor":
+			if !explicitCursor && !detectCursor() {
+				continue
+			}
+			if err := installCursorCaptureHooks(cmd, root); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func runHooksUninstall(cmd *cobra.Command, root, tool string) error {
+	tools, err := expandHookTools(tool)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	for _, t := range tools {
+		switch t {
+		case "claude":
+			if err := uninstallHook(cmd, root); err != nil {
+				return err
+			}
+		case "codex":
+			removed, deleted, err := agentwire.UnwireCodexHooks(root)
+			if err != nil {
+				return fmt.Errorf("hooks uninstall codex: %w", err)
+			}
+			switch {
+			case deleted:
+				fmt.Fprintln(out, "Removed Codex capture hooks and deleted .codex/hooks.json")
+			case removed:
+				fmt.Fprintln(out, "Removed Codex capture hooks from .codex/hooks.json")
+			default:
+				fmt.Fprintln(out, "Codex capture hooks not installed; nothing to do.")
+			}
+		case "cursor":
+			removed, deleted, err := agentwire.UnwireCursorHooks(root)
+			if err != nil {
+				return fmt.Errorf("hooks uninstall cursor: %w", err)
+			}
+			switch {
+			case deleted:
+				fmt.Fprintln(out, "Removed Cursor capture hooks and deleted .cursor/hooks.json")
+			case removed:
+				fmt.Fprintln(out, "Removed Cursor capture hooks from .cursor/hooks.json")
+			default:
+				fmt.Fprintln(out, "Cursor capture hooks not installed; nothing to do.")
+			}
+		}
+	}
+	return nil
+}
+
+func runHooksStatus(cmd *cobra.Command, root, tool string) error {
+	tools, err := expandHookTools(tool)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	for _, t := range tools {
+		switch t {
+		case "claude":
+			on, err := hookInstalled(root)
 			if err != nil {
 				return err
 			}
-			if installed {
-				fmt.Fprintln(cmd.OutOrStdout(), "Stop hook: installed")
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "Stop hook: not installed")
+			fmt.Fprintf(out, "claude: %s (.claude/settings.json)\n", hookStatus(on))
+		case "codex":
+			on, err := agentwire.CodexHooksWired(root)
+			if err != nil {
+				return err
 			}
-			return nil
-		},
+			fmt.Fprintf(out, "codex:  %s (.codex/hooks.json)\n", hookStatus(on))
+		case "cursor":
+			on, err := agentwire.CursorHooksWired(root)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "cursor: %s (.cursor/hooks.json)\n", hookStatus(on))
+		}
 	}
+	return nil
+}
+
+// installCodexCaptureHooks writes the Codex Stop + UserPromptSubmit capture
+// hooks into <root>/.codex/hooks.json (merge-safe).
+func installCodexCaptureHooks(cmd *cobra.Command, root string) error {
+	changed, err := agentwire.WireCodexHooks(root)
+	if err != nil {
+		return fmt.Errorf("hooks install codex: %w", err)
+	}
+	if changed {
+		fmt.Fprintln(cmd.OutOrStdout(), "Installed Codex capture hooks (.codex/hooks.json: Stop + UserPromptSubmit)")
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "Codex capture hooks already installed; nothing to do.")
+	}
+	return nil
+}
+
+// installCursorCaptureHooks writes the Cursor beforeSubmitPrompt +
+// afterAgentResponse capture hooks into <root>/.cursor/hooks.json (merge-safe).
+func installCursorCaptureHooks(cmd *cobra.Command, root string) error {
+	changed, err := agentwire.WireCursorHooks(root)
+	if err != nil {
+		return fmt.Errorf("hooks install cursor: %w", err)
+	}
+	if changed {
+		fmt.Fprintln(cmd.OutOrStdout(), "Installed Cursor capture hooks (.cursor/hooks.json: beforeSubmitPrompt + afterAgentResponse)")
+	} else {
+		fmt.Fprintln(cmd.OutOrStdout(), "Cursor capture hooks already installed; nothing to do.")
+	}
+	return nil
 }
 
 func installHook(cmd *cobra.Command, root string) error {

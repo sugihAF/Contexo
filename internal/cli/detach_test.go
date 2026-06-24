@@ -7,7 +7,82 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sugihAF/contexo/internal/cli/agentwire"
 )
+
+func TestDetachRemovesCursorEntry(t *testing.T) {
+	project := tmpContexoProject(t)
+	cursorPath := agentwire.CursorMCPPath(project)
+	if err := os.MkdirAll(filepath.Dir(cursorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cursorPath, `{"mcpServers":{"contexo":{"command":"ctx","args":["mcp"]},"other":{"command":"foo"}}}`)
+
+	cmd := newDetachCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if wired, _ := agentwire.WiredJSON(cursorPath); wired {
+		t.Errorf(".cursor/mcp.json should no longer have the contexo entry")
+	}
+	data, err := os.ReadFile(cursorPath)
+	if err != nil {
+		t.Fatalf(".cursor/mcp.json should still exist (other server present): %v", err)
+	}
+	if !strings.Contains(string(data), "other") {
+		t.Errorf("other server should be preserved; got %s", data)
+	}
+}
+
+func TestDetachDeletesCursorFileWhenOnlyEntry(t *testing.T) {
+	project := tmpContexoProject(t)
+	cursorPath := agentwire.CursorMCPPath(project)
+	if err := os.MkdirAll(filepath.Dir(cursorPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cursorPath, `{"mcpServers":{"contexo":{"command":"ctx","args":["mcp"]}}}`)
+
+	cmd := newDetachCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
+		t.Errorf(".cursor/mcp.json should be deleted when only the contexo entry existed; stat err=%v", err)
+	}
+}
+
+func TestDetachRemovesCodexWhenWired(t *testing.T) {
+	project := tmpContexoProject(t)
+	var calls [][]string
+	px, pr := detectCodex, codexRunner
+	detectCodex = func() bool { return true }
+	codexRunner = func(args ...string) (string, error) {
+		calls = append(calls, args)
+		return "", nil
+	}
+	t.Cleanup(func() { detectCodex, codexRunner = px, pr })
+
+	cmd := newDetachCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	sawRemove := false
+	for _, c := range calls {
+		if len(c) >= 2 && c[0] == "mcp" && c[1] == "remove" {
+			sawRemove = true
+		}
+	}
+	if !sawRemove {
+		t.Errorf("expected `codex mcp remove` during detach when codex is wired; calls=%v", calls)
+	}
+}
 
 func TestDetachPurgesByDefault(t *testing.T) {
 	project := tmpContexoProject(t)
@@ -140,6 +215,42 @@ func TestDetachReportsUnpushedPages(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "never been pushed") {
 		t.Errorf("expected unpushed-pages warning, got:\n%s", out.String())
+	}
+}
+
+func TestDetachRemovesCodexHooks(t *testing.T) {
+	project := tmpContexoProject(t)
+	if _, err := agentwire.WireCodexHooks(project); err != nil {
+		t.Fatalf("wire codex hooks: %v", err)
+	}
+	if wired, _ := agentwire.CodexHooksWired(project); !wired {
+		t.Fatal("precondition: codex hooks should be wired")
+	}
+
+	cmd := newDetachCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if wired, _ := agentwire.CodexHooksWired(project); wired {
+		t.Errorf("detach should remove Codex capture hooks")
+	}
+}
+
+func TestDetachRemovesCursorHooks(t *testing.T) {
+	project := tmpContexoProject(t)
+	if _, err := agentwire.WireCursorHooks(project); err != nil {
+		t.Fatalf("wire cursor hooks: %v", err)
+	}
+	cmd := newDetachCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if wired, _ := agentwire.CursorHooksWired(project); wired {
+		t.Errorf("detach should remove Cursor capture hooks")
 	}
 }
 

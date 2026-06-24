@@ -40,7 +40,7 @@ func TestCaptureTurnWritesBuffer(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetIn(bytes.NewReader(nil))
 
-	if err := runCaptureTurn(cmd, "sess-1", transcript, project); err != nil {
+	if err := runCaptureTurn(cmd, "claude", "sess-1", transcript, project); err != nil {
 		t.Fatalf("runCaptureTurn: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestCaptureTurnSilentOutsideProject(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetIn(bytes.NewReader(nil))
 
-	if err := runCaptureTurn(cmd, "sess-1", transcript, noProject); err != nil {
+	if err := runCaptureTurn(cmd, "claude", "sess-1", transcript, noProject); err != nil {
 		t.Fatalf("runCaptureTurn outside project: %v", err)
 	}
 	// Should NOT have created .contexo or any buffer.
@@ -87,7 +87,7 @@ func TestCaptureTurnDisableEnv(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetIn(bytes.NewReader(nil))
 
-	if err := runCaptureTurn(cmd, "sess-1", transcript, project); err != nil {
+	if err := runCaptureTurn(cmd, "claude", "sess-1", transcript, project); err != nil {
 		t.Fatalf("runCaptureTurn: %v", err)
 	}
 	if capture.Open(config.ContexoDirPath(project), "sess-1").Exists() {
@@ -103,7 +103,7 @@ func TestCaptureTurnHandlesMissingTranscript(t *testing.T) {
 	cmd.SetErr(stderr)
 	cmd.SetIn(bytes.NewReader(nil))
 
-	err := runCaptureTurn(cmd, "sess-1", "/nonexistent/transcript.jsonl", project)
+	err := runCaptureTurn(cmd, "claude", "sess-1", "/nonexistent/transcript.jsonl", project)
 	if err != nil {
 		t.Errorf("runCaptureTurn must not return error on missing transcript: %v", err)
 	}
@@ -127,11 +127,156 @@ func TestCaptureTurnReadsStdinPayload(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetIn(bytes.NewReader([]byte(payload)))
 
-	if err := runCaptureTurn(cmd, "", "", ""); err != nil {
+	if err := runCaptureTurn(cmd, "claude", "", "", ""); err != nil {
 		t.Fatalf("runCaptureTurn: %v", err)
 	}
 	if !capture.Open(config.ContexoDirPath(project), "sess-stdin").Exists() {
 		t.Errorf("buffer should have been written using stdin payload")
+	}
+}
+
+func TestCaptureTurnCodexUserPromptSubmitStashesPrompt(t *testing.T) {
+	project := tmpContexoProject(t)
+	payload := `{"hook_event_name":"UserPromptSubmit","session_id":"cdx-1","prompt":"how do I add billing?"}`
+	cmd := newCaptureTurnCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(bytes.NewReader([]byte(payload)))
+
+	if err := runCaptureTurn(cmd, "codex", "", "", project); err != nil {
+		t.Fatalf("runCaptureTurn: %v", err)
+	}
+	// No buffer record yet — the prompt is only stashed for the later Stop.
+	if capture.Open(config.ContexoDirPath(project), "cdx-1").Exists() {
+		t.Errorf("UserPromptSubmit must not write a buffer record yet")
+	}
+	got, _ := capture.TakePendingPrompt(config.ContexoDirPath(project), "cdx-1")
+	if got != "how do I add billing?" {
+		t.Errorf("pending prompt = %q, want the submitted prompt", got)
+	}
+}
+
+func TestCaptureTurnCodexStopPairsPromptAndAssistant(t *testing.T) {
+	project := tmpContexoProject(t)
+	cdir := config.ContexoDirPath(project)
+
+	up := `{"hook_event_name":"UserPromptSubmit","session_id":"cdx-2","prompt":"why reject Connect?"}`
+	c1 := newCaptureTurnCmd()
+	c1.SetOut(&bytes.Buffer{})
+	c1.SetErr(&bytes.Buffer{})
+	c1.SetIn(bytes.NewReader([]byte(up)))
+	if err := runCaptureTurn(c1, "codex", "", "", project); err != nil {
+		t.Fatalf("UserPromptSubmit: %v", err)
+	}
+
+	stop := `{"hook_event_name":"Stop","session_id":"cdx-2","last_assistant_message":"Because Connect gives restaurants the negative balance."}`
+	c2 := newCaptureTurnCmd()
+	c2.SetOut(&bytes.Buffer{})
+	c2.SetErr(&bytes.Buffer{})
+	c2.SetIn(bytes.NewReader([]byte(stop)))
+	if err := runCaptureTurn(c2, "codex", "", "", project); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	recs, err := capture.Open(cdir, "cdx-2").Records()
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].User != "why reject Connect?" ||
+		recs[0].Assistant != "Because Connect gives restaurants the negative balance." {
+		t.Errorf("paired record wrong: %+v", recs[0])
+	}
+}
+
+func TestCaptureTurnCursorBeforeSubmitStashesPrompt(t *testing.T) {
+	project := tmpContexoProject(t)
+	payload := `{"hook_event_name":"beforeSubmitPrompt","conversation_id":"cur-1","prompt":"how does drift detection work?"}`
+	cmd := newCaptureTurnCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(bytes.NewReader([]byte(payload)))
+
+	if err := runCaptureTurn(cmd, "cursor", "", "", project); err != nil {
+		t.Fatalf("runCaptureTurn: %v", err)
+	}
+	if capture.Open(config.ContexoDirPath(project), "cur-1").Exists() {
+		t.Errorf("beforeSubmitPrompt must not write a buffer record yet")
+	}
+	got, _ := capture.TakePendingPrompt(config.ContexoDirPath(project), "cur-1")
+	if got != "how does drift detection work?" {
+		t.Errorf("pending prompt = %q, want the submitted prompt (keyed by conversation_id)", got)
+	}
+}
+
+func TestCaptureTurnCursorAfterResponsePairs(t *testing.T) {
+	project := tmpContexoProject(t)
+	cdir := config.ContexoDirPath(project)
+
+	up := `{"hook_event_name":"beforeSubmitPrompt","conversation_id":"cur-2","prompt":"how does drift detection work?"}`
+	c1 := newCaptureTurnCmd()
+	c1.SetOut(&bytes.Buffer{})
+	c1.SetErr(&bytes.Buffer{})
+	c1.SetIn(bytes.NewReader([]byte(up)))
+	if err := runCaptureTurn(c1, "cursor", "", "", project); err != nil {
+		t.Fatalf("beforeSubmitPrompt: %v", err)
+	}
+
+	ar := `{"hook_event_name":"afterAgentResponse","conversation_id":"cur-2","text":"It prepends a DRIFT_NOTICE when the server page is ahead."}`
+	c2 := newCaptureTurnCmd()
+	c2.SetOut(&bytes.Buffer{})
+	c2.SetErr(&bytes.Buffer{})
+	c2.SetIn(bytes.NewReader([]byte(ar)))
+	if err := runCaptureTurn(c2, "cursor", "", "", project); err != nil {
+		t.Fatalf("afterAgentResponse: %v", err)
+	}
+
+	recs, err := capture.Open(cdir, "cur-2").Records()
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].User != "how does drift detection work?" ||
+		recs[0].Assistant != "It prepends a DRIFT_NOTICE when the server page is ahead." {
+		t.Errorf("paired record wrong: %+v", recs[0])
+	}
+}
+
+func TestCaptureTurnCursorAfterResponseWithoutPrompt(t *testing.T) {
+	project := tmpContexoProject(t)
+	ar := `{"hook_event_name":"afterAgentResponse","conversation_id":"cur-3","text":"Done."}`
+	cmd := newCaptureTurnCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(bytes.NewReader([]byte(ar)))
+
+	if err := runCaptureTurn(cmd, "cursor", "", "", project); err != nil {
+		t.Fatalf("runCaptureTurn: %v", err)
+	}
+	recs, _ := capture.Open(config.ContexoDirPath(project), "cur-3").Records()
+	if len(recs) != 1 || recs[0].Assistant != "Done." || recs[0].User != "" {
+		t.Errorf("expected one assistant-only record, got %+v", recs)
+	}
+}
+
+func TestCaptureTurnCodexStopWithoutPrompt(t *testing.T) {
+	project := tmpContexoProject(t)
+	stop := `{"hook_event_name":"Stop","session_id":"cdx-3","last_assistant_message":"Done."}`
+	cmd := newCaptureTurnCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(bytes.NewReader([]byte(stop)))
+
+	if err := runCaptureTurn(cmd, "codex", "", "", project); err != nil {
+		t.Fatalf("runCaptureTurn: %v", err)
+	}
+	recs, _ := capture.Open(config.ContexoDirPath(project), "cdx-3").Records()
+	if len(recs) != 1 || recs[0].Assistant != "Done." || recs[0].User != "" {
+		t.Errorf("expected one assistant-only record, got %+v", recs)
 	}
 }
 

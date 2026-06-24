@@ -43,7 +43,7 @@ Dev B's Claude  ←  ctx pull                ←
 **Setup**
 
 ```
-ctx init                       Create .contexo/, write .mcp.json, install Stop hook
+ctx init                       Create .contexo/, wire MCP (Claude + Cursor if found), install Stop hook
 ctx detach [--keep-knowledge]  Reverse `ctx init` (purges .contexo/ by default)
 ctx login                      Browser flow: sign in once, mint a token, done
                                (alias for `ctx auth login`; --no-browser to paste)
@@ -89,10 +89,30 @@ its heading (works on both `ctx diff` and `ctx evolution`) — useful for
 **Agent integration**
 
 ```
-ctx mcp                        Start MCP server for the local agent
-ctx hooks install|uninstall|status   Manage the Claude Code Stop hook
+ctx mcp                        Start the MCP server for the local agent (stdio)
+ctx mcp install [--tool=X]     Wire the MCP server into an agent: claude|cursor|codex|all
+ctx mcp uninstall [--tool=X]   Remove the MCP server wiring
+ctx mcp status                 Show agent integrations (MCP + capture hook)
+ctx mcp guide                  How to add Contexo to other agents (Windsurf, OpenCode, Hermes, ...)
+ctx hooks install|uninstall|status [--tool=claude|codex|cursor|all]   Manage the capture hook
 ctx capture status             Show pending capture buffers
 ```
+
+**Supported agents (MCP)**
+
+| Agent | MCP config it reads | Wired by |
+|---|---|---|
+| Claude Code | `./.mcp.json` (project) | `ctx init` |
+| Cursor | `./.cursor/mcp.json` (project) | `ctx init` when Cursor is detected, else `ctx mcp install --tool=cursor` |
+| Codex | `~/.codex/config.toml` (**global**) | `ctx mcp install --tool=codex` (prompts before touching the global file) |
+
+The `ctx mcp` server is plain MCP over stdio, so any MCP-capable agent can use it.
+`ctx init` only auto-wires the project-local configs (Claude always; Cursor when
+detected) — Codex's global config is opt-in via `ctx mcp install --tool=codex`.
+For any other agent or harness (Windsurf, OpenCode, Hermes, OpenClaw, …), run
+`ctx mcp guide` for the exact per-tool MCP config. Per-turn **capture** (the Stop
+hook) now works for **Claude Code, Codex, and Cursor** (`ctx hooks install
+--tool=…`, and `ctx init` auto-installs them when the agent is detected).
 
 **Maintenance**
 
@@ -197,7 +217,7 @@ The server shells out to `git`, so `git` must be on PATH. The Docker image (`doc
 **Per project** — remove Contexo from a specific project:
 
 ```bash
-ctx detach                   # prompts before purging .contexo/, .mcp.json entry, .gitignore line, Stop hook
+ctx detach                   # prompts before purging .contexo/, MCP entries (Claude/Cursor/Codex), .gitignore line, Stop hook
 ctx detach --keep-knowledge  # remove the integration but preserve .contexo/
 ctx detach -y                # skip the confirmation
 ```

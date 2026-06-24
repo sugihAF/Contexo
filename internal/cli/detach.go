@@ -10,14 +10,20 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sugihAF/contexo/internal/cli/agentwire"
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
+// codexRunner is the codex CLI runner used when detaching the global Codex
+// MCP entry; overridable in tests. (detectCodex is shared with init.go.)
+var codexRunner = agentwire.Runner(agentwire.DefaultRunner)
+
 // newDetachCmd is the inverse of `ctx init`: it removes the wiring that
-// init added (.mcp.json contexo entry, .gitignore line, Stop hook) and,
-// by default, deletes the .contexo/ knowledge directory itself.
+// init added (.mcp.json / .cursor/mcp.json entries, the global Codex entry
+// when wired, .gitignore line, Stop hook) and, by default, deletes the
+// .contexo/ knowledge directory itself.
 //
 // Default is aggressive (purges everything) because the most common use
 // case is "I'm done evaluating, get this off my project." Users who only
@@ -30,32 +36,39 @@ func newDetachCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "detach",
 		Short: "Reverse `ctx init` — remove Contexo wiring (and, by default, the .contexo/ directory)",
-		Long: "Removes the .mcp.json Contexo entry, the .gitignore line, and " +
-			"the Claude Code Stop hook installed by `ctx init`. By default also " +
-			"deletes the .contexo/ knowledge directory; pass --keep-knowledge to " +
-			"preserve it (useful when only the agent integration should go).",
+		Long: "Removes the Contexo MCP entries (.mcp.json, .cursor/mcp.json, and " +
+			"Codex's global config when wired), the .gitignore line, and the Claude " +
+			"Code Stop hook installed by `ctx init`. By default also deletes the " +
+			".contexo/ knowledge directory; pass --keep-knowledge to preserve it " +
+			"(useful when only the agent integration should go).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDetach(cmd, GetRootDir(), assumeYes, keepKnowledge)
 		},
 	}
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip the confirmation prompt")
-	cmd.Flags().BoolVar(&keepKnowledge, "keep-knowledge", false, "keep the .contexo/ directory; only remove the wiring (.mcp.json entry, .gitignore line, Stop hook)")
+	cmd.Flags().BoolVar(&keepKnowledge, "keep-knowledge", false, "keep the .contexo/ directory; only remove the wiring (MCP entries, .gitignore line, Stop hook)")
 	return cmd
 }
 
 // detachPlan captures what runDetach intends to do, so we can print it
 // to the user before any destructive action.
 type detachPlan struct {
-	removeContexoDir   bool
-	removeMCPEntry     bool
-	removeMCPFile      bool // true when .mcp.json had only the contexo entry
-	removeGitignoreLn  bool
-	removeStopHook     bool
-	unpushedPageCount  int
-	contexoDirPath     string
-	mcpPath            string
-	gitignorePath      string
-	hookSettingsPath   string
+	removeContexoDir  bool
+	removeMCPEntry    bool
+	removeMCPFile     bool // true when .mcp.json had only the contexo entry
+	removeCursorEntry bool
+	removeCursorFile  bool // true when .cursor/mcp.json had only the contexo entry
+	removeCodex       bool // true when codex is installed and has the contexo entry
+	removeGitignoreLn bool
+	removeStopHook    bool
+	removeCodexHooks  bool // true when .codex/hooks.json has our capture hook
+	removeCursorHooks bool // true when .cursor/hooks.json has our capture hook
+	unpushedPageCount int
+	contexoDirPath    string
+	mcpPath           string
+	cursorPath        string
+	gitignorePath     string
+	hookSettingsPath  string
 }
 
 func runDetach(cmd *cobra.Command, root string, assumeYes, keepKnowledge bool) error {
@@ -88,6 +101,7 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 	plan := detachPlan{
 		contexoDirPath:   config.ContexoDirPath(root),
 		mcpPath:          filepath.Join(root, ".mcp.json"),
+		cursorPath:       agentwire.CursorMCPPath(root),
 		gitignorePath:    filepath.Join(root, ".gitignore"),
 		hookSettingsPath: filepath.Join(root, filepath.FromSlash(claudeSettingsRel)),
 	}
@@ -112,19 +126,16 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 		}
 	}
 
-	if data, err := os.ReadFile(plan.mcpPath); err == nil {
-		var obj map[string]interface{}
-		if json.Unmarshal(data, &obj) == nil {
-			servers, _ := obj["mcpServers"].(map[string]interface{})
-			if _, ok := servers["contexo"]; ok {
-				plan.removeMCPEntry = true
-				// If contexo was the only key in mcpServers AND mcpServers
-				// is the only top-level key, the file becomes pointless —
-				// delete it instead of leaving an empty husk.
-				if len(servers) == 1 && len(obj) == 1 {
-					plan.removeMCPFile = true
-				}
-			}
+	// Claude (./.mcp.json) and Cursor (./.cursor/mcp.json) share the same JSON
+	// shape: drop the contexo entry, deleting the file when it held nothing else.
+	plan.removeMCPEntry, plan.removeMCPFile = jsonMCPState(plan.mcpPath)
+	plan.removeCursorEntry, plan.removeCursorFile = jsonMCPState(plan.cursorPath)
+
+	// Codex's MCP server lives in its GLOBAL config; only remove it when codex
+	// is installed and actually has our entry.
+	if detectCodex() {
+		if wired, _ := agentwire.CodexWired(codexRunner); wired {
+			plan.removeCodex = true
 		}
 	}
 
@@ -141,12 +152,19 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 	installed, _ := hookInstalled(root)
 	plan.removeStopHook = installed
 
+	codexHooks, _ := agentwire.CodexHooksWired(root)
+	plan.removeCodexHooks = codexHooks
+
+	cursorHooks, _ := agentwire.CursorHooksWired(root)
+	plan.removeCursorHooks = cursorHooks
+
 	return plan, nil
 }
 
 func (p detachPlan) anyAction() bool {
 	return p.removeContexoDir || p.removeMCPEntry || p.removeMCPFile ||
-		p.removeGitignoreLn || p.removeStopHook
+		p.removeCursorEntry || p.removeCursorFile || p.removeCodex ||
+		p.removeGitignoreLn || p.removeStopHook || p.removeCodexHooks || p.removeCursorHooks
 }
 
 func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
@@ -157,11 +175,25 @@ func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
 	} else if plan.removeMCPEntry {
 		fmt.Fprintf(out, "  - remove the \"contexo\" entry from .mcp.json (other servers left alone)\n")
 	}
+	if plan.removeCursorFile {
+		fmt.Fprintf(out, "  - delete .cursor/mcp.json (only contained the contexo entry)\n")
+	} else if plan.removeCursorEntry {
+		fmt.Fprintf(out, "  - remove the \"contexo\" entry from .cursor/mcp.json (other servers left alone)\n")
+	}
+	if plan.removeCodex {
+		fmt.Fprintf(out, "  - remove contexo from Codex's GLOBAL config (codex mcp remove contexo)\n")
+	}
 	if plan.removeGitignoreLn {
 		fmt.Fprintf(out, "  - remove the .contexo/ line from .gitignore\n")
 	}
 	if plan.removeStopHook {
 		fmt.Fprintf(out, "  - remove the Contexo Stop hook from %s\n", claudeSettingsRel)
+	}
+	if plan.removeCodexHooks {
+		fmt.Fprintf(out, "  - remove the Contexo capture hooks from .codex/hooks.json\n")
+	}
+	if plan.removeCursorHooks {
+		fmt.Fprintf(out, "  - remove the Contexo capture hooks from .cursor/hooks.json\n")
 	}
 	if plan.removeContexoDir {
 		fmt.Fprintf(out, "  - DELETE the .contexo/ directory and everything in it\n")
@@ -216,6 +248,24 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		}
 	}
 
+	if plan.removeCursorEntry {
+		if _, deleted, err := agentwire.UnwireJSON(plan.cursorPath); err != nil {
+			noteErr("update .cursor/mcp.json", err)
+		} else if deleted {
+			fmt.Fprintln(out, "Removed .cursor/mcp.json")
+		} else {
+			fmt.Fprintln(out, "Removed contexo entry from .cursor/mcp.json")
+		}
+	}
+
+	if plan.removeCodex {
+		if err := agentwire.UnwireCodex(codexRunner); err != nil {
+			noteErr("codex mcp remove", err)
+		} else {
+			fmt.Fprintln(out, "Removed contexo from Codex (~/.codex/config.toml)")
+		}
+	}
+
 	if plan.removeGitignoreLn {
 		if err := removeGitignoreContexoLine(plan.gitignorePath); err != nil {
 			noteErr("update .gitignore", err)
@@ -227,6 +277,22 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 	if plan.removeStopHook {
 		if err := uninstallHook(cmd, root); err != nil {
 			noteErr("uninstall Stop hook", err)
+		}
+	}
+
+	if plan.removeCodexHooks {
+		if _, _, err := agentwire.UnwireCodexHooks(root); err != nil {
+			noteErr("remove Codex capture hooks", err)
+		} else {
+			fmt.Fprintln(out, "Removed Codex capture hooks from .codex/hooks.json")
+		}
+	}
+
+	if plan.removeCursorHooks {
+		if _, _, err := agentwire.UnwireCursorHooks(root); err != nil {
+			noteErr("remove Cursor capture hooks", err)
+		} else {
+			fmt.Fprintln(out, "Removed Cursor capture hooks from .cursor/hooks.json")
 		}
 	}
 
@@ -242,6 +308,25 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		fmt.Fprintln(out, "Detach complete.")
 	}
 	return firstErr
+}
+
+// jsonMCPState inspects a JSON MCP config file (.mcp.json / .cursor/mcp.json)
+// and reports whether it has the contexo entry and whether that entry is the
+// file's only content (so the whole file can be deleted).
+func jsonMCPState(path string) (hasEntry, onlyContent bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(data, &obj) != nil {
+		return false, false
+	}
+	servers, _ := obj["mcpServers"].(map[string]interface{})
+	if _, ok := servers["contexo"]; !ok {
+		return false, false
+	}
+	return true, len(servers) == 1 && len(obj) == 1
 }
 
 // removeMCPContexoEntry edits .mcp.json in place: drops mcpServers.contexo,

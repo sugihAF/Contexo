@@ -9,26 +9,34 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sugihAF/contexo/internal/config"
 	mcpserver "github.com/sugihAF/contexo/internal/mcp"
-	"github.com/sugihAF/contexo/internal/store/pagestore"
 )
 
 func newMCPCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Run MCP server over stdio against the local .contexo/",
+		Short: "Run the MCP server over stdio against the local .contexo/",
+		Long: "With no subcommand, runs the MCP server over stdio (this is what an " +
+			"agent's MCP config invokes). Outside a Contexo project it serves a " +
+			"dormant, zero-tool server instead of failing.\n\n" +
+			"Subcommands wire that server into an agent's config: see `ctx mcp install`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := GetRootDir()
-			hubDir := config.ContexoDirPath(root)
-			store, err := pagestore.Open(hubDir)
+			store, dormant, err := openMCPStore(GetRootDir())
 			if err != nil {
-				return fmt.Errorf("mcp: open store: %w (did you run 'ctx init'?)", err)
+				return err
+			}
+			if dormant {
+				return runMCPDormant()
 			}
 			srv := mcpserver.NewServer(store)
 			return runMCPStdio(srv)
 		},
 	}
+	cmd.AddCommand(newMCPInstallCmd())
+	cmd.AddCommand(newMCPUninstallCmd())
+	cmd.AddCommand(newMCPStatusCmd())
+	cmd.AddCommand(newMCPGuideCmd())
+	return cmd
 }
 
 // MCPRequest is a JSON-RPC 2.0 request.

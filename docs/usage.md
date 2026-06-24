@@ -188,7 +188,7 @@ $ ctx init
 Initialized .contexo in /home/sugih/code/chompchat
 ```
 
-`ctx init` creates the `.contexo/` tree, writes a `.mcp.json` so your agent can reach Contexo, and installs the Claude Code Stop hook used for session capture:
+`ctx init` creates the `.contexo/` tree, wires the Contexo MCP server into Claude Code (`.mcp.json`) and — when Cursor is detected — into Cursor (`.cursor/mcp.json`), and installs the per-turn capture hook for Claude Code (and Codex/Cursor, when detected). If Codex is detected it also prints how to wire its MCP server (`ctx mcp install --tool=codex`, which writes the global `~/.codex/config.toml`):
 
 ```
 .contexo/
@@ -266,25 +266,31 @@ Pages never pushed: 0
 
 ### 2.4 Wire it into your AI agent
 
-`ctx init` already wrote `.mcp.json`, so most agents pick Contexo up automatically. The agent runs `ctx mcp` in the project directory and gets Contexo's **eight tools** and **five resources** over MCP.
+`ctx init` wires the project-local agents for you: **Claude Code** (`.mcp.json`) always, and **Cursor** (`.cursor/mcp.json`) when Cursor is detected. The agent runs `ctx mcp` in the project directory and gets Contexo's **eight tools** and **five resources** over MCP.
 
-If you need to register it by hand (Cursor, Windsurf, or adding to `~/.claude.json`):
+Wire (or re-wire) any agent explicitly with `ctx mcp install`:
+
+```
+ctx mcp install --tool=cursor    # ./.cursor/mcp.json (project-local)
+ctx mcp install --tool=codex     # ~/.codex/config.toml (GLOBAL — prompts first)
+ctx mcp install --tool=all       # claude + cursor (+ codex if installed)
+ctx mcp status                   # show what's wired
+ctx mcp guide                    # how to wire Windsurf, OpenCode, Hermes, OpenClaw, ...
+```
+
+`ctx init` prints this same integration table plus a per-tool setup guide at the
+end; `ctx mcp guide` reprints the guide any time.
+
+**Codex** uses a global config, so it's never wired silently: `ctx mcp install --tool=codex` runs `codex mcp add contexo -- ctx mcp` after a confirmation prompt. Because that entry is global, `ctx mcp` launched outside a Contexo project serves a dormant, zero-tool server instead of erroring.
+
+To register by hand instead (e.g. Windsurf, or `~/.claude.json`), add an `mcpServers` entry that runs `ctx mcp`:
 
 ```json
 {
   "mcpServers": {
-    "contexo": {
-      "command": "ctx",
-      "args": ["mcp"]
-    }
+    "contexo": { "command": "ctx", "args": ["mcp"] }
   }
 }
-```
-
-Or via the Claude Code CLI:
-
-```
-claude mcp add contexo -- ctx mcp
 ```
 
 The tools the agent sees are `ctx_write_page`, `ctx_push`, `ctx_pull`, `ctx_status`, `ctx_history`, `ctx_diff`, `ctx_evolution`, and `ctx_capture_session`; the resources are `ctx://index`, `ctx://tags`, `ctx://wiki/{slug}`, `ctx://raw/{session-id}`, and `ctx://search?q=&type=&tag=`. (Full descriptions in the README's MCP section.)
@@ -426,14 +432,14 @@ $ ctx pull --full
 
 | Symptom | Fix |
 |---|---|
-| `mcp: open store: no such file or directory` | Run `ctx init` in the project root first. |
+| Agent shows `contexo` with no tools (or `mcp: open store …`) | You're outside a Contexo project — `ctx mcp` runs dormant there. Run `ctx init` in the project root. |
 | `push: no credentials, run 'ctx login' first` | `ctx login` (or `ctx login --token ctxp_…`). |
 | `push: no server URL configured` | `ctx remote set <url>` (hosted users can skip — it defaults to `api.contexo.live`). |
 | `push: no repo_id configured` | `ctx remote set-repo <id>`, or `ctx join <invite-key>`. |
 | Server returns 401 | Token expired or invalid — run `ctx login` again. (Legacy path: wrong `CONTEXO_API_KEY`, or the server isn't running with it set.) |
 | Server returns 403 on invite/members | You're not an owner — only owners mint invite keys or remove members. |
 | Server returns 404 on push | Probably fine — push auto-creates the repo. On pull, it means the repo has no commits yet. |
-| Agent says it can't find `ctx_push` | Check `.mcp.json` is registered and the `ctx` binary is on PATH for the agent's environment. |
+| Agent says it can't find `ctx_push` | Check the agent's MCP config (`.mcp.json` / `.cursor/mcp.json` / Codex) and that `ctx` is on PATH for the agent's environment. `ctx mcp status` shows what's wired. |
 | `git: command not found` (server side) | Install git on the server machine. Contexo shells out to it. |
 
 ---
