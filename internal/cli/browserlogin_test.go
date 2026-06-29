@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildCliLoginURL(t *testing.T) {
-	got, err := buildCliLoginURL("https://contexo-web.pages.dev/", 42713, "abc123")
+	got, err := buildCliLoginURL("https://app.contexo.live/", 42713, "abc123")
 	if err != nil {
 		t.Fatalf("buildCliLoginURL: %v", err)
 	}
@@ -15,7 +15,7 @@ func TestBuildCliLoginURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if u.Host != "contexo-web.pages.dev" {
+	if u.Host != "app.contexo.live" {
 		t.Errorf("host: got %q", u.Host)
 	}
 	if u.Path != "/cli-login" {

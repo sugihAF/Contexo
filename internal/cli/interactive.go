@@ -69,7 +69,7 @@ func selectRepoInteractive(client *sync.Client, out io.Writer) (string, error) {
 	if len(opts) == 0 {
 		fmt.Fprintln(out,
 			"You're not a member of any repos yet.\n"+
-				"Sign in to https://contexo-web.pages.dev to join a repo (or\n"+
+				"Sign in to https://app.contexo.live to join a repo (or\n"+
 				"ask the owner to mint an invite key and run 'ctx join <key>'),\n"+
 				"then re-run.")
 		return "", errors.New("no repos available")

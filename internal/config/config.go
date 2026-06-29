@@ -20,7 +20,7 @@ const (
 	// DefaultDashboardURL is the public dashboard the browser-based
 	// `ctx login` flow opens. Self-hosted setups can override via
 	// --dashboard or by editing config.json's DashboardURL.
-	DefaultDashboardURL = "https://contexo-web.pages.dev"
+	DefaultDashboardURL = "https://app.contexo.live"
 )
 
 // Config holds the local .contexo configuration.
