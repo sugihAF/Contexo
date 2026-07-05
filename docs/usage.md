@@ -308,6 +308,51 @@ Now `.contexo/wiki/...` is populated and `.contexo/index.md` is regenerated. Ope
 
 ---
 
+## Bulk onboarding an existing project (`ctx migrate`)
+
+Already have knowledge written down — an llm-wiki, a `docs/` tree, ADRs, a
+`CLAUDE.md`, or a dedicated knowledge repo? Import it in bulk instead of
+re-deriving it session by session.
+
+Two ways to run it, same result (your coding agent does the reformatting —
+Contexo never runs its own model):
+
+**From your agent (recommended).** Just ask:
+
+> "migrate my llm-wiki into contexo"
+
+The agent calls the `ctx_migrate` tool, which returns a numbered catalog of
+everything it found (metadata + a one-line preview only). You pick which
+items to import in chat; the agent reads those files, reformats each into a
+Contexo page, and pushes — recording where every page came from in a
+migration `source` page.
+
+Import a knowledge base that lives elsewhere with
+`from="<path-or-git-url>"`, e.g. a dedicated GitHub wiki repo.
+
+**From the terminal.**
+
+```bash
+ctx migrate                     # scan this project, pick interactively, stage
+ctx migrate --list              # just show what would be migrated
+ctx migrate --from ../llm-wiki  # a local knowledge base outside this repo
+ctx migrate --from https://github.com/me/kb.git
+ctx migrate --type entity       # only items suggested as entities
+```
+
+The CLI stages your selection and prints a handoff:
+
+> Staged 6 source(s). Ask your agent: "finish the contexo migration".
+
+Your agent then imports exactly those items and calls `ctx_migrate(done=true)`
+to clear the staged manifest.
+
+What it detects today: llm-wiki-style trees and Obsidian vaults; `docs/`,
+root Markdown, README(s), ADRs, and CHANGELOG; and agent-instruction files
+(`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursor/rules`).
+
+---
+
 ## Part 3 — The daily flow
 
 The scenario: you (Dev A) spend a Tuesday afternoon researching how to model Stripe subscription billing for ChompChat. On Wednesday morning Dev B is going to do the implementation. Without Contexo, Dev B's Claude would re-do the research from scratch, possibly badly. With Contexo, Dev B's Claude inherits your reasoning.
