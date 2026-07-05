@@ -338,7 +338,11 @@ ctx migrate --list              # just show what would be migrated
 ctx migrate --from ../llm-wiki  # a local knowledge base outside this repo
 ctx migrate --from https://github.com/me/kb.git
 ctx migrate --type entity       # only items suggested as entities
+ctx migrate --detector docs     # only items from one detector (kbtree|docs|agentfiles)
+ctx migrate --all --yes         # non-interactive: select all + skip the confirm (scripts/CI)
 ```
+
+Add `--all` to select every discovered item and `-y`/`--yes` to skip the confirmation prompt — handy for scripting.
 
 The CLI stages your selection and prints a handoff:
 
