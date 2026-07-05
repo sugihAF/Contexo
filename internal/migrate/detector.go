@@ -148,6 +148,9 @@ func slugify(s string) string {
 	return out
 }
 
+// Slugify is the exported wrapper for slugify.
+func Slugify(s string) string { return slugify(s) }
+
 // agentInstructionFiles are root files owned by the agentfiles detector. The
 // docs detector skips them so they are never misclassified as generic docs.
 var agentInstructionFiles = []string{"CLAUDE.md", "AGENTS.md", "GEMINI.md"}
