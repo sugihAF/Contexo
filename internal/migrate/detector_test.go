@@ -11,12 +11,12 @@ import (
 
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
-		"Stripe Subscription":     "stripe-subscription",
-		"auth_flow.md":            "auth-flow-md",
-		"  --Leading/Trailing--":  "leading-trailing",
+		"Stripe Subscription":    "stripe-subscription",
+		"auth_flow.md":           "auth-flow-md",
+		"  --Leading/Trailing--": "leading-trailing",
 		"Café déjà":              "caf-d-j",
-		"":                        "untitled",
-		"...":                     "untitled",
+		"":                       "untitled",
+		"...":                    "untitled",
 	}
 	for in, want := range cases {
 		if got := slugify(in); got != want {
@@ -35,6 +35,9 @@ func TestFirstHeadingAndPreview(t *testing.T) {
 	}
 	if got := makePreview("no heading, just text that is fairly long", 10); got != "no headin…" {
 		t.Errorf("makePreview truncate = %q", got)
+	}
+	if got := makePreview("# H\n\nline one\nline two\n\nnext", 200); got != "line one line two" {
+		t.Errorf("multi-line paragraph = %q", got)
 	}
 }
 

@@ -93,24 +93,32 @@ func stripFrontmatter(md string) string {
 // to one line and truncated to max runes (with an ellipsis when cut).
 func makePreview(md string, max int) string {
 	body := stripFrontmatter(md)
-	var para string
-	for _, block := range strings.Split(body, "\n") {
-		t := strings.TrimSpace(block)
-		if t == "" || strings.HasPrefix(t, "#") {
+	var para []string
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if len(para) == 0 {
+			// Hunting for the paragraph start: skip blanks and headings.
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
+			}
+			para = append(para, t)
 			continue
 		}
-		para = t
-		break
+		// Inside the paragraph: a blank line or heading ends it.
+		if t == "" || strings.HasPrefix(t, "#") {
+			break
+		}
+		para = append(para, t)
 	}
-	para = strings.Join(strings.Fields(para), " ")
-	r := []rune(para)
+	joined := strings.Join(strings.Fields(strings.Join(para, " ")), " ")
+	r := []rune(joined)
 	if len(r) > max {
 		if max > 1 {
 			return string(r[:max-1]) + "…"
 		}
 		return string(r[:max])
 	}
-	return para
+	return joined
 }
 
 // slugify produces a validSlug-safe kebab-case identifier: it emits only
