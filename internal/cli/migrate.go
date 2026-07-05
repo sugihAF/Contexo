@@ -1,10 +1,18 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/migrate"
 )
 
 // parseSelection turns "1,2,5-7" / "all" / "*" into sorted unique 1-based
@@ -59,4 +67,118 @@ func parseSelection(input string, max int) ([]int, error) {
 	}
 	sort.Ints(out)
 	return out, nil
+}
+
+func newMigrateCmd() *cobra.Command {
+	var (
+		from     string
+		list     bool
+		typ      string
+		detector string
+		all      bool
+		yes      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Bulk-import an existing knowledge base into Contexo",
+		Long: "Scans this project (or --from a path/git URL) for knowledge you already have — " +
+			"llm-wiki trees, docs/, ADRs, README, CLAUDE.md/AGENTS.md, Cursor rules — lists it, and " +
+			"stages the items you pick. Distillation is done by your coding agent: after staging, ask " +
+			"it to 'finish the contexo migration' and it will reformat each pick into a Contexo page.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMigrate(cmd, from, typ, detector, list, all, yes)
+		},
+	}
+	cmd.Flags().StringVar(&from, "from", "", "import from an external path or git URL instead of this project")
+	cmd.Flags().BoolVar(&list, "list", false, "only list what would be migrated; stage nothing")
+	cmd.Flags().StringVar(&typ, "type", "", "only items of this suggested type (concept|entity|analysis|source)")
+	cmd.Flags().StringVar(&detector, "detector", "", "only items from this detector (kbtree|docs|agentfiles)")
+	cmd.Flags().BoolVar(&all, "all", false, "select every item without prompting")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func runMigrate(cmd *cobra.Command, from, typ, detector string, list, all, yes bool) error {
+	out := cmd.OutOrStdout()
+	root := GetRootDir()
+	contexoDir := config.ContexoDirPath(root)
+	if !isDirCLI(contexoDir) {
+		return fmt.Errorf("migrate: no .contexo/ here — run 'ctx init' first")
+	}
+
+	scanDir := root
+	var cacheDir string
+	if from != "" {
+		sd, cd, err := migrate.ResolveExternal(from, contexoDir, nil)
+		if err != nil {
+			return err
+		}
+		scanDir, cacheDir = sd, cd
+	}
+
+	cat, err := migrate.Build(scanDir, contexoDir, migrate.DefaultDetectors())
+	if err != nil {
+		return err
+	}
+	cat = cat.Filter(typ, detector)
+	cat.Render(out, migrate.RenderOpts{})
+	if len(cat.Items) == 0 || list {
+		return nil
+	}
+
+	// One reader for BOTH the selection line and the y/N confirm. Using two
+	// bufio.Readers over the same stdin would let the first buffer past its
+	// newline and swallow the confirmation line — a real bug in interactive use
+	// and in the test (stdin "all\ny\n"). So we read both from this one reader.
+	reader := bufio.NewReader(cmd.InOrStdin())
+	var picks []int
+	if all {
+		picks, _ = parseSelection("all", len(cat.Items))
+	} else {
+		fmt.Fprint(out, "\nSelect items to import (e.g. 1,2,5-7 / all): ")
+		line, _ := reader.ReadString('\n')
+		picks, err = parseSelection(line, len(cat.Items))
+		if err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+
+	if !yes {
+		fmt.Fprintf(out, "Stage %d item(s) for the agent to import? [y/N]: ", len(picks))
+		ans, _ := reader.ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
+			fmt.Fprintln(out, "Aborted; nothing staged.")
+			return nil
+		}
+	}
+
+	byID := map[int]migrate.Candidate{}
+	for _, it := range cat.Items {
+		byID[it.ID] = it
+	}
+	m := &migrate.Manifest{
+		Version:       1,
+		Created:       time.Now().UTC().Format(time.RFC3339),
+		SourceRoot:    scanDir,
+		ExternalCache: cacheDir,
+		Label:         migrate.LabelFor(scanDir),
+	}
+	for _, id := range picks {
+		it := byID[id]
+		m.Items = append(m.Items, migrate.ManifestItem{
+			AbsPath: it.AbsPath, RelPath: it.RelPath, Detector: it.Detector,
+			SuggestedType: it.SuggestedType, SuggestedSlug: it.SuggestedSlug,
+		})
+	}
+	if err := migrate.SaveManifest(contexoDir, m); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "\nStaged %d source(s). Ask your agent: \"finish the contexo migration\".\n", len(m.Items))
+	return nil
+}
+
+func isDirCLI(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
 }
