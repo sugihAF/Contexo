@@ -8,13 +8,12 @@ import (
 )
 
 // migrateSourceSlug builds the provenance source-page slug all migrated pages
-// share, e.g. "2026-07-05-migrate-llm-wiki".
+// share, e.g. "2026-07-05-migrate-llm-wiki". A blank label falls back to "kb".
 func migrateSourceSlug(label, date string) string {
-	l := migrate.Slugify(label)
-	if l == "" {
-		l = "kb"
+	if strings.TrimSpace(label) == "" {
+		return fmt.Sprintf("%s-migrate-kb", date)
 	}
-	return fmt.Sprintf("%s-migrate-%s", date, l)
+	return fmt.Sprintf("%s-migrate-%s", date, migrate.Slugify(label))
 }
 
 // migrateInstructions is the shared numbered block both directives end with.
