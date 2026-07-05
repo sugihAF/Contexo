@@ -75,3 +75,41 @@ func TestFilterAndRender(t *testing.T) {
 		t.Errorf("render missing rows:\n%s", out)
 	}
 }
+
+func TestBuildErrorsOnBadScanDir(t *testing.T) {
+	_, err := Build(filepath.Join(t.TempDir(), "does-not-exist"), t.TempDir(), DefaultDetectors())
+	if err == nil {
+		t.Fatal("Build should error on a non-existent scan dir")
+	}
+}
+
+func TestBuildDedupEarlierDetectorWins(t *testing.T) {
+	// .obsidian present → kbtree (registered first) walks root and emits README.md
+	// as a concept; the docs detector also emits README.md as an entity. Dedup by
+	// AbsPath must keep the earlier-registered detector's candidate (kbtree).
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, ".obsidian", "config"), "{}")
+	writeFile(t, filepath.Join(src, "README.md"), "# Proj\n\nx")
+
+	cat, err := Build(src, t.TempDir(), DefaultDetectors())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	var readme *Candidate
+	for i := range cat.Items {
+		if strings.HasSuffix(cat.Items[i].AbsPath, "README.md") {
+			readme = &cat.Items[i]
+			count++
+		}
+	}
+	if readme == nil {
+		t.Fatal("README.md not found in catalog")
+	}
+	if readme.Detector != "kbtree" {
+		t.Errorf("dedup: README owned by %q, want kbtree (earlier detector wins)", readme.Detector)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 README candidate after dedup, got %d", count)
+	}
+}

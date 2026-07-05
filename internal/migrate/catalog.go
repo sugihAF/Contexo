@@ -26,6 +26,10 @@ func DefaultDetectors() []Detector {
 // wins), orders deterministically, assigns 1-based IDs, and flags candidates
 // whose SuggestedSlug already exists under contexoDir.
 func Build(scanDir, contexoDir string, dets []Detector) (Catalog, error) {
+	if info, err := os.Stat(scanDir); err != nil || !info.IsDir() {
+		return Catalog{}, fmt.Errorf("migrate: scan dir %q is not a readable directory", scanDir)
+	}
+
 	order := map[string]int{}
 	for i, d := range dets {
 		order[d.Name()] = i
