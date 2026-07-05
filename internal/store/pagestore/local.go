@@ -112,6 +112,13 @@ func (s *Store) Walk(fn func(p *schema.Page, relPath string) error) error {
 			return err
 		}
 		if d.IsDir() {
+			// Skip dot-directories (e.g. .migrate-cache holding an external
+			// clone, or a stray .git) so their files never masquerade as store
+			// pages and get listed/indexed/pushed. Never skip the store root
+			// itself, whose base name may start with '.' (e.g. ".contexo").
+			if path != s.Root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(path, ".md") {

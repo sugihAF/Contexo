@@ -85,6 +85,11 @@ func (c Catalog) Filter(typ, detector string) Catalog {
 	return Catalog{Items: out}
 }
 
+// CatalogRenderCap bounds how many rows a rendered catalog / directive shows
+// before summarizing the remainder, so a huge KB never floods the terminal or
+// the MCP tool output.
+const CatalogRenderCap = 100
+
 // RenderOpts controls Render. Max caps how many rows print (0 = all).
 type RenderOpts struct{ Max int }
 

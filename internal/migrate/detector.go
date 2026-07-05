@@ -79,6 +79,7 @@ func firstHeading(md string) string {
 
 // stripFrontmatter drops a leading '---\n ... \n---\n' YAML block.
 func stripFrontmatter(md string) string {
+	md = strings.TrimPrefix(md, "\uFEFF") // strip UTF-8 BOM (common on Windows-authored files)
 	md = strings.ReplaceAll(md, "\r\n", "\n")
 	if !strings.HasPrefix(md, "---\n") {
 		return md

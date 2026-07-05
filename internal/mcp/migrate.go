@@ -53,7 +53,11 @@ func buildMigrateCatalog(cat migrate.Catalog, sourceRoot, srcSlug string) string
 	}
 	b.WriteString("Discovered knowledge items (metadata only — read a file before distilling it):\n")
 	lastDetector := ""
+	shown := 0
 	for _, it := range cat.Items {
+		if shown >= migrate.CatalogRenderCap {
+			break
+		}
 		if it.Detector != lastDetector {
 			fmt.Fprintf(&b, "\n%s:\n", it.Detector)
 			lastDetector = it.Detector
@@ -63,6 +67,10 @@ func buildMigrateCatalog(cat migrate.Catalog, sourceRoot, srcSlug string) string
 			flag = "  (already imported — will overwrite)"
 		}
 		fmt.Fprintf(&b, "  [%d] %-8s %s  ~%dt%s\n      %s\n", it.ID, it.SuggestedType, it.RelPath, it.EstTokens, flag, it.Preview)
+		shown++
+	}
+	if len(cat.Items) > shown {
+		fmt.Fprintf(&b, "\n… and %d more not shown; ask the user to narrow the import (by topic/type) or import in batches.\n", len(cat.Items)-shown)
 	}
 	b.WriteString("\nInstructions:\n")
 	b.WriteString(migrateInstructions(srcSlug, true))
@@ -110,12 +118,13 @@ func (s *Server) toolMigrate(args map[string]interface{}) *ToolResult {
 	if pathHint != "" {
 		scanDir = pathHint
 	}
+	var cacheDir string
 	if from != "" {
-		sd, _, err := migrate.ResolveExternal(from, contexoDir, nil)
+		sd, cd, err := migrate.ResolveExternal(from, contexoDir, nil)
 		if err != nil {
 			return errorResult("ctx_migrate: " + err.Error())
 		}
-		scanDir = sd
+		scanDir, cacheDir = sd, cd
 	}
 
 	cat, err := migrate.Build(scanDir, contexoDir, migrate.DefaultDetectors())
@@ -123,5 +132,34 @@ func (s *Server) toolMigrate(args map[string]interface{}) *ToolResult {
 		return errorResult("ctx_migrate: " + err.Error())
 	}
 	label := migrate.LabelFor(scanDir)
-	return textResult(buildMigrateCatalog(cat, scanDir, migrateSourceSlug(label, date)))
+	srcSlug := migrateSourceSlug(label, date)
+
+	// A git-URL import clones into .contexo/.migrate-cache; that clone must be
+	// cleaned up after import. Stage it as a manifest so the flow converges on
+	// the resume path and ctx_migrate(done=true) removes the clone. Local paths
+	// and the in-project scan set cacheDir="" and stay stateless (catalog).
+	if cacheDir != "" {
+		m := &migrate.Manifest{
+			Version:       1,
+			Created:       time.Now().UTC().Format(time.RFC3339),
+			SourceRoot:    scanDir,
+			ExternalCache: cacheDir,
+			Label:         label,
+		}
+		for _, it := range cat.Items {
+			m.Items = append(m.Items, migrate.ManifestItem{
+				AbsPath:       it.AbsPath,
+				RelPath:       it.RelPath,
+				Detector:      it.Detector,
+				SuggestedType: it.SuggestedType,
+				SuggestedSlug: it.SuggestedSlug,
+			})
+		}
+		if err := migrate.SaveManifest(contexoDir, m); err != nil {
+			return errorResult("ctx_migrate: stage external clone: " + err.Error())
+		}
+		return textResult(buildMigrateResume(m, srcSlug))
+	}
+
+	return textResult(buildMigrateCatalog(cat, scanDir, srcSlug))
 }

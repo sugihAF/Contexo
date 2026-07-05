@@ -121,7 +121,7 @@ func runMigrate(cmd *cobra.Command, from, typ, detector string, list, all, yes b
 		return err
 	}
 	cat = cat.Filter(typ, detector)
-	cat.Render(out, migrate.RenderOpts{})
+	cat.Render(out, migrate.RenderOpts{Max: migrate.CatalogRenderCap})
 	if len(cat.Items) == 0 || list {
 		return nil
 	}
