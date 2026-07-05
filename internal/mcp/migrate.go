@@ -3,6 +3,7 @@ package mcp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/migrate"
 )
@@ -80,4 +81,47 @@ func buildMigrateResume(m *migrate.Manifest, srcSlug string) string {
 	b.WriteString(migrateInstructions(srcSlug, false))
 	b.WriteString("\n</MIGRATE_RESUME>\n")
 	return b.String()
+}
+
+// toolMigrate is the ctx_migrate state machine: done → clear; manifest present
+// → resume directive; otherwise → discovery catalog.
+func (s *Server) toolMigrate(args map[string]interface{}) *ToolResult {
+	contexoDir := s.store.Root
+	date := time.Now().UTC().Format("2006-01-02")
+
+	if done, _ := args["done"].(bool); done {
+		if err := migrate.ClearManifest(contexoDir); err != nil {
+			return errorResult("ctx_migrate: clear manifest: " + err.Error())
+		}
+		return textResult("Migration complete; staged manifest cleared.")
+	}
+
+	rescan, _ := args["rescan"].(bool)
+	if !rescan {
+		if m, _ := migrate.LoadManifest(contexoDir); m != nil {
+			return textResult(buildMigrateResume(m, migrateSourceSlug(m.Label, date)))
+		}
+	}
+
+	from, _ := args["from"].(string)
+	pathHint, _ := args["path"].(string)
+
+	scanDir := s.rootDir()
+	if pathHint != "" {
+		scanDir = pathHint
+	}
+	if from != "" {
+		sd, _, err := migrate.ResolveExternal(from, contexoDir, nil)
+		if err != nil {
+			return errorResult("ctx_migrate: " + err.Error())
+		}
+		scanDir = sd
+	}
+
+	cat, err := migrate.Build(scanDir, contexoDir, migrate.DefaultDetectors())
+	if err != nil {
+		return errorResult("ctx_migrate: " + err.Error())
+	}
+	label := migrate.LabelFor(scanDir)
+	return textResult(buildMigrateCatalog(cat, scanDir, migrateSourceSlug(label, date)))
 }

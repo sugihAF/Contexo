@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sugihAF/contexo/internal/migrate"
 	"github.com/sugihAF/contexo/internal/schema"
+	"github.com/sugihAF/contexo/internal/store/pagestore"
 )
 
 func TestMigrateSourceSlug(t *testing.T) {
@@ -65,4 +68,69 @@ func TestBuildMigrateResume(t *testing.T) {
 	if strings.Contains(out, "ask which to import") {
 		t.Errorf("resume directive leaked the catalog-only ask-user step")
 	}
+}
+
+func newTestServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	root := t.TempDir()
+	hub := filepath.Join(root, ".contexo")
+	if err := os.MkdirAll(hub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pagestore.Open(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewServer(store), root
+}
+
+func TestToolMigrateDiscoverThenDone(t *testing.T) {
+	s, root := newTestServer(t)
+	// Seed a discoverable file in the project root.
+	if err := os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("# Rules\n\nUse tabs."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := s.toolMigrate(map[string]interface{}{})
+	if res.IsError || !contains(res, "<MIGRATE_CATALOG") || !contains(res, "CLAUDE.md") {
+		t.Fatalf("discover: %+v", res)
+	}
+
+	// Stage a manifest → resume mode.
+	m := &migrate.Manifest{Version: 1, SourceRoot: root, Label: "proj",
+		Items: []migrate.ManifestItem{{RelPath: "CLAUDE.md", AbsPath: filepath.Join(root, "CLAUDE.md"), SuggestedType: schema.TypeConcept, SuggestedSlug: "rules"}}}
+	if err := migrate.SaveManifest(s.store.Root, m); err != nil {
+		t.Fatal(err)
+	}
+	res = s.toolMigrate(map[string]interface{}{})
+	if !contains(res, "<MIGRATE_RESUME") {
+		t.Fatalf("resume: %+v", res)
+	}
+
+	// done=true clears it.
+	res = s.toolMigrate(map[string]interface{}{"done": true})
+	if res.IsError {
+		t.Fatalf("done errored: %+v", res)
+	}
+	if mm, _ := migrate.LoadManifest(s.store.Root); mm != nil {
+		t.Errorf("manifest not cleared")
+	}
+}
+
+func contains(res *ToolResult, sub string) bool {
+	for _, c := range res.Content {
+		if len(c.Text) >= len(sub) && (indexOf(c.Text, sub) >= 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

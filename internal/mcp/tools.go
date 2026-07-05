@@ -168,6 +168,27 @@ func (s *Server) ListTools() []Tool {
 				},
 			},
 		},
+		{
+			Name: "ctx_migrate",
+			Description: "Bulk-onboard a project's EXISTING knowledge into Contexo. Use when the user says " +
+				"something like 'migrate my wiki/docs into contexo' or 'import our existing knowledge base'. " +
+				"With no argument it scans the current project (llm-wiki trees, docs/, ADRs, README, " +
+				"CLAUDE.md/AGENTS.md, Cursor rules) and returns a numbered CATALOG of what it found — " +
+				"metadata + a short preview only, never full content. Show the catalog to the user, ask which " +
+				"items to import, then for each: read the file, reformat it into the best-fit Contexo page with " +
+				"ctx_write_page, and ctx_push with no_distill=true. Pass from=\"<path-or-git-url>\" to import a " +
+				"knowledge base that lives outside this project. If a CLI migration was staged, this returns a " +
+				"RESUME directive for exactly those items instead; call ctx_migrate(done=true) when finished.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"from":   map[string]interface{}{"type": "string", "description": "External source: a local path or a git URL to import from"},
+					"path":   map[string]interface{}{"type": "string", "description": "Override the directory to scan (defaults to the project root)"},
+					"done":   map[string]interface{}{"type": "boolean", "description": "Clear the staged migration manifest after finishing"},
+					"rescan": map[string]interface{}{"type": "boolean", "description": "Force a fresh discovery even if a manifest is staged"},
+				},
+			},
+		},
 	}
 }
 
@@ -202,6 +223,8 @@ func (s *Server) HandleToolCall(ctx context.Context, name string, args map[strin
 		return s.toolDiff(args)
 	case "ctx_evolution":
 		return s.toolEvolution(args)
+	case "ctx_migrate":
+		return s.toolMigrate(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}
