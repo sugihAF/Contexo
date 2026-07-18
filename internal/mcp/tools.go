@@ -189,6 +189,26 @@ func (s *Server) ListTools() []Tool {
 				},
 			},
 		},
+		{
+			Name: "ctx_generate",
+			Description: "Seed a Contexo knowledge base FROM THE CODEBASE for a project with no docs. Use when the user says " +
+				"something like 'generate contexo knowledge from this code' or 'we have no docs, bootstrap contexo'. Runs the " +
+				"external Graphify code-graph tool (needs `graphify` installed: uv tool install graphifyy), maps its output into a " +
+				"numbered CATALOG of subsystems + key components (scaffolding + source refs, not full content), and returns a " +
+				"directive: show the list, let the user pick, then for each read the slice AND the cited source to VERIFY, write a " +
+				"Contexo page with ctx_write_page (prefer EXTRACTED over INFERRED facts), and ctx_push with no_distill=true. " +
+				"Finish with ctx_generate(done=true) to clean the cache. Pass backend=<gemini|claude|ollama|...> only to use an LLM " +
+				"for richer subsystem names (optional; code extraction is keyless).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":    map[string]interface{}{"type": "string", "description": "Codebase directory to analyze (defaults to the project root)"},
+					"backend": map[string]interface{}{"type": "string", "description": "Optional Graphify LLM backend for community naming (gemini|claude|openai|ollama|bedrock)"},
+					"done":    map[string]interface{}{"type": "boolean", "description": "Clear the staged manifest + .generate-cache after finishing"},
+					"rescan":  map[string]interface{}{"type": "boolean", "description": "Force a fresh run even if a generate manifest is staged"},
+				},
+			},
+		},
 	}
 }
 
@@ -225,6 +245,8 @@ func (s *Server) HandleToolCall(ctx context.Context, name string, args map[strin
 		return s.toolEvolution(args)
 	case "ctx_migrate":
 		return s.toolMigrate(args)
+	case "ctx_generate":
+		return s.toolGenerate(args)
 	default:
 		return errorResult(fmt.Sprintf("unknown tool: %s", name))
 	}

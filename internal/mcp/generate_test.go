@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sugihAF/contexo/internal/migrate"
 	"github.com/sugihAF/contexo/internal/schema"
+	"github.com/sugihAF/contexo/internal/store/pagestore"
 )
 
 func TestGenerateSourceSlug(t *testing.T) {
@@ -45,5 +48,48 @@ func TestBuildGenerateResume(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("resume directive missing %q", want)
 		}
+	}
+}
+
+func TestToolGenerateDiscoverThenDone(t *testing.T) {
+	root := t.TempDir()
+	hub := filepath.Join(root, ".contexo")
+	os.MkdirAll(hub, 0o755)
+	store, err := pagestore.Open(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(store)
+
+	// stub the runner so no real graphify is needed
+	fixture, _ := os.ReadFile(filepath.Join("..", "generate", "testdata", "graph.json"))
+	prev := genRunner
+	genRunner = func(projectRoot, cacheDir, backend string) (string, error) {
+		out := filepath.Join(cacheDir, "graphify-out")
+		os.MkdirAll(out, 0o755)
+		os.WriteFile(filepath.Join(out, "graph.json"), fixture, 0o644)
+		os.WriteFile(filepath.Join(out, "GRAPH_REPORT.md"), []byte("# overview"), 0o644)
+		return out, nil
+	}
+	t.Cleanup(func() { genRunner = prev })
+
+	res := s.toolGenerate(map[string]interface{}{})
+	if res.IsError || !contains(res, "<GENERATE_CATALOG") {
+		t.Fatalf("discover: %+v", res)
+	}
+	// discovery staged a generate manifest (for cleanup)
+	if m, _ := migrate.LoadManifest(hub); m == nil || m.Kind != "generate" {
+		t.Fatalf("expected staged generate manifest, got %+v", m)
+	}
+	// resume returns the generate resume directive
+	if res2 := s.toolGenerate(map[string]interface{}{}); !contains(res2, "<GENERATE_RESUME") {
+		t.Fatalf("resume: %+v", res2)
+	}
+	// done clears it
+	if res3 := s.toolGenerate(map[string]interface{}{"done": true}); res3.IsError {
+		t.Fatalf("done errored: %+v", res3)
+	}
+	if m, _ := migrate.LoadManifest(hub); m != nil {
+		t.Errorf("manifest not cleared")
 	}
 }

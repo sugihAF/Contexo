@@ -3,7 +3,9 @@ package mcp
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/sugihAF/contexo/internal/generate"
 	"github.com/sugihAF/contexo/internal/migrate"
 )
 
@@ -72,4 +74,59 @@ func buildGenerateResume(m *migrate.Manifest, srcSlug string) string {
 	b.WriteString(generateInstructions(srcSlug, false))
 	b.WriteString("\n</GENERATE_RESUME>\n")
 	return b.String()
+}
+
+// genRunner is the Graphify runner seam (tests override it).
+var genRunner generate.Runner = generate.DefaultRunner
+
+// toolGenerate mirrors toolMigrate: done → clear; a staged generate manifest →
+// resume; otherwise run Graphify + adapter, stage a generate manifest (so the
+// .generate-cache gets cleaned on done), and return the catalog directive.
+func (s *Server) toolGenerate(args map[string]interface{}) *ToolResult {
+	contexoDir := s.store.Root
+	date := time.Now().UTC().Format("2006-01-02")
+
+	if done, _ := args["done"].(bool); done {
+		if err := migrate.ClearManifest(contexoDir); err != nil {
+			return errorResult("ctx_generate: clear manifest: " + err.Error())
+		}
+		return textResult("Generation complete; staged manifest + .generate-cache cleared.")
+	}
+
+	rescan, _ := args["rescan"].(bool)
+	if !rescan {
+		if m, _ := migrate.LoadManifest(contexoDir); m != nil && m.Kind == "generate" {
+			return textResult(buildGenerateResume(m, generateSourceSlug(m.Label, date)))
+		}
+	}
+
+	projectRoot := s.rootDir()
+	if p, _ := args["path"].(string); p != "" {
+		projectRoot = p
+	}
+	backend, _ := args["backend"].(string)
+
+	cands, cacheDir, err := generate.Discover(projectRoot, contexoDir, backend, genRunner)
+	if err != nil {
+		return errorResult("ctx_generate: " + err.Error())
+	}
+	cat := migrate.NewCatalog(cands, contexoDir)
+	label := migrate.LabelFor(projectRoot)
+	srcSlug := generateSourceSlug(label, date)
+
+	// Stage a generate manifest so ctx_generate(done=true) cleans the cache.
+	m := &migrate.Manifest{
+		Version: 1, Created: time.Now().UTC().Format(time.RFC3339),
+		SourceRoot: projectRoot, ExternalCache: cacheDir, Label: label, Kind: "generate",
+	}
+	for _, it := range cat.Items {
+		m.Items = append(m.Items, migrate.ManifestItem{
+			AbsPath: it.AbsPath, RelPath: it.RelPath, Detector: it.Detector,
+			SuggestedType: it.SuggestedType, SuggestedSlug: it.SuggestedSlug,
+		})
+	}
+	if err := migrate.SaveManifest(contexoDir, m); err != nil {
+		return errorResult("ctx_generate: stage manifest: " + err.Error())
+	}
+	return textResult(buildGenerateCatalog(cat, projectRoot, srcSlug))
 }
