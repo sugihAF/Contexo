@@ -1,0 +1,25 @@
+{
+  "directed": true, "multigraph": false, "graph": {},
+  "nodes": [
+    {"id": "catalog", "label": "catalog.go", "file_type": "code", "source_file": "catalog.go", "source_location": "L1", "community": 0, "community_name": "DefaultDetectors", "norm_label": "catalog.go"},
+    {"id": "migrate_catalog", "label": "Catalog", "file_type": "code", "source_file": "catalog.go", "source_location": "L13", "community": 0, "community_name": "DefaultDetectors", "norm_label": "catalog"},
+    {"id": "migrate_build", "label": "Build()", "file_type": "code", "source_file": "catalog.go", "source_location": "L28", "community": 0, "community_name": "DefaultDetectors", "norm_label": "build"},
+    {"id": "migrate_defaultdetectors", "label": "DefaultDetectors()", "file_type": "code", "source_file": "catalog.go", "source_location": "L17", "community": 0, "community_name": "DefaultDetectors", "norm_label": "defaultdetectors"},
+    {"id": "detect_kbtree", "label": "detect_kbtree.go", "file_type": "code", "source_file": "detect_kbtree.go", "source_location": "L1", "community": 1, "community_name": "kbTreeDetector", "norm_label": "detect_kbtree.go"},
+    {"id": "migrate_kbtreedetector", "label": "kbTreeDetector", "file_type": "code", "source_file": "detect_kbtree.go", "source_location": "L15", "community": 1, "community_name": "kbTreeDetector", "norm_label": "kbtreedetector"},
+    {"id": "migrate_newkbtreedetector", "label": "newKBTreeDetector()", "file_type": "code", "source_file": "detect_kbtree.go", "source_location": "L17", "community": 1, "community_name": "kbTreeDetector", "norm_label": "newkbtreedetector"},
+    {"id": "migrate_isdir", "label": "isDir()", "file_type": "code", "source_file": "detect_kbtree.go", "source_location": "L84", "community": 1, "community_name": "kbTreeDetector", "norm_label": "isdir"}
+  ],
+  "links": [
+    {"source": "catalog", "target": "migrate_catalog", "relation": "contains", "confidence": "EXTRACTED", "source_file": "catalog.go", "source_location": "L13", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "catalog", "target": "migrate_build", "relation": "contains", "confidence": "EXTRACTED", "source_file": "catalog.go", "source_location": "L28", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "catalog", "target": "migrate_defaultdetectors", "relation": "contains", "confidence": "EXTRACTED", "source_file": "catalog.go", "source_location": "L17", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "migrate_build", "target": "migrate_defaultdetectors", "relation": "calls", "confidence": "EXTRACTED", "source_file": "catalog.go", "source_location": "L30", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "migrate_defaultdetectors", "target": "migrate_newkbtreedetector", "relation": "calls", "confidence": "INFERRED", "source_file": "catalog.go", "source_location": "L19", "weight": 1.0, "confidence_score": 0.8},
+    {"source": "migrate_build", "target": "migrate_catalog", "relation": "references", "confidence": "EXTRACTED", "source_file": "catalog.go", "source_location": "L28", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "migrate_kbtreedetector", "target": "migrate_isdir", "relation": "method", "confidence": "EXTRACTED", "source_file": "detect_kbtree.go", "source_location": "L84", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "migrate_newkbtreedetector", "target": "migrate_kbtreedetector", "relation": "references", "confidence": "EXTRACTED", "source_file": "detect_kbtree.go", "source_location": "L17", "weight": 1.0, "confidence_score": 1.0},
+    {"source": "detect_kbtree", "target": "migrate_kbtreedetector", "relation": "contains", "confidence": "EXTRACTED", "source_file": "detect_kbtree.go", "source_location": "L15", "weight": 1.0, "confidence_score": 1.0}
+  ],
+  "hyperedges": []
+}
