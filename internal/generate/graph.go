@@ -6,6 +6,9 @@ package generate
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // Node is one graph.json node (a file or a code symbol).
@@ -48,4 +51,72 @@ func ParseGraph(data []byte) (*Graph, error) {
 		return nil, fmt.Errorf("generate: graph.json has no nodes")
 	}
 	return &g, nil
+}
+
+// isFileNode reports whether a node represents a source file (label equals the
+// base name of its source_file) rather than a code symbol.
+func isFileNode(n Node) bool {
+	return n.SourceFile != "" && strings.EqualFold(n.Label, filepath.Base(n.SourceFile))
+}
+
+func (g *Graph) degrees() map[string]int {
+	d := make(map[string]int, len(g.Nodes))
+	for _, l := range g.Links {
+		d[l.Source]++
+		d[l.Target]++
+	}
+	return d
+}
+
+// Communities groups nodes by their community id.
+func (g *Graph) Communities() map[int][]Node {
+	m := map[int][]Node{}
+	for _, n := range g.Nodes {
+		m[n.Community] = append(m[n.Community], n)
+	}
+	return m
+}
+
+// GodNodes returns the topM most-connected SYMBOL nodes (files excluded),
+// by degree descending, id ascending as a deterministic tiebreak.
+func (g *Graph) GodNodes(topM int) []Node {
+	deg := g.degrees()
+	var syms []Node
+	for _, n := range g.Nodes {
+		if !isFileNode(n) {
+			syms = append(syms, n)
+		}
+	}
+	sort.SliceStable(syms, func(i, j int) bool {
+		if di, dj := deg[syms[i].ID], deg[syms[j].ID]; di != dj {
+			return di > dj
+		}
+		return syms[i].ID < syms[j].ID
+	})
+	if topM > 0 && len(syms) > topM {
+		syms = syms[:topM]
+	}
+	return syms
+}
+
+// NeighborsOf returns every link touching id (as source or target).
+func (g *Graph) NeighborsOf(id string) []Link {
+	var out []Link
+	for _, l := range g.Links {
+		if l.Source == id || l.Target == id {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// communityName returns a human name for a community: the first non-empty
+// community_name among members, else "community <id>".
+func communityName(members []Node, id int) string {
+	for _, n := range members {
+		if n.CommunityName != "" {
+			return n.CommunityName
+		}
+	}
+	return fmt.Sprintf("community %d", id)
 }

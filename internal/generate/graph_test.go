@@ -46,3 +46,43 @@ func TestParseGraphErrors(t *testing.T) {
 		t.Error("want error on empty nodes")
 	}
 }
+
+func TestCommunitiesAndGodNodes(t *testing.T) {
+	g := loadFixture(t)
+	comms := g.Communities()
+	if len(comms) != 2 || len(comms[0]) != 4 || len(comms[1]) != 4 {
+		t.Fatalf("communities: %v", map[int]int{0: len(comms[0]), 1: len(comms[1])})
+	}
+	// God nodes are SYMBOL nodes only (files excluded), ranked by degree.
+	gods := g.GodNodes(3)
+	if len(gods) != 3 {
+		t.Fatalf("want 3 god nodes, got %d", len(gods))
+	}
+	for _, n := range gods {
+		if isFileNode(n) {
+			t.Errorf("god node %q is a file node", n.Label)
+		}
+	}
+	// migrate_build (contains<-, calls->, references->) and migrate_catalog and
+	// migrate_defaultdetectors are the most-connected symbols; top god node is a symbol.
+	if isFileNode(gods[0]) {
+		t.Errorf("top god node should be a symbol: %+v", gods[0])
+	}
+}
+
+func TestIsFileNodeAndNeighbors(t *testing.T) {
+	g := loadFixture(t)
+	byID := map[string]Node{}
+	for _, n := range g.Nodes {
+		byID[n.ID] = n
+	}
+	if !isFileNode(byID["catalog"]) { // label "catalog.go" == base(source_file)
+		t.Error("catalog.go should be a file node")
+	}
+	if isFileNode(byID["migrate_build"]) { // label "Build()" != "catalog.go"
+		t.Error("Build() should be a symbol node")
+	}
+	if len(g.NeighborsOf("migrate_build")) == 0 {
+		t.Error("migrate_build should have neighbors")
+	}
+}
