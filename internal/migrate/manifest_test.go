@@ -21,7 +21,7 @@ func TestManifestRoundTripAndClear(t *testing.T) {
 	}
 	in := &Manifest{
 		Version: 1, Created: "2026-07-05T00:00:00Z", SourceRoot: "/proj",
-		ExternalCache: cache, Label: "llm-wiki",
+		ExternalCache: cache, Label: "llm-wiki", Kind: "generate",
 		Items: []ManifestItem{{AbsPath: "/proj/a.md", RelPath: "a.md", Detector: "docs", SuggestedType: schema.TypeConcept, SuggestedSlug: "a"}},
 	}
 	if err := SaveManifest(hub, in); err != nil {
@@ -33,6 +33,9 @@ func TestManifestRoundTripAndClear(t *testing.T) {
 	}
 	if got.Label != "llm-wiki" || len(got.Items) != 1 || got.Items[0].SuggestedSlug != "a" {
 		t.Errorf("round-trip mismatch: %+v", got)
+	}
+	if got.Kind != "generate" {
+		t.Errorf("Kind round-trip: got %q", got.Kind)
 	}
 
 	if err := ClearManifest(hub); err != nil {

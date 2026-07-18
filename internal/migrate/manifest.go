@@ -28,6 +28,7 @@ type Manifest struct {
 	SourceRoot    string         `json:"source_root"`
 	ExternalCache string         `json:"external_cache,omitempty"`
 	Label         string         `json:"label"`
+	Kind          string         `json:"kind,omitempty"` // "migrate" (default) | "generate"
 	Items         []ManifestItem `json:"items"`
 }
 

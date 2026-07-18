@@ -113,3 +113,22 @@ func TestBuildDedupEarlierDetectorWins(t *testing.T) {
 		t.Errorf("expected 1 README candidate after dedup, got %d", count)
 	}
 }
+
+func TestNewCatalogAssignsIDsPreservingOrder(t *testing.T) {
+	hub := t.TempDir()
+	writeFile(t, filepath.Join(hub, "wiki", "entities", "beta.md"), "---\n---\n")
+	items := []Candidate{
+		{Detector: "x", SuggestedType: schema.TypeConcept, SuggestedSlug: "alpha", RelPath: "z.md"},
+		{Detector: "x", SuggestedType: schema.TypeEntity, SuggestedSlug: "beta", RelPath: "a.md"},
+	}
+	cat := NewCatalog(items, hub)
+	if len(cat.Items) != 2 || cat.Items[0].ID != 1 || cat.Items[1].ID != 2 {
+		t.Fatalf("IDs not 1..n in order: %+v", cat.Items)
+	}
+	if cat.Items[0].SuggestedSlug != "alpha" {
+		t.Errorf("order not preserved: %+v", cat.Items)
+	}
+	if cat.Items[0].AlreadyImported || !cat.Items[1].AlreadyImported {
+		t.Errorf("AlreadyImported wrong (beta exists): %+v", cat.Items)
+	}
+}

@@ -61,11 +61,19 @@ func Build(scanDir, contexoDir string, dets []Detector) (Catalog, error) {
 		return items[i].RelPath < items[j].RelPath
 	})
 
+	return NewCatalog(items, contexoDir), nil
+}
+
+// NewCatalog finalizes a pre-ordered candidate slice into a Catalog: it assigns
+// 1-based IDs in the given order (no reordering) and flags AlreadyImported.
+// Build uses it after its own dedup+sort; generate uses it directly on
+// adapter-produced candidates.
+func NewCatalog(items []Candidate, contexoDir string) Catalog {
 	for i := range items {
 		items[i].ID = i + 1
 		items[i].AlreadyImported = slugExists(contexoDir, items[i].SuggestedSlug)
 	}
-	return Catalog{Items: items}, nil
+	return Catalog{Items: items}
 }
 
 // Filter keeps items matching typ (SuggestedType) and/or detector name; empty
