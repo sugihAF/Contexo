@@ -357,6 +357,49 @@ root Markdown, README(s), ADRs, and CHANGELOG; and agent-instruction files
 
 ---
 
+## Generating a KB from code (`ctx generate`)
+
+No docs to migrate — just a codebase? `ctx generate` bootstraps a starter
+knowledge base *from the code*. It runs [Graphify](https://github.com/Graphify-Labs/graphify)
+(an MIT code-graph tool you install separately) to map your codebase into
+subsystems and key components, then hands those to your agent to turn into
+verified Contexo pages.
+
+**One-time:** install Graphify — `uv tool install graphifyy` (or `pipx install
+graphifyy`). Code analysis is fully local and needs no API key.
+
+**From your agent (recommended):**
+
+> "we have no docs — generate contexo knowledge from this codebase"
+
+The agent calls `ctx_generate`, which runs Graphify and returns a numbered
+catalog of subsystems (→ concept pages) and core components (→ entity pages),
+plus an overview. You pick which to import; the agent reads each slice **and the
+real source it cites**, verifies it (auto-extracted edges tagged `INFERRED` are
+guesses), writes accurate pages, and pushes — then cleans up with
+`ctx_generate(done=true)`.
+
+**From the terminal:**
+
+```bash
+ctx generate                 # run Graphify on this project, pick interactively, stage
+ctx generate --list          # just show what would be generated
+ctx generate --from ../svc   # analyze a different codebase directory
+ctx generate --type entity   # only the component (entity) candidates
+ctx generate --all --yes     # non-interactive: stage everything
+ctx generate --backend gemini  # optional: use an LLM for richer subsystem names (needs a key)
+```
+
+Then ask your agent to "finish the contexo generation." Everything Graphify
+produces lives under `.contexo/.generate-cache/` (never pushed) and is removed
+when the agent finishes.
+
+Note: `ctx generate` produces a *scaffold* from static analysis — your agent
+verifies it against the source before anything is written, so the resulting
+pages reflect the real code, not just the graph.
+
+---
+
 ## Part 3 — The daily flow
 
 The scenario: you (Dev A) spend a Tuesday afternoon researching how to model Stripe subscription billing for ChompChat. On Wednesday morning Dev B is going to do the implementation. Without Contexo, Dev B's Claude would re-do the research from scratch, possibly badly. With Contexo, Dev B's Claude inherits your reasoning.
