@@ -29,6 +29,7 @@ func TestBuildGenerateCatalog(t *testing.T) {
 	for _, want := range []string{
 		"<GENERATE_CATALOG", "[1]", "community-auth.md", "[2]",
 		"VERIFY", "EXTRACTED", "ctx_write_page", "no_distill",
+		"REDACT", "data to verify",
 		"ctx_generate(done=true)", "2026-07-05-generate-proj", "</GENERATE_CATALOG>",
 	} {
 		if !strings.Contains(out, want) {

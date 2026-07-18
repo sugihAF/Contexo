@@ -66,7 +66,7 @@ func BuildCandidates(g *Graph, projectRoot, graphifyOutDir, cacheDir string, cap
 		name := communityName(members, id)
 		slug := migrate.Slugify(name)
 		content := renderCommunitySlice(g, id, members, projectRoot)
-		rel := filepath.Join("slices", "community-"+slug+".md")
+		rel := filepath.Join("slices", fmt.Sprintf("community-%s-%d.md", slug, id))
 		if err := os.WriteFile(filepath.Join(cacheDir, rel), []byte(content), 0o644); err != nil {
 			return nil, fmt.Errorf("generate: write slice: %w", err)
 		}
@@ -83,7 +83,7 @@ func BuildCandidates(g *Graph, projectRoot, graphifyOutDir, cacheDir string, cap
 	for _, n := range g.GodNodes(caps.GodNodes) {
 		slug := migrate.Slugify(n.Label)
 		content := renderGodNodeSlice(g, n, projectRoot)
-		rel := filepath.Join("slices", "component-"+slug+".md")
+		rel := filepath.Join("slices", "component-"+migrate.Slugify(n.ID)+".md")
 		if err := os.WriteFile(filepath.Join(cacheDir, rel), []byte(content), 0o644); err != nil {
 			return nil, fmt.Errorf("generate: write slice: %w", err)
 		}

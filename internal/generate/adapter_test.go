@@ -45,6 +45,41 @@ func TestBuildCandidates(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesGodNodeSlugCollision(t *testing.T) {
+	// Two DIFFERENT god nodes with the SAME label ("Build()") in different files
+	// must produce two DISTINCT slice files + candidates (no last-write-wins).
+	g := &Graph{
+		Nodes: []Node{
+			{ID: "pkga_build", Label: "Build()", SourceFile: "a/build.go", SourceLoc: "L1", Community: 0, CommunityName: "A"},
+			{ID: "pkgb_build", Label: "Build()", SourceFile: "b/build.go", SourceLoc: "L1", Community: 1, CommunityName: "B"},
+			{ID: "pkga_x", Label: "X()", SourceFile: "a/build.go", SourceLoc: "L5", Community: 0, CommunityName: "A"},
+			{ID: "pkgb_y", Label: "Y()", SourceFile: "b/build.go", SourceLoc: "L5", Community: 1, CommunityName: "B"},
+		},
+		Links: []Link{
+			{Source: "pkga_build", Target: "pkga_x", Relation: "calls", Confidence: "EXTRACTED"},
+			{Source: "pkgb_build", Target: "pkgb_y", Relation: "calls", Confidence: "EXTRACTED"},
+		},
+	}
+	cache := t.TempDir()
+	cands, err := BuildCandidates(g, "/proj", t.TempDir(), cache, DefaultCaps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Collect the AbsPaths of the two "Build()" entity candidates.
+	var buildPaths []string
+	for _, c := range cands {
+		if c.Title == "Build()" {
+			buildPaths = append(buildPaths, c.AbsPath)
+		}
+	}
+	if len(buildPaths) != 2 {
+		t.Fatalf("want 2 Build() candidates, got %d", len(buildPaths))
+	}
+	if buildPaths[0] == buildPaths[1] {
+		t.Errorf("the two Build() god-nodes collided onto one slice file: %q", buildPaths[0])
+	}
+}
+
 func TestBuildCandidatesDegradesToReportOnly(t *testing.T) {
 	cache := t.TempDir()
 	outDir := t.TempDir()

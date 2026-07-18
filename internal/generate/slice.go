@@ -34,9 +34,7 @@ func renderCommunitySlice(g *Graph, id int, members []Node, projectRoot string) 
 	fmt.Fprintf(&b, "# %s (subsystem — community %d, %d nodes)\n\n", communityName(members, id), id, len(members))
 	b.WriteString(sliceHeader + "\n")
 	b.WriteString("## Members (source refs)\n")
-	inComm := map[string]bool{}
 	for _, n := range members {
-		inComm[n.ID] = true
 		kind := "symbol"
 		if isFileNode(n) {
 			kind = "file"
