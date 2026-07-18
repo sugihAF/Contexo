@@ -106,7 +106,10 @@ func (s *Server) toolMigrate(args map[string]interface{}) *ToolResult {
 
 	rescan, _ := args["rescan"].(bool)
 	if !rescan {
-		if m, _ := migrate.LoadManifest(contexoDir); m != nil {
+		// Only resume MIGRATE manifests here; a Kind:"generate" manifest belongs to
+		// ctx_generate — resuming it here would frame code-extracted slices with the
+		// wrong (distill) instructions.
+		if m, _ := migrate.LoadManifest(contexoDir); m != nil && m.Kind != "generate" {
 			return textResult(buildMigrateResume(m, migrateSourceSlug(m.Label, date)))
 		}
 	}

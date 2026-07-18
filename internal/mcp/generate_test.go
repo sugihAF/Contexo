@@ -93,3 +93,32 @@ func TestToolGenerateDiscoverThenDone(t *testing.T) {
 		t.Errorf("manifest not cleared")
 	}
 }
+
+func TestToolMigrateIgnoresGenerateManifest(t *testing.T) {
+	root := t.TempDir()
+	hub := filepath.Join(root, ".contexo")
+	if err := os.MkdirAll(hub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pagestore.Open(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(store)
+	m := &migrate.Manifest{
+		Version: 1, Kind: "generate", SourceRoot: root, Label: "x",
+		Items: []migrate.ManifestItem{{RelPath: "slices/community-x.md", AbsPath: filepath.Join(hub, ".generate-cache", "slices", "community-x.md"), SuggestedType: schema.TypeConcept, SuggestedSlug: "x"}},
+	}
+	if err := migrate.SaveManifest(hub, m); err != nil {
+		t.Fatal(err)
+	}
+	// ctx_migrate must NOT resume a generate-kind manifest (it should fall through to discovery).
+	res := s.toolMigrate(map[string]interface{}{})
+	if contains(res, "<MIGRATE_RESUME") {
+		t.Errorf("ctx_migrate wrongly resumed a generate manifest: %+v", res)
+	}
+	// and the generate manifest must be left intact for ctx_generate to resume.
+	if got, _ := migrate.LoadManifest(hub); got == nil || got.Kind != "generate" {
+		t.Errorf("generate manifest was clobbered by ctx_migrate: %+v", got)
+	}
+}
