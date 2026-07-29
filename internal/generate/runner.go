@@ -81,7 +81,10 @@ func DefaultRunner(projectRoot, cacheDir, backend string) (string, error) {
 	if _, err := lookPath("graphify"); err != nil {
 		return "", fmt.Errorf("ctx generate needs Graphify — install it with `uv tool install graphifyy` (or pipx/pip install graphifyy)")
 	}
-	if out, err := runGraphify([]string{"extract", projectRoot}); err != nil {
+	// --code-only keeps extraction keyless (local AST): a corpus with docs/images
+	// otherwise makes `graphify extract` demand an LLM API key and fail. generate
+	// only needs the code graph — docs are ctx migrate's job, not generate's.
+	if out, err := runGraphify([]string{"extract", projectRoot, "--code-only"}); err != nil {
 		return "", fmt.Errorf("graphify extract failed: %v: %s", err, strings.TrimSpace(out))
 	}
 	// cluster-only adds community_name (hub heuristic, keyless) + GRAPH_REPORT.md;
@@ -105,7 +108,8 @@ func DefaultRunner(projectRoot, cacheDir, backend string) (string, error) {
 	return dstOut, nil
 }
 
-func runGraphify(args []string) (string, error) {
+// runGraphify invokes the graphify CLI (seam: tests override it to assert argv).
+var runGraphify = func(args []string) (string, error) {
 	out, err := exec.Command("graphify", args...).CombinedOutput()
 	return string(out), err
 }

@@ -26,6 +26,46 @@ func setLookPath(t *testing.T, present ...string) {
 	t.Cleanup(func() { lookPath = prev })
 }
 
+// DefaultRunner must extract keyless (--code-only) so mixed corpora with
+// docs/images don't demand an LLM API key.
+func TestDefaultRunnerExtractsCodeOnly(t *testing.T) {
+	setLookPath(t, "graphify")
+	var calls [][]string
+	prev := runGraphify
+	runGraphify = func(args []string) (string, error) {
+		calls = append(calls, args)
+		if len(args) >= 2 && args[0] == "extract" {
+			// simulate extract writing <projectRoot>/graphify-out/graph.json
+			out := filepath.Join(args[1], "graphify-out")
+			os.MkdirAll(out, 0o755)
+			os.WriteFile(filepath.Join(out, "graph.json"), []byte("{}"), 0o644)
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { runGraphify = prev })
+
+	proj := t.TempDir()
+	cache := filepath.Join(t.TempDir(), "cache")
+	if _, err := DefaultRunner(proj, cache, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) == 0 || calls[0][0] != "extract" {
+		t.Fatalf("first graphify call should be extract, got %v", calls)
+	}
+	if !contains(calls[0], "--code-only") {
+		t.Errorf("extract must pass --code-only (keyless), got %v", calls[0])
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGraphifyInstalled(t *testing.T) {
 	setLookPath(t, "graphify")
 	if !GraphifyInstalled() {
