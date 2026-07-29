@@ -49,15 +49,47 @@ func (c *Credentials) Kind() string {
 	}
 }
 
-// CredentialsPath returns the .contexo credentials path.
+// CredentialsPath returns the project-local .contexo credentials path.
 func CredentialsPath(root string) string {
 	return filepath.Join(ContexoDirPath(root), "credentials.json")
 }
 
-// LoadCredentials reads credentials from .contexo/credentials.json.
-// Returns (nil, nil) if absent.
+// userHomeDir is a seam over os.UserHomeDir so tests can point the global
+// credentials file at a temp dir.
+var userHomeDir = os.UserHomeDir
+
+// GlobalCredentialsPath returns the user-level credentials file
+// (~/.contexo/credentials.json). A PAT identifies the user, not a repo, so a
+// single `ctx auth login` authenticates the CLI/MCP server in every project.
+func GlobalCredentialsPath() (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("credentials: locate home dir: %w", err)
+	}
+	return filepath.Join(home, ContexoDir, "credentials.json"), nil
+}
+
+// LoadCredentials reads credentials, preferring the project-local
+// .contexo/credentials.json and falling back to the global file. Returns
+// (nil, nil) when neither exists.
 func LoadCredentials(root string) (*Credentials, error) {
-	data, err := os.ReadFile(CredentialsPath(root))
+	creds, err := loadCredentialsFile(CredentialsPath(root))
+	if err != nil {
+		return nil, err
+	}
+	if creds != nil {
+		return creds, nil
+	}
+	globalPath, err := GlobalCredentialsPath()
+	if err != nil {
+		// No home dir → just no global fallback; treat as unauthenticated.
+		return nil, nil
+	}
+	return loadCredentialsFile(globalPath)
+}
+
+func loadCredentialsFile(path string) (*Credentials, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -71,13 +103,28 @@ func LoadCredentials(root string) (*Credentials, error) {
 	return &creds, nil
 }
 
-// SaveCredentials writes credentials to .contexo/credentials.json with 0600.
+// SaveCredentials writes credentials to the project-local
+// .contexo/credentials.json with 0600.
 func SaveCredentials(root string, creds *Credentials) error {
+	return saveCredentialsFile(CredentialsPath(root), creds)
+}
+
+// SaveGlobalCredentials writes credentials to ~/.contexo/credentials.json with
+// 0600, so the CLI/MCP server is authenticated regardless of which project
+// directory it resolves.
+func SaveGlobalCredentials(creds *Credentials) error {
+	path, err := GlobalCredentialsPath()
+	if err != nil {
+		return err
+	}
+	return saveCredentialsFile(path, creds)
+}
+
+func saveCredentialsFile(path string, creds *Credentials) error {
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
 		return fmt.Errorf("credentials: marshal: %w", err)
 	}
-	path := CredentialsPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("credentials: create dir: %w", err)
 	}

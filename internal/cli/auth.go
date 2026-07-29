@@ -145,6 +145,12 @@ prompt, or pass --token directly to skip the browser entirely.`,
 			if err := config.SaveCredentials(root, creds); err != nil {
 				return err
 			}
+			// Also write the global credentials file so the CLI + MCP server
+			// are authenticated in every project, not just this directory.
+			// Best-effort: a missing home dir shouldn't fail an otherwise-good login.
+			if err := config.SaveGlobalCredentials(creds); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: saved project auth but could not write global credentials: %v\n", err)
+			}
 
 			// Offer an interactive repo picker if the user didn't pass --repo
 			// and we have a TTY + server URL. Skipping the picker (or it
