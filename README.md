@@ -239,5 +239,21 @@ rm "$(go env GOPATH)/bin/ctx"      # ctx.exe on Windows
 
 ## Documentation
 
-- [`docs/usage.md`](docs/usage.md) — **start here** — admin setup + developer onboarding + daily flow
+Full documentation — every CLI command and MCP tool, with worked examples —
+lives at **[docs.contexo.live](https://docs.contexo.live)**.
+
+- [`docs/usage.md`](docs/usage.md) — admin setup + developer onboarding + daily flow
 - [`docs/vision.md`](docs/vision.md) — what Contexo is and the page format
+
+### Regenerating the docs command surface
+
+The docs site renders its flag tables and MCP schemas from a JSON snapshot of
+the real cobra tree, so the reference can't drift from the code. Regenerate it
+whenever a command, flag or MCP tool changes — it's part of cutting a release:
+
+```
+go run ./cmd/ctxdocs > ../contexo-landing/apps/docs/src/data/contexo-cli.json
+```
+
+`cmd/ctxdocs` is build-time tooling only: `.goreleaser.yaml` builds `./cmd/ctx`
+alone, so it never ships in a release binary.
