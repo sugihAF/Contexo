@@ -16,6 +16,13 @@ import (
 // genRunner is the Graphify runner seam (tests override it).
 var genRunner generate.Runner = generate.DefaultRunner
 
+// graphifyInstalled / installGraphify are seams over the generate package so the
+// install-consent flow can be exercised without touching PATH.
+var (
+	graphifyInstalled = generate.GraphifyInstalled
+	installGraphify   = generate.InstallGraphify
+)
+
 func newGenerateCmd() *cobra.Command {
 	var (
 		from    string
@@ -56,6 +63,30 @@ func runGenerate(cmd *cobra.Command, from, backend, typ string, list, all, yes b
 		scanDir = from
 	}
 
+	// One reader serves both the install prompt and the picker/confirm below.
+	reader := bufio.NewReader(cmd.InOrStdin())
+	if !graphifyInstalled() {
+		approved := yes
+		if !approved {
+			fmt.Fprint(out, "Graphify isn't installed (needed to analyze your code). Install it now (uv tool install graphifyy)? [y/N]: ")
+			ans, _ := reader.ReadString('\n')
+			a := strings.ToLower(strings.TrimSpace(ans))
+			approved = a == "y" || a == "yes"
+		}
+		if !approved {
+			return fmt.Errorf("generate needs Graphify — install it with `uv tool install graphifyy` (or pipx/pip install graphifyy), then re-run")
+		}
+		method, ierr := installGraphify()
+		if ierr != nil {
+			return ierr
+		}
+		if !graphifyInstalled() {
+			fmt.Fprintf(out, "Installed Graphify via %s, but `graphify` isn't on PATH yet — open a new terminal and re-run `ctx generate`.\n", method)
+			return nil
+		}
+		fmt.Fprintf(out, "Installed Graphify via %s.\n", method)
+	}
+
 	cands, cacheDir, err := generate.Discover(scanDir, contexoDir, backend, genRunner)
 	if err != nil {
 		return err
@@ -66,7 +97,6 @@ func runGenerate(cmd *cobra.Command, from, backend, typ string, list, all, yes b
 		return nil
 	}
 
-	reader := bufio.NewReader(cmd.InOrStdin())
 	var picks []int
 	if all {
 		picks, _ = parseSelection("all", len(cat.Items))
