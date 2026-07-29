@@ -47,6 +47,26 @@ func ContexoConfigPath(root string) string {
 	return filepath.Join(ContexoDirPath(root), ConfigFile)
 }
 
+// FindProjectRoot walks up from start to the nearest ancestor directory that
+// contains a .contexo/ directory and returns it — the way git locates .git.
+// If none is found (including start itself), it returns start unchanged so
+// callers fall through to the usual "no project here" handling. This lets a
+// long-lived process (e.g. the MCP server) launched from a subdirectory still
+// bind to the project, instead of only matching an exact cwd.
+func FindProjectRoot(start string) string {
+	dir := start
+	for {
+		if fi, err := os.Stat(ContexoDirPath(dir)); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return start // reached the filesystem root without a match
+		}
+		dir = parent
+	}
+}
+
 // Load reads config from .contexo/config.json, returning a default config
 // if the file does not yet exist.
 func Load(root string) (*Config, error) {

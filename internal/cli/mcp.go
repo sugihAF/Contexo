@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sugihAF/contexo/internal/config"
 	mcpserver "github.com/sugihAF/contexo/internal/mcp"
 )
 
@@ -21,7 +22,11 @@ func newMCPCmd() *cobra.Command {
 			"dormant, zero-tool server instead of failing.\n\n" +
 			"Subcommands wire that server into an agent's config: see `ctx mcp install`.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, dormant, err := openMCPStore(GetRootDir())
+			// Walk up to the nearest .contexo so a server launched from a
+			// subdirectory (or with a cwd that isn't the exact project root)
+			// still binds to the project instead of going dormant.
+			root := config.FindProjectRoot(GetRootDir())
+			store, dormant, err := openMCPStore(root)
 			if err != nil {
 				return err
 			}
