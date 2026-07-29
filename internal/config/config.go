@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	ContexoDir  = ".contexo"
+	ContexoDir = ".contexo"
 	ConfigFile = "config.json"
 
 	// DefaultServerURL is what `ctx login` and other server-touching
