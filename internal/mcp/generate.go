@@ -80,6 +80,26 @@ func buildGenerateResume(m *migrate.Manifest, srcSlug string) string {
 // genRunner is the Graphify runner seam (tests override it).
 var genRunner generate.Runner = generate.DefaultRunner
 
+// genGraphifyInstalled / genInstallGraphify are seams over the generate package
+// so the install path is testable without touching PATH.
+var (
+	genGraphifyInstalled = generate.GraphifyInstalled
+	genInstallGraphify   = generate.InstallGraphify
+)
+
+// buildNeedsGraphifyDirective tells the agent Graphify is missing and to get the
+// user's consent before re-invoking with install=true (the tool can't prompt).
+func buildNeedsGraphifyDirective() string {
+	return "<GENERATE_NEEDS_GRAPHIFY>\n" +
+		"Graphify (the code-graph tool ctx generate relies on) isn't installed. It's an external\n" +
+		"Python package (`graphifyy`) that Contexo can install for the user via uv/pipx/pip.\n\n" +
+		"Do NOT install it silently. Ask the user for explicit permission, e.g. \"ctx generate needs\n" +
+		"the Graphify tool — may I install it (uv tool install graphifyy)?\" If they AGREE, re-invoke\n" +
+		"ctx_generate with install=true (keep the same path/backend args). If they decline, stop and\n" +
+		"tell them they can install it themselves with `uv tool install graphifyy` (or pipx/pip).\n" +
+		"</GENERATE_NEEDS_GRAPHIFY>\n"
+}
+
 // toolGenerate mirrors toolMigrate: done → clear; a staged generate manifest →
 // resume; otherwise run Graphify + adapter, stage a generate manifest (so the
 // .generate-cache gets cleaned on done), and return the catalog directive.
@@ -98,6 +118,23 @@ func (s *Server) toolGenerate(args map[string]interface{}) *ToolResult {
 	if !rescan {
 		if m, _ := migrate.LoadManifest(contexoDir); m != nil && m.Kind == "generate" {
 			return textResult(buildGenerateResume(m, generateSourceSlug(m.Label, date)))
+		}
+	}
+
+	// Graphify is required to analyze the code. The tool can't prompt, so without
+	// consent (install=true) return a directive; with it, install then continue.
+	if !genGraphifyInstalled() {
+		if install, _ := args["install"].(bool); install {
+			method, err := genInstallGraphify()
+			if err != nil {
+				return errorResult("ctx_generate: " + err.Error())
+			}
+			if !genGraphifyInstalled() {
+				return textResult(fmt.Sprintf("Installed Graphify via %s, but it isn't on PATH yet — "+
+					"restart your agent / MCP server so it picks up the new PATH, then call ctx_generate again.", method))
+			}
+		} else {
+			return textResult(buildNeedsGraphifyDirective())
 		}
 	}
 

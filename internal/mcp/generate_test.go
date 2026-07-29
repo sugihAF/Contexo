@@ -62,6 +62,11 @@ func TestToolGenerateDiscoverThenDone(t *testing.T) {
 	}
 	s := NewServer(store)
 
+	// pretend graphify is on PATH so the install gate is skipped
+	prevInstalled := genGraphifyInstalled
+	genGraphifyInstalled = func() bool { return true }
+	t.Cleanup(func() { genGraphifyInstalled = prevInstalled })
+
 	// stub the runner so no real graphify is needed
 	fixture, _ := os.ReadFile(filepath.Join("..", "generate", "testdata", "graph.json"))
 	prev := genRunner
@@ -92,6 +97,59 @@ func TestToolGenerateDiscoverThenDone(t *testing.T) {
 	}
 	if m, _ := migrate.LoadManifest(hub); m != nil {
 		t.Errorf("manifest not cleared")
+	}
+}
+
+func TestToolGenerateNeedsGraphifyThenInstall(t *testing.T) {
+	root := t.TempDir()
+	hub := filepath.Join(root, ".contexo")
+	os.MkdirAll(hub, 0o755)
+	store, err := pagestore.Open(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(store)
+
+	installed := false
+	prevInstalled := genGraphifyInstalled
+	genGraphifyInstalled = func() bool { return installed }
+	t.Cleanup(func() { genGraphifyInstalled = prevInstalled })
+
+	prevInstall := genInstallGraphify
+	genInstallGraphify = func() (string, error) { installed = true; return "uv", nil }
+	t.Cleanup(func() { genInstallGraphify = prevInstall })
+
+	// stub the runner so no real graphify run is needed once "installed"
+	fixture, _ := os.ReadFile(filepath.Join("..", "generate", "testdata", "graph.json"))
+	prevRunner := genRunner
+	genRunner = func(projectRoot, cacheDir, backend string) (string, error) {
+		out := filepath.Join(cacheDir, "graphify-out")
+		os.MkdirAll(out, 0o755)
+		os.WriteFile(filepath.Join(out, "graph.json"), fixture, 0o644)
+		os.WriteFile(filepath.Join(out, "GRAPH_REPORT.md"), []byte("# overview"), 0o644)
+		return out, nil
+	}
+	t.Cleanup(func() { genRunner = prevRunner })
+
+	// Without consent: a directive; nothing installed, nothing staged.
+	res := s.toolGenerate(map[string]interface{}{})
+	if res.IsError || !contains(res, "<GENERATE_NEEDS_GRAPHIFY") {
+		t.Fatalf("expected needs-graphify directive, got %+v", res)
+	}
+	if installed {
+		t.Fatal("must not install without install=true")
+	}
+	if m, _ := migrate.LoadManifest(hub); m != nil {
+		t.Fatal("no manifest should be staged before install")
+	}
+
+	// With consent: installs, then discovers and returns the catalog.
+	res2 := s.toolGenerate(map[string]interface{}{"install": true})
+	if res2.IsError || !contains(res2, "<GENERATE_CATALOG") {
+		t.Fatalf("expected catalog after install, got %+v", res2)
+	}
+	if !installed {
+		t.Fatal("install=true should have installed graphify")
 	}
 }
 

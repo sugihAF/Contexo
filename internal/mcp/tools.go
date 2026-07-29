@@ -198,7 +198,8 @@ func (s *Server) ListTools() []Tool {
 				"directive: show the list, let the user pick, then for each read the slice AND the cited source to VERIFY, write a " +
 				"Contexo page with ctx_write_page (prefer EXTRACTED over INFERRED facts), and ctx_push with no_distill=true. " +
 				"Finish with ctx_generate(done=true) to clean the cache. Pass backend=<gemini|claude|ollama|...> only to use an LLM " +
-				"for richer subsystem names (optional; code extraction is keyless).",
+				"for richer subsystem names (optional; code extraction is keyless). If Graphify isn't installed the tool returns a " +
+				"<GENERATE_NEEDS_GRAPHIFY> directive; get the user's OK, then re-invoke with install=true to install it and continue.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -206,6 +207,7 @@ func (s *Server) ListTools() []Tool {
 					"backend": map[string]interface{}{"type": "string", "description": "Optional Graphify LLM backend for community naming (gemini|claude|openai|ollama|bedrock)"},
 					"done":    map[string]interface{}{"type": "boolean", "description": "Clear the staged manifest + .generate-cache after finishing"},
 					"rescan":  map[string]interface{}{"type": "boolean", "description": "Force a fresh run even if a generate manifest is staged"},
+					"install": map[string]interface{}{"type": "boolean", "description": "Install Graphify (uv/pipx/pip) before running — only after the user agrees to a <GENERATE_NEEDS_GRAPHIFY> prompt"},
 				},
 			},
 		},
