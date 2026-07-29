@@ -20,11 +20,61 @@ func CacheDir(contexoDir string) string {
 	return filepath.Join(contexoDir, ".generate-cache")
 }
 
+// lookPath is the PATH-probe seam (default exec.LookPath); tests override it to
+// simulate which binaries are present.
+var lookPath = exec.LookPath
+
+// GraphifyInstalled reports whether the `graphify` CLI is on PATH.
+func GraphifyInstalled() bool {
+	_, err := lookPath("graphify")
+	return err == nil
+}
+
+// graphifyInstallers is the detection order. Each entry's bin is probed with
+// lookPath; the first present one installs the fixed `graphifyy` package.
+var graphifyInstallers = []struct {
+	bin  string
+	args []string
+}{
+	{"uv", []string{"tool", "install", "graphifyy"}},
+	{"pipx", []string{"install", "graphifyy"}},
+	{"pip", []string{"install", "graphifyy"}},
+	{"pip3", []string{"install", "graphifyy"}},
+	{"python", []string{"-m", "pip", "install", "graphifyy"}},
+	{"python3", []string{"-m", "pip", "install", "graphifyy"}},
+	{"py", []string{"-m", "pip", "install", "graphifyy"}},
+}
+
+// installRun is the install seam: default streams the installer's output to the
+// user; tests override it to capture the argv without really installing.
+var installRun = func(bin string, args ...string) error {
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// InstallGraphify installs the `graphifyy` package with the first available
+// installer (uv → pipx → pip → …) and returns which one it used. The package
+// name is fixed and passed as an arg slice (no shell, no injection). It returns
+// an error listing the manual commands when no installer is on PATH.
+func InstallGraphify() (method string, err error) {
+	for _, inst := range graphifyInstallers {
+		if _, e := lookPath(inst.bin); e != nil {
+			continue
+		}
+		if e := installRun(inst.bin, inst.args...); e != nil {
+			return "", fmt.Errorf("`%s %s` failed: %w", inst.bin, strings.Join(inst.args, " "), e)
+		}
+		return inst.bin, nil
+	}
+	return "", fmt.Errorf("no Python installer found (need uv, pipx, or pip) — install Graphify yourself with `uv tool install graphifyy` (or `pipx install graphifyy`, or `pip install graphifyy`)")
+}
+
 // DefaultRunner shells out to the user-installed `graphify` CLI (keyless code
 // extraction), then relocates <projectRoot>/graphify-out into the cache so the
 // repo root is left clean.
 func DefaultRunner(projectRoot, cacheDir, backend string) (string, error) {
-	if _, err := exec.LookPath("graphify"); err != nil {
+	if _, err := lookPath("graphify"); err != nil {
 		return "", fmt.Errorf("ctx generate needs Graphify — install it with `uv tool install graphifyy` (or pipx/pip install graphifyy)")
 	}
 	if out, err := runGraphify([]string{"extract", projectRoot}); err != nil {
