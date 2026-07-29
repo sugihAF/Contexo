@@ -365,8 +365,16 @@ knowledge base *from the code*. It runs [Graphify](https://github.com/Graphify-L
 subsystems and key components, then hands those to your agent to turn into
 verified Contexo pages.
 
-**One-time:** install Graphify — `uv tool install graphifyy` (or `pipx install
-graphifyy`). Code analysis is fully local and needs no API key.
+**One-time:** Graphify is an external Python package (`graphifyy`). You don't
+have to install it by hand — the first time you run `ctx generate` without it,
+Contexo **offers to install it for you** (with your explicit OK) using whichever
+of `uv` / `pipx` / `pip` you already have. Prefer to do it yourself? Run
+`uv tool install graphifyy` (or `pipx install graphifyy`). Code analysis is
+fully local and needs no API key.
+
+> Just installed it via the prompt and got "not on PATH yet"? On a brand-new
+> `uv`/`pipx` setup the tools directory may not be on the current shell's PATH.
+> Open a new terminal and re-run `ctx generate` — it'll be found.
 
 **From your agent (recommended):**
 
@@ -379,6 +387,11 @@ real source it cites**, verifies it (auto-extracted edges tagged `INFERRED` are
 guesses), writes accurate pages, and pushes — then cleans up with
 `ctx_generate(done=true)`.
 
+If Graphify isn't installed, `ctx_generate` returns a `<GENERATE_NEEDS_GRAPHIFY>`
+directive; the agent asks your permission and, once you agree, re-invokes
+`ctx_generate(install=true)` to install it and continue. (After a first-ever
+install you may need to restart the agent / MCP server so it sees the new PATH.)
+
 **From the terminal:**
 
 ```bash
@@ -386,7 +399,7 @@ ctx generate                 # run Graphify on this project, pick interactively,
 ctx generate --list          # just show what would be generated
 ctx generate --from ../svc   # analyze a different codebase directory
 ctx generate --type entity   # only the component (entity) candidates
-ctx generate --all --yes     # non-interactive: stage everything
+ctx generate --all --yes     # non-interactive: stage everything (also auto-approves a Graphify install)
 ctx generate --backend gemini  # optional: use an LLM for richer subsystem names (needs a key)
 ```
 
