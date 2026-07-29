@@ -47,9 +47,13 @@ var graphifyInstallers = []struct {
 
 // installRun is the install seam: default streams the installer's output to the
 // user; tests override it to capture the argv without really installing.
+// Both streams go to stderr on purpose — the MCP stdio transport speaks
+// JSON-RPC over stdout, so installer noise there would corrupt the protocol;
+// stderr still reaches the user's terminal on the CLI path (and keeps CLI
+// stdout clean for piping).
 var installRun = func(bin string, args ...string) error {
 	cmd := exec.Command(bin, args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	return cmd.Run()
 }
 
