@@ -58,10 +58,10 @@ func TestResolveSlug_Ambiguous(t *testing.T) {
 
 func TestResolveSlug_AllFourTypes(t *testing.T) {
 	cases := map[string]string{
-		"wiki/concepts/c.md":  "concept",
-		"wiki/entities/e.md":  "entity",
-		"wiki/analyses/a.md":  "analysis",
-		"raw/sessions/s.md":   "source",
+		"wiki/concepts/c.md": "concept",
+		"wiki/entities/e.md": "entity",
+		"wiki/analyses/a.md": "analysis",
+		"raw/sessions/s.md":  "source",
 	}
 	for rel, typ := range cases {
 		root := t.TempDir()

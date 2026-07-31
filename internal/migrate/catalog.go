@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // Catalog is an ordered, numbered set of discovered candidates.
@@ -41,6 +44,11 @@ func Build(scanDir, contexoDir string, dets []Detector) (Catalog, error) {
 		cs, err := d.Detect(scanDir)
 		if err != nil {
 			// Degrade: one bad detector must not sink the whole catalog.
+			//
+			// UNROUTABLE: this goes to the process's real stderr, so
+			// cmd.SetErr cannot capture or redirect it. Left as-is
+			// deliberately — Build is called from both the CLI and the MCP
+			// server, and neither hands it a writer to thread through.
 			fmt.Fprintf(os.Stderr, "migrate: detector %s: %v\n", d.Name(), err)
 			continue
 		}
@@ -101,11 +109,23 @@ const CatalogRenderCap = 100
 // RenderOpts controls Render. Max caps how many rows print (0 = all).
 type RenderOpts struct{ Max int }
 
+// Render writes the catalog to w.
+//
+// The signature stays (io.Writer, RenderOpts) on purpose: cli/migrate.go and
+// cli/generate.go call it, and catalog_test.go hands it a bare *bytes.Buffer,
+// so widening it would break a test in another package. Styling is therefore
+// resolved INSIDE, from w, via ui.Plain — which yields the plain text again for
+// any non-terminal sink, so the golden test output is unchanged.
+//
+// Note this is CLI-only. The MCP tool path does NOT come through here; it
+// builds its own catalog text in mcp/migrate.go and mcp/generate.go. The two
+// renderers are duplicated and drift independently.
 func (c Catalog) Render(w io.Writer, opts RenderOpts) {
 	if len(c.Items) == 0 {
 		fmt.Fprintln(w, "No existing knowledge found to migrate.")
 		return
 	}
+	u := ui.Plain(w)
 	limit := len(c.Items)
 	if opts.Max > 0 && opts.Max < limit {
 		limit = opts.Max
@@ -113,17 +133,24 @@ func (c Catalog) Render(w io.Writer, opts RenderOpts) {
 	lastDetector := ""
 	for _, it := range c.Items[:limit] {
 		if it.Detector != lastDetector {
-			fmt.Fprintf(w, "\n%s:\n", it.Detector)
+			fmt.Fprintln(w)
+			u.Eyebrow(strings.ToUpper(it.Detector))
 			lastDetector = it.Detector
 		}
+		// Only the two non-data annotations carry tone: the token estimate is
+		// dim, and "already imported" is warm because it is the one thing on
+		// the row that can cost the user work. The row's literal layout is
+		// otherwise byte-for-byte what it was.
 		flag := ""
 		if it.AlreadyImported {
-			flag = "  (already imported — will overwrite)"
+			flag = u.Style(ui.Warm, "  (already imported — will overwrite)")
 		}
-		fmt.Fprintf(w, "  [%d] %-8s %s  ~%dt%s\n", it.ID, it.SuggestedType, it.RelPath, it.EstTokens, flag)
+		fmt.Fprintf(w, "  [%d] %-8s %s  %s%s\n", it.ID, it.SuggestedType, it.RelPath,
+			u.Style(ui.FG4, fmt.Sprintf("~%dt", it.EstTokens)), flag)
 	}
 	if limit < len(c.Items) {
-		fmt.Fprintf(w, "\n… %d more; narrow with --type or --detector, or use --all.\n", len(c.Items)-limit)
+		fmt.Fprintf(w, "\n%s\n", u.Style(ui.FG3,
+			fmt.Sprintf("… %d more; narrow with --type or --detector, or use --all.", len(c.Items)-limit)))
 	}
 }
 

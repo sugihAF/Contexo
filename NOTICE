@@ -1,0 +1,63 @@
+Contexo
+Copyright (c) Contexo
+
+This product includes third-party software. Contexo itself is distributed
+under the terms in LICENSE. The notices below cover bundled dependencies whose
+licenses require attribution beyond a bare MIT notice, plus one dependency
+that needs a documented exception.
+
+Every other Go dependency linked into the `ctx` binary is MIT licensed. There
+is no copyleft (GPL / LGPL / MPL / AGPL) code in the distribution.
+
+--------------------------------------------------------------------------------
+github.com/atotto/clipboard — BSD-3-Clause
+
+Reached transitively via github.com/charmbracelet/huh. This is the only
+non-MIT license in the dependency set; the BSD-3 terms require reproducing the
+copyright notice, the conditions, and the disclaimer in binary distributions,
+which is the purpose of this file.
+
+Copyright (c) 2013 Ato Araki. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of @atotto. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+github.com/mattn/go-localereader v0.0.1 — MIT (documented exception)
+
+KNOWN ISSUE for automated license scanners.
+
+This module ships NO LICENSE file. Its license is asserted only in its
+README.md, which states "MIT". Tools such as go-licenses or FOSSA will
+therefore report it as Unknown and may fail a compliance gate.
+
+Scope: it is reached transitively via github.com/charmbracelet/bubbletea and
+is linked ONLY into Windows builds (confirmed absent from the linux binary's
+module list).
+
+Action: accepted as MIT on the strength of the upstream README. If a scanner
+is added to CI, add an explicit exception entry for this module rather than
+vendoring or replacing it.

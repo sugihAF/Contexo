@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"sort"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/migrate"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // parseSelection turns "1,2,5-7" / "all" / "*" into sorted unique 1-based
@@ -106,37 +106,47 @@ func runMigrate(cmd *cobra.Command, from, typ, detector string, list, all, yes b
 		return fmt.Errorf("migrate: no .contexo/ here — run 'ctx init' first")
 	}
 
+	// ONE UI for the whole run; the Prompter below hangs off it.
+	u := ui.From(cmd)
+
 	scanDir := root
 	var cacheDir string
 	if from != "" {
+		// --from a git URL clones, which is a network round trip with no
+		// output of its own.
+		t := u.Task("Fetching " + from)
 		sd, cd, err := migrate.ResolveExternal(from, contexoDir, nil)
 		if err != nil {
+			t.Fail("Could not fetch %s", from)
 			return err
 		}
+		t.Done("Fetched %s", from)
 		scanDir, cacheDir = sd, cd
 	}
 
+	scan := u.Task("Scanning for existing knowledge")
 	cat, err := migrate.Build(scanDir, contexoDir, migrate.DefaultDetectors())
 	if err != nil {
+		scan.Fail("Scan failed")
 		return err
 	}
 	cat = cat.Filter(typ, detector)
+	scan.Done("Found %d item(s)", len(cat.Items))
 	cat.Render(out, migrate.RenderOpts{Max: migrate.CatalogRenderCap})
 	if len(cat.Items) == 0 || list {
 		return nil
 	}
 
-	// One reader for BOTH the selection line and the y/N confirm. Using two
-	// bufio.Readers over the same stdin would let the first buffer past its
-	// newline and swallow the confirmation line — a real bug in interactive use
-	// and in the test (stdin "all\ny\n"). So we read both from this one reader.
-	reader := bufio.NewReader(cmd.InOrStdin())
+	// ONE Prompter serves both the selection line and the y/N confirm. Two
+	// readers over the same stdin would let the first buffer past its newline
+	// and swallow the confirmation — a real bug in interactive use and in the
+	// test (stdin "all\ny\n"). Prompter owns that invariant now.
+	p := u.Prompter(cmd.InOrStdin())
 	var picks []int
 	if all {
 		picks, _ = parseSelection("all", len(cat.Items))
 	} else {
-		fmt.Fprint(out, "\nSelect items to import (e.g. 1,2,5-7 / all): ")
-		line, _ := reader.ReadString('\n')
+		line, _ := p.Line("\nSelect items to import (e.g. 1,2,5-7 / all)")
 		picks, err = parseSelection(line, len(cat.Items))
 		if err != nil {
 			return fmt.Errorf("migrate: %w", err)
@@ -144,9 +154,8 @@ func runMigrate(cmd *cobra.Command, from, typ, detector string, list, all, yes b
 	}
 
 	if !yes {
-		fmt.Fprintf(out, "Stage %d item(s) for the agent to import? [y/N]: ", len(picks))
-		ans, _ := reader.ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
+		ok, _ := p.Confirm(fmt.Sprintf("Stage %d item(s) for the agent to import?", len(picks)))
+		if !ok {
 			fmt.Fprintln(out, "Aborted; nothing staged.")
 			return nil
 		}
@@ -174,7 +183,8 @@ func runMigrate(cmd *cobra.Command, from, typ, detector string, list, all, yes b
 		return err
 	}
 
-	fmt.Fprintf(out, "\nStaged %d source(s). Ask your agent: \"finish the contexo migration\".\n", len(m.Items))
+	fmt.Fprintln(out)
+	u.Success("Staged %d source(s). Ask your agent: \"finish the contexo migration\".", len(m.Items))
 	return nil
 }
 

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/pkg/browser"
+
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // browserLoginTimeout caps how long we wait for the user to complete the
@@ -34,10 +36,10 @@ type BrowserLoginResult struct {
 
 // runBrowserLogin drives the loopback-redirect login flow:
 //
-//   1. Listen on a random 127.0.0.1 port.
-//   2. Open the dashboard's /cli-login page with port + CSRF state + hostname.
-//   3. Block until the dashboard posts the token (and identity) back,
-//      the user Ctrl-Cs, or the timeout elapses.
+//  1. Listen on a random 127.0.0.1 port.
+//  2. Open the dashboard's /cli-login page with port + CSRF state + hostname.
+//  3. Block until the dashboard posts the token (and identity) back,
+//     the user Ctrl-Cs, or the timeout elapses.
 //
 // On success the minted PAT + the user's name/email (from the dashboard's
 // Google session) are returned. The loopback server is shut down before
@@ -105,18 +107,30 @@ func runBrowserLogin(ctx context.Context, dashboardURL string, out io.Writer) (B
 		return zero, err
 	}
 
+	u := ui.Plain(out)
 	fmt.Fprintf(out, "Opening %s in your browser...\n", dashURL)
 	fmt.Fprintf(out, "If it doesn't open automatically, paste that URL into your browser.\n")
 	if err := browser.OpenURL(dashURL); err != nil {
 		fmt.Fprintf(out, "(could not open browser automatically: %v)\n", err)
 	}
 
+	// The wait below runs for up to browserLoginTimeout (5 minutes). It used to
+	// block in total silence after those two lines, which is indistinguishable
+	// from a hang, so the wait itself is a task.
+	t := u.Task("Waiting for you to finish signing in")
 	select {
 	case <-ctx.Done():
+		t.Fail("Sign-in cancelled")
 		return zero, ctx.Err()
 	case res := <-resultCh:
-		return res.res, res.err
+		if res.err != nil {
+			t.Fail("Sign-in failed")
+			return zero, res.err
+		}
+		t.Done("Signed in")
+		return res.res, nil
 	case <-time.After(browserLoginTimeout):
+		t.Fail("Timed out after %s", browserLoginTimeout)
 		return zero, fmt.Errorf("browser login: timed out after %s — re-run, or use --no-browser to paste a token manually", browserLoginTimeout)
 	}
 }

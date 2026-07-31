@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -64,14 +67,14 @@ func newRemoteSetRepoCmd() *cobra.Command {
 			default:
 				creds, err := config.LoadCredentials(root)
 				if err != nil || creds == nil || creds.Bearer() == "" {
-					return fmt.Errorf("set-repo: no credentials yet — run 'ctx login --token <ctxp_...>' first, or pass a <repo_id> directly")
+					return ui.Suggest(errors.New("set-repo: not authenticated (or pass a <repo_id> directly)"), "ctx auth login")
 				}
 				serverURL := chooseServerURL(creds, cfg)
 				if serverURL == "" {
 					return fmt.Errorf("set-repo: no server URL configured — run 'ctx remote set <url>' first, or pass a <repo_id> directly")
 				}
 				client := sync.NewClient(serverURL, creds.Bearer())
-				chosen, err = selectRepoInteractive(client, cmd.OutOrStdout())
+				chosen, err = selectRepoInteractive(client, cmd.InOrStdin(), cmd.OutOrStdout())
 				if err != nil {
 					return err
 				}

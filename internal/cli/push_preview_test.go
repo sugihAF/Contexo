@@ -140,12 +140,12 @@ func TestRenderPreview_NoEditsReturnsFalse(t *testing.T) {
 
 func TestConfirm_YesNoVariants(t *testing.T) {
 	cases := map[string]bool{
-		"y\n":   true,
-		"Y\n":   true,
-		"yes\n": true,
-		"YES\n": true,
-		"n\n":   false,
-		"\n":    false, // default is N
+		"y\n":     true,
+		"Y\n":     true,
+		"yes\n":   true,
+		"YES\n":   true,
+		"n\n":     false,
+		"\n":      false, // default is N
 		"maybe\n": false,
 	}
 	for in, want := range cases {

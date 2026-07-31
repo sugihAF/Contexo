@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -37,7 +40,7 @@ func newHistoryCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("history: not authenticated (run 'ctx auth login')")
+				return ui.Suggest(errors.New("history: not authenticated"), "ctx auth login")
 			}
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" || cfg.RepoID == "" {
@@ -52,14 +55,19 @@ func newHistoryCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "No commits found for %s\n", path)
 				return nil
 			}
+			// Replaces a fixed padAuthor(12), which both truncated nothing and
+			// aligned nothing once a name ran past 12 chars. tabwriter measures
+			// the actual data instead.
+			t := ui.From(cmd).Table("COMMIT", "WHEN", "WHO", "MESSAGE")
 			for _, c := range commits {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %s  %s\n",
+				t.Row(
 					shortSHA(c.SHA),
 					c.Time.Format("2006-01-02"),
-					padAuthor(c.Author),
+					c.Author,
 					c.Message,
 				)
 			}
+			t.Render()
 			return nil
 		},
 	}
@@ -75,15 +83,4 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-// padAuthor right-pads short author names so columns line up at ~12 chars,
-// which fits the common "First Last" / "First" / GitHub-handle widths without
-// dominating the line when names are long.
-func padAuthor(name string) string {
-	const w = 12
-	if len(name) >= w {
-		return name
-	}
-	return name + strings.Repeat(" ", w-len(name))
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // codexRunner is the codex CLI runner used when detaching the global Codex
@@ -76,8 +76,9 @@ func runDetach(cmd *cobra.Command, root string, assumeYes, keepKnowledge bool) e
 	if err != nil {
 		return err
 	}
+	u := ui.From(cmd)
 	if !plan.anyAction() {
-		fmt.Fprintln(cmd.OutOrStdout(), "Nothing to detach — no Contexo wiring or .contexo/ directory found here.")
+		fmt.Fprintln(u.Out(), u.Style(ui.FG2, "Nothing to detach — no Contexo wiring or .contexo/ directory found here."))
 		return nil
 	}
 
@@ -89,7 +90,7 @@ func runDetach(cmd *cobra.Command, root string, assumeYes, keepKnowledge bool) e
 			return err
 		}
 		if !ok {
-			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+			fmt.Fprintln(u.Out(), u.Style(ui.FG3, "Aborted."))
 			return nil
 		}
 	}
@@ -169,7 +170,8 @@ func (p detachPlan) anyAction() bool {
 
 func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "This will:")
+	u := ui.From(cmd)
+	u.Eyebrow("DETACH PLAN")
 	if plan.removeMCPFile {
 		fmt.Fprintf(out, "  - delete .mcp.json (only contained the contexo entry)\n")
 	} else if plan.removeMCPEntry {
@@ -196,39 +198,39 @@ func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
 		fmt.Fprintf(out, "  - remove the Contexo capture hooks from .cursor/hooks.json\n")
 	}
 	if plan.removeContexoDir {
-		fmt.Fprintf(out, "  - DELETE the .contexo/ directory and everything in it\n")
+		fmt.Fprintf(out, "  - %s the .contexo/ directory and everything in it\n", u.Style(ui.RemInk, "DELETE"))
 		if plan.unpushedPageCount > 0 {
-			fmt.Fprintf(out, "    ! WARNING: %d local page(s) have never been pushed to the server.\n", plan.unpushedPageCount)
-			fmt.Fprintf(out, "    ! Run `ctx push` first, or re-run with --keep-knowledge to preserve them.\n")
+			// The count and the "never been pushed" phrasing stay on one line;
+			// the follow-up advice keeps the warm tone without a second glyph.
+			u.Warn("%d local page(s) have never been pushed to the server.", plan.unpushedPageCount)
+			fmt.Fprintln(out, u.Style(ui.Warm, "  Run `ctx push` first, or re-run with --keep-knowledge to preserve them."))
 		}
 	} else if keepKnowledge {
-		fmt.Fprintln(out, "  - (keeping .contexo/ as requested)")
+		fmt.Fprintln(out, u.Style(ui.FG3, "  - (keeping .contexo/ as requested)"))
 	}
 }
 
+// confirmDetach gates an irreversible os.RemoveAll, so it uses the strict
+// confirm: a partial answer surviving an EOF is NOT consent.
 func confirmDetach(cmd *cobra.Command) (bool, error) {
-	fmt.Fprint(cmd.OutOrStdout(), "Proceed? [y/N] ")
 	in := cmd.InOrStdin()
 	if in == nil {
 		in = os.Stdin
 	}
-	reader := bufio.NewReader(in)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return false, nil // EOF or read error → treat as no
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes", nil
+	out := cmd.OutOrStdout()
+	return ui.Plain(out).Prompter(in).ConfirmDestructive("Proceed?")
 }
 
 func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
-	out := cmd.OutOrStdout()
+	u := ui.From(cmd)
+	errUI := ui.ForStderr(cmd)
+	fmt.Fprintln(u.Out()) // separate the plan (and its prompt) from the log
 	var firstErr error
 	noteErr := func(stage string, err error) {
 		if err == nil {
 			return
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s: %v\n", stage, err)
+		errUI.Warn("%s: %v", stage, err)
 		if firstErr == nil {
 			firstErr = err
 		}
@@ -236,7 +238,7 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 
 	if plan.removeMCPFile {
 		if err := os.Remove(plan.mcpPath); err == nil {
-			fmt.Fprintln(out, "Removed .mcp.json")
+			u.Step("Removed .mcp.json")
 		} else if !os.IsNotExist(err) {
 			noteErr("remove .mcp.json", err)
 		}
@@ -244,7 +246,7 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if err := removeMCPContexoEntry(plan.mcpPath); err != nil {
 			noteErr("update .mcp.json", err)
 		} else {
-			fmt.Fprintln(out, "Removed contexo entry from .mcp.json")
+			u.Step("Removed contexo entry from .mcp.json")
 		}
 	}
 
@@ -252,9 +254,9 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if _, deleted, err := agentwire.UnwireJSON(plan.cursorPath); err != nil {
 			noteErr("update .cursor/mcp.json", err)
 		} else if deleted {
-			fmt.Fprintln(out, "Removed .cursor/mcp.json")
+			u.Step("Removed .cursor/mcp.json")
 		} else {
-			fmt.Fprintln(out, "Removed contexo entry from .cursor/mcp.json")
+			u.Step("Removed contexo entry from .cursor/mcp.json")
 		}
 	}
 
@@ -262,7 +264,7 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if err := agentwire.UnwireCodex(codexRunner); err != nil {
 			noteErr("codex mcp remove", err)
 		} else {
-			fmt.Fprintln(out, "Removed contexo from Codex (~/.codex/config.toml)")
+			u.Step("Removed contexo from Codex (~/.codex/config.toml)")
 		}
 	}
 
@@ -270,12 +272,12 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if err := removeGitignoreContexoLine(plan.gitignorePath); err != nil {
 			noteErr("update .gitignore", err)
 		} else {
-			fmt.Fprintln(out, "Removed .contexo/ from .gitignore")
+			u.Step("Removed .contexo/ from .gitignore")
 		}
 	}
 
 	if plan.removeStopHook {
-		if err := uninstallHook(cmd, root); err != nil {
+		if err := uninstallHook(cmd, root, true); err != nil {
 			noteErr("uninstall Stop hook", err)
 		}
 	}
@@ -284,7 +286,7 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if _, _, err := agentwire.UnwireCodexHooks(root); err != nil {
 			noteErr("remove Codex capture hooks", err)
 		} else {
-			fmt.Fprintln(out, "Removed Codex capture hooks from .codex/hooks.json")
+			u.Step("Removed Codex capture hooks from .codex/hooks.json")
 		}
 	}
 
@@ -292,7 +294,7 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if _, _, err := agentwire.UnwireCursorHooks(root); err != nil {
 			noteErr("remove Cursor capture hooks", err)
 		} else {
-			fmt.Fprintln(out, "Removed Cursor capture hooks from .cursor/hooks.json")
+			u.Step("Removed Cursor capture hooks from .cursor/hooks.json")
 		}
 	}
 
@@ -300,12 +302,12 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 		if err := os.RemoveAll(plan.contexoDirPath); err != nil {
 			noteErr("remove .contexo/", err)
 		} else {
-			fmt.Fprintln(out, "Deleted .contexo/")
+			u.Step("Deleted .contexo/")
 		}
 	}
 
 	if firstErr == nil {
-		fmt.Fprintln(out, "Detach complete.")
+		u.Success("Detach complete.")
 	}
 	return firstErr
 }

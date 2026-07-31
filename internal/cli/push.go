@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/schema"
@@ -41,20 +44,20 @@ func newPushCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("push: no credentials, run 'ctx auth login' first")
+				return ui.Suggest(errors.New("push: not authenticated"), "ctx auth login")
 			}
 
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" {
-				return fmt.Errorf("push: no server URL configured (run 'ctx remote add')")
+				return ui.Suggest(errors.New("push: no server URL configured"), "ctx remote set <url>")
 			}
 			if cfg.RepoID == "" {
-				return fmt.Errorf("push: no repo_id configured in .contexo/config.json")
+				return ui.Suggest(errors.New("push: no repo configured"), "ctx remote set-repo <id>")
 			}
 
 			store, err := pagestore.Open(hubDir)
 			if err != nil {
-				return fmt.Errorf("push: open hub: %w (did you run 'ctx init'?)", err)
+				return ui.Suggest(fmt.Errorf("push: open hub: %w", err), "ctx init")
 			}
 
 			pages, err := store.List(pagestore.Filter{})
@@ -112,7 +115,7 @@ func newPushCmd() *cobra.Command {
 				hasEdits := renderPreview(cmd.OutOrStdout(), cfg.RepoID, previews, showDiff)
 				if hasEdits && !yes {
 					if !stdinIsTTY() {
-						return fmt.Errorf("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm")
+						return ui.Suggest(errors.New("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm"), "ctx push --yes")
 					}
 					ok, err := confirm(os.Stdin, cmd.OutOrStdout(), "Proceed?")
 					if err != nil {

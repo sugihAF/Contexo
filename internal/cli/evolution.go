@@ -2,11 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -41,7 +44,7 @@ func newEvolutionCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("evolution: not authenticated (run 'ctx auth login')")
+				return ui.Suggest(errors.New("evolution: not authenticated"), "ctx auth login")
 			}
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" || cfg.RepoID == "" {
@@ -60,13 +63,18 @@ func newEvolutionCmd() *cobra.Command {
 				return printEvolutionJSON(cmd.OutOrStdout(), entries)
 			}
 			out := cmd.OutOrStdout()
+			u := ui.From(cmd)
 			fmt.Fprintf(out, "Evolution of %s (%d commit%s, newest first):\n\n",
 				path, len(entries), pluralSuffix(len(entries)))
+			// Deliberately NOT a table: each commit is a block, with its diff or
+			// summary indented underneath, so tabwriter would only ever align a
+			// single row at a time. The sha is toned instead, which is the one
+			// column a reader scans for.
 			for _, e := range entries {
 				fmt.Fprintf(out, "%s  %s  %s  %s\n",
-					shortSHA(e.Commit.SHA),
+					u.Style(ui.FG4, shortSHA(e.Commit.SHA)),
 					e.Commit.Time.Format("2006-01-02"),
-					padAuthor(e.Commit.Author),
+					e.Commit.Author,
 					e.Commit.Message,
 				)
 				if showDiff {

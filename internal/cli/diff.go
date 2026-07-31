@@ -9,6 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sugihAF/contexo/internal/ui"
+
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/diff"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -44,7 +46,7 @@ func newDiffCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("diff: not authenticated (run 'ctx auth login')")
+				return ui.Suggest(errors.New("diff: not authenticated"), "ctx auth login")
 			}
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" || cfg.RepoID == "" {

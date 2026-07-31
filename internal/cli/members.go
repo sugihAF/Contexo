@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 func newMembersCmd() *cobra.Command {
@@ -57,16 +57,17 @@ func newMembersRemoveCmd() *cobra.Command {
 
 // renderMembers writes one aligned row per member: email, role, join date.
 func renderMembers(w io.Writer, members []sync.Member) {
+	u := ui.Plain(w)
 	if len(members) == 0 {
-		fmt.Fprintln(w, "no members")
+		fmt.Fprintln(u.Out(), u.Style(ui.FG3, "no members"))
 		return
 	}
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	t := u.Table("MEMBER", "ROLE", "JOINED")
 	for _, m := range members {
 		joined := time.Unix(m.AddedAt, 0).UTC().Format("2006-01-02")
-		fmt.Fprintf(tw, "%s\t%s\tjoined %s\n", m.Email, m.Role, joined)
+		t.Row(m.Email, m.Role, joined)
 	}
-	_ = tw.Flush()
+	t.Render()
 }
 
 // runMembersRemove resolves email to a user id from the member list, then asks
@@ -83,7 +84,7 @@ func runMembersRemove(w io.Writer, client *sync.Client, repoID, email string) er
 	if err := client.RemoveMember(repoID, userID); err != nil {
 		return friendlyRemoveErr(err)
 	}
-	fmt.Fprintf(w, "removed %s\n", email)
+	ui.Plain(w).Success("removed %s", email)
 	return nil
 }
 
@@ -112,4 +113,3 @@ func friendlyRemoveErr(err error) error {
 		return err
 	}
 }
-

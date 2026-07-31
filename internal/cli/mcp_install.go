@@ -1,16 +1,15 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/cli/agentwire"
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // mcpWireDeps holds the externally-facing dependencies of the wiring
@@ -132,16 +131,17 @@ func installJSONTarget(out io.Writer, label, path, rel string) error {
 	if err != nil {
 		return fmt.Errorf("mcp install %s: %w", label, err)
 	}
+	u := ui.Plain(out)
 	if changed {
-		fmt.Fprintf(out, "Wired %s (%s)\n", label, rel)
+		u.Success("Wired %s (%s)", label, rel)
 	} else {
-		fmt.Fprintf(out, "%s already wired (%s); nothing to do.\n", label, rel)
+		noopLine(u, fmt.Sprintf("%s already wired (%s); nothing to do.", label, rel))
 	}
 	return nil
 }
 
 func installCodexTarget(cmd *cobra.Command, deps mcpWireDeps, assumeYes, explicit bool) error {
-	out := cmd.OutOrStdout()
+	u := humanMCPUI(cmd)
 	if !deps.codexInstalled() {
 		if explicit {
 			return fmt.Errorf("mcp install codex: Codex CLI not found (`codex` not on PATH)")
@@ -149,13 +149,13 @@ func installCodexTarget(cmd *cobra.Command, deps mcpWireDeps, assumeYes, explici
 		return nil // under --tool=all, silently skip an agent that isn't installed
 	}
 	if !assumeYes && !promptYesNo(cmd, "Wire Contexo into Codex's GLOBAL config (~/.codex/config.toml)?") {
-		fmt.Fprintln(out, "Skipped Codex.")
+		noopLine(u, "Skipped Codex.")
 		return nil
 	}
 	if err := agentwire.WireCodex(deps.runner); err != nil {
 		return fmt.Errorf("mcp install codex: %w", err)
 	}
-	fmt.Fprintln(out, "Wired Codex (codex mcp add contexo)")
+	u.Success("Wired Codex (codex mcp add contexo)")
 	return nil
 }
 
@@ -182,53 +182,61 @@ func runMCPUninstall(cmd *cobra.Command, root, tool string, deps mcpWireDeps) er
 
 func uninstallJSONTarget(out io.Writer, label, path, rel string) {
 	removed, deleted, err := agentwire.UnwireJSON(path)
+	u := ui.Plain(out)
 	switch {
 	case err != nil:
-		fmt.Fprintf(out, "  warning: %s: %v\n", label, err)
+		u.Warn("%s: %v", label, err)
 	case deleted:
-		fmt.Fprintf(out, "Removed %s and deleted %s\n", label, rel)
+		u.Success("Removed %s and deleted %s", label, rel)
 	case removed:
-		fmt.Fprintf(out, "Removed %s entry from %s\n", label, rel)
+		u.Success("Removed %s entry from %s", label, rel)
 	default:
-		fmt.Fprintf(out, "%s not wired (%s); nothing to do.\n", label, rel)
+		noopLine(u, fmt.Sprintf("%s not wired (%s); nothing to do.", label, rel))
 	}
 }
 
 func uninstallCodexTarget(out io.Writer, deps mcpWireDeps) error {
+	u := ui.Plain(out)
 	if !deps.codexInstalled() {
-		fmt.Fprintln(out, "Codex not installed; nothing to do.")
+		noopLine(u, "Codex not installed; nothing to do.")
 		return nil
 	}
 	wired, _ := agentwire.CodexWired(deps.runner)
 	if !wired {
-		fmt.Fprintln(out, "Codex not wired; nothing to do.")
+		noopLine(u, "Codex not wired; nothing to do.")
 		return nil
 	}
 	if err := agentwire.UnwireCodex(deps.runner); err != nil {
 		return fmt.Errorf("mcp uninstall codex: %w", err)
 	}
-	fmt.Fprintln(out, "Removed Codex (codex mcp remove contexo)")
+	u.Success("Removed Codex (codex mcp remove contexo)")
 	return nil
 }
 
+// humanMCPUI builds the UI for the `ctx mcp` SUBcommands.
+//
+// ui.From is wrong here: it classifies anything under `ctx mcp` as machine
+// output, because the bare `ctx mcp` is the JSON-RPC server that owns stdout.
+// That rule is right for the server and wrong for install/uninstall/status,
+// which are ordinary human commands -- routed through ui.From they would print
+// nothing at all. Binding to the writer directly opts these back in.
+func humanMCPUI(cmd *cobra.Command) *ui.UI { return ui.Plain(cmd.OutOrStdout()) }
+
 func runMCPStatus(cmd *cobra.Command, root string, deps mcpWireDeps) error {
 	out := cmd.OutOrStdout()
+	u := humanMCPUI(cmd)
 	renderIntegrationTable(out, root, deps)
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Add another agent (Windsurf, OpenCode, Hermes, ...)? Run `ctx mcp guide`.")
+	fmt.Fprintln(out, u.Style(ui.FG3, "Add another agent (Windsurf, OpenCode, Hermes, ...)?"))
+	u.Hint("try", "ctx mcp guide")
 	return nil
 }
 
 func promptYesNo(cmd *cobra.Command, question string) bool {
-	fmt.Fprintf(cmd.OutOrStdout(), "%s [y/N] ", question)
 	in := cmd.InOrStdin()
 	if in == nil {
 		in = os.Stdin
 	}
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes"
+	ok, _ := confirm(in, cmd.OutOrStdout(), question)
+	return ok
 }

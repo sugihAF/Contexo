@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/diff"
 )
@@ -23,12 +24,18 @@ type Client struct {
 // server can attribute who/what pulled (e.g. "ctx-cli", "claude-code").
 func (c *Client) SetClientName(name string) { c.clientName = name }
 
+// requestTimeout bounds every call this client makes. Without it a
+// black-holed network hangs `ctx status` and `ctx push` forever -- and any
+// progress spinner drawn over such a call would spin forever too. 30s is
+// generous enough for a large page push on a slow link.
+const requestTimeout = 30 * time.Second
+
 // NewClient creates a sync client.
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  apiKey,
-		http:    &http.Client{},
+		http:    &http.Client{Timeout: requestTimeout},
 	}
 }
 

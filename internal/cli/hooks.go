@@ -11,6 +11,7 @@ import (
 
 	"github.com/sugihAF/contexo/internal/cli/agentwire"
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // claudeSettingsRel is the path (relative to the project root) where
@@ -132,7 +133,7 @@ func runHooksUninstall(cmd *cobra.Command, root, tool string) error {
 	if err != nil {
 		return err
 	}
-	out := cmd.OutOrStdout()
+	u := ui.From(cmd)
 	for _, t := range tools {
 		switch t {
 		case "claude":
@@ -146,11 +147,11 @@ func runHooksUninstall(cmd *cobra.Command, root, tool string) error {
 			}
 			switch {
 			case deleted:
-				fmt.Fprintln(out, "Removed Codex capture hooks and deleted .codex/hooks.json")
+				u.Success("Removed Codex capture hooks and deleted .codex/hooks.json")
 			case removed:
-				fmt.Fprintln(out, "Removed Codex capture hooks from .codex/hooks.json")
+				u.Success("Removed Codex capture hooks from .codex/hooks.json")
 			default:
-				fmt.Fprintln(out, "Codex capture hooks not installed; nothing to do.")
+				noopLine(u, "Codex capture hooks not installed; nothing to do.")
 			}
 		case "cursor":
 			removed, deleted, err := agentwire.UnwireCursorHooks(root)
@@ -159,15 +160,38 @@ func runHooksUninstall(cmd *cobra.Command, root, tool string) error {
 			}
 			switch {
 			case deleted:
-				fmt.Fprintln(out, "Removed Cursor capture hooks and deleted .cursor/hooks.json")
+				u.Success("Removed Cursor capture hooks and deleted .cursor/hooks.json")
 			case removed:
-				fmt.Fprintln(out, "Removed Cursor capture hooks from .cursor/hooks.json")
+				u.Success("Removed Cursor capture hooks from .cursor/hooks.json")
 			default:
-				fmt.Fprintln(out, "Cursor capture hooks not installed; nothing to do.")
+				noopLine(u, "Cursor capture hooks not installed; nothing to do.")
 			}
 		}
 	}
 	return nil
+}
+
+// noopLine renders an "already in the desired state" line. These are the most
+// common lines in the wiring commands and the least interesting, so they stay
+// dim and glyph-free -- a ✔ on "nothing to do" would read as an action taken.
+// report picks how a wiring action announces itself. `ctx hooks install` runs
+// these as the headline result, so they earn a glyph. `ctx init` and
+// `ctx detach` run the same functions as one line of a longer log, where a
+// flush-left glyph beside dim indented siblings reads as arbitrary emphasis.
+func report(u *ui.UI, quiet bool, format string, a ...any) {
+	if quiet {
+		u.Step(format, a...)
+		return
+	}
+	u.Success(format, a...)
+}
+
+// quietFlag reads the optional trailing quiet argument. Variadic so the
+// existing call sites (and their tests) keep compiling unchanged.
+func quietFlag(q []bool) bool { return len(q) > 0 && q[0] }
+
+func noopLine(u *ui.UI, msg string) {
+	fmt.Fprintln(u.Out(), u.Style(ui.FG3, msg))
 }
 
 func runHooksStatus(cmd *cobra.Command, root, tool string) error {
@@ -175,63 +199,71 @@ func runHooksStatus(cmd *cobra.Command, root, tool string) error {
 	if err != nil {
 		return err
 	}
-	out := cmd.OutOrStdout()
-	for _, t := range tools {
-		switch t {
+	u := ui.From(cmd)
+	// Agent names stay lowercase here: this is the tool token you pass back to
+	// --tool=, not a display label.
+	rows := u.Table("", "AGENT", "CAPTURE HOOK", "CONFIG")
+	for _, name := range tools {
+		switch name {
 		case "claude":
 			on, err := hookInstalled(root)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "claude: %s (.claude/settings.json)\n", hookStatus(on))
+			rows.Row(u.Mark(on), "claude", hookStatus(on), ".claude/settings.json")
 		case "codex":
 			on, err := agentwire.CodexHooksWired(root)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "codex:  %s (.codex/hooks.json)\n", hookStatus(on))
+			rows.Row(u.Mark(on), "codex", hookStatus(on), ".codex/hooks.json")
 		case "cursor":
 			on, err := agentwire.CursorHooksWired(root)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "cursor: %s (.cursor/hooks.json)\n", hookStatus(on))
+			rows.Row(u.Mark(on), "cursor", hookStatus(on), ".cursor/hooks.json")
 		}
 	}
+	u.Eyebrow("CAPTURE HOOKS")
+	fmt.Fprintln(u.Out())
+	rows.Render()
 	return nil
 }
 
 // installCodexCaptureHooks writes the Codex Stop + UserPromptSubmit capture
 // hooks into <root>/.codex/hooks.json (merge-safe).
-func installCodexCaptureHooks(cmd *cobra.Command, root string) error {
+func installCodexCaptureHooks(cmd *cobra.Command, root string, quiet ...bool) error {
 	changed, err := agentwire.WireCodexHooks(root)
 	if err != nil {
 		return fmt.Errorf("hooks install codex: %w", err)
 	}
+	u := ui.From(cmd)
 	if changed {
-		fmt.Fprintln(cmd.OutOrStdout(), "Installed Codex capture hooks (.codex/hooks.json: Stop + UserPromptSubmit)")
+		report(u, quietFlag(quiet), "Installed Codex capture hooks (.codex/hooks.json: Stop + UserPromptSubmit)")
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "Codex capture hooks already installed; nothing to do.")
+		noopLine(u, "Codex capture hooks already installed; nothing to do.")
 	}
 	return nil
 }
 
 // installCursorCaptureHooks writes the Cursor beforeSubmitPrompt +
 // afterAgentResponse capture hooks into <root>/.cursor/hooks.json (merge-safe).
-func installCursorCaptureHooks(cmd *cobra.Command, root string) error {
+func installCursorCaptureHooks(cmd *cobra.Command, root string, quiet ...bool) error {
 	changed, err := agentwire.WireCursorHooks(root)
 	if err != nil {
 		return fmt.Errorf("hooks install cursor: %w", err)
 	}
+	u := ui.From(cmd)
 	if changed {
-		fmt.Fprintln(cmd.OutOrStdout(), "Installed Cursor capture hooks (.cursor/hooks.json: beforeSubmitPrompt + afterAgentResponse)")
+		report(u, quietFlag(quiet), "Installed Cursor capture hooks (.cursor/hooks.json: beforeSubmitPrompt + afterAgentResponse)")
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "Cursor capture hooks already installed; nothing to do.")
+		noopLine(u, "Cursor capture hooks already installed; nothing to do.")
 	}
 	return nil
 }
 
-func installHook(cmd *cobra.Command, root string) error {
+func installHook(cmd *cobra.Command, root string, quiet ...bool) error {
 	if _, err := os.Stat(config.ContexoDirPath(root)); err != nil {
 		return fmt.Errorf("hooks install: not a Contexo project (run 'ctx init' first)")
 	}
@@ -242,8 +274,9 @@ func installHook(cmd *cobra.Command, root string) error {
 		return err
 	}
 
+	u := ui.From(cmd)
 	if findContexoStopHook(settings) >= 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "Stop hook already installed; nothing to do.")
+		noopLine(u, "Stop hook already installed; nothing to do.")
 		return nil
 	}
 
@@ -251,21 +284,22 @@ func installHook(cmd *cobra.Command, root string) error {
 	if err := saveSettings(path, settings); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Installed Contexo capture Stop-hook in %s\n", claudeSettingsRel)
-	fmt.Fprintln(cmd.OutOrStdout(), "Restart Claude Code (or open a new session) so the hook is picked up.")
+	report(u, quietFlag(quiet), "Installed Contexo capture Stop-hook in %s", claudeSettingsRel)
+	fmt.Fprintln(u.Out(), u.Style(ui.FG3, "  Restart Claude Code (or open a new session) so the hook is picked up."))
 	return nil
 }
 
-func uninstallHook(cmd *cobra.Command, root string) error {
+func uninstallHook(cmd *cobra.Command, root string, quiet ...bool) error {
 	path := filepath.Join(root, filepath.FromSlash(claudeSettingsRel))
 	settings, err := loadSettings(path)
 	if err != nil {
 		return err
 	}
 
+	u := ui.From(cmd)
 	hooksField, ok := settings["hooks"].(map[string]interface{})
 	if !ok {
-		fmt.Fprintln(cmd.OutOrStdout(), "No hooks present; nothing to do.")
+		noopLine(u, "No hooks present; nothing to do.")
 		return nil
 	}
 	stopList, _ := hooksField["Stop"].([]interface{})
@@ -298,7 +332,7 @@ func uninstallHook(cmd *cobra.Command, root string) error {
 		cleaned = append(cleaned, group)
 	}
 	if removed == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "Stop hook not installed; nothing to do.")
+		noopLine(u, "Stop hook not installed; nothing to do.")
 		return nil
 	}
 	if len(cleaned) == 0 {
@@ -314,7 +348,7 @@ func uninstallHook(cmd *cobra.Command, root string) error {
 	if err := saveSettings(path, settings); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Removed Contexo capture Stop-hook from %s\n", claudeSettingsRel)
+	report(u, quietFlag(quiet), "Removed Contexo capture Stop-hook from %s", claudeSettingsRel)
 	return nil
 }
 

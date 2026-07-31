@@ -3,20 +3,30 @@ package cli
 import (
 	"fmt"
 	"io"
-	"text/tabwriter"
 
 	"github.com/sugihAF/contexo/internal/cli/agentwire"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // renderIntegrationTable prints, per known agent, whether the Contexo MCP
 // server and the capture (Stop) hook are integrated for this project. deps
 // lets callers inject the codex probe/runner (and tests stub them).
+//
+// The leading mark column carries the at-a-glance state (MCP wired or not);
+// the text cells keep their exact wording so they stay greppable and so the
+// Codex row's "wired (~/.codex, global)" never grows a prefix.
 func renderIntegrationTable(out io.Writer, root string, deps mcpWireDeps) {
+	u := ui.Plain(out)
 	hookOn, _ := hookInstalled(root)
 
+	claudeOn, _ := agentwire.WiredJSON(agentwire.ClaudeMCPPath(root))
+	cursorOn, _ := agentwire.WiredJSON(agentwire.CursorMCPPath(root))
+
+	codexOn := false
 	codexMCP := "not installed"
 	if deps.codexInstalled() {
 		if wired, _ := agentwire.CodexWired(deps.runner); wired {
+			codexOn = true
 			codexMCP = "wired (~/.codex, global)"
 		} else {
 			codexMCP = "not wired (~/.codex, global)"
@@ -31,14 +41,13 @@ func renderIntegrationTable(out io.Writer, root string, deps mcpWireDeps) {
 		cursorCapture = "installed"
 	}
 
-	fmt.Fprintln(out, "Agent integrations for this project:")
+	u.Eyebrow("AGENT INTEGRATIONS")
 	fmt.Fprintln(out)
-	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "  AGENT\tMCP SERVER\tCAPTURE (STOP HOOK)")
-	fmt.Fprintf(w, "  Claude Code\t%s\t%s\n", mcpLabel(agentwire.ClaudeMCPPath(root), ".mcp.json"), hookStatus(hookOn))
-	fmt.Fprintf(w, "  Cursor\t%s\t%s\n", mcpLabel(agentwire.CursorMCPPath(root), ".cursor/mcp.json"), cursorCapture)
-	fmt.Fprintf(w, "  Codex\t%s\t%s\n", codexMCP, codexCapture)
-	_ = w.Flush()
+	u.Table("", "AGENT", "MCP SERVER", "CAPTURE (STOP HOOK)").
+		Row(u.Mark(claudeOn), "Claude Code", mcpLabel(agentwire.ClaudeMCPPath(root), ".mcp.json"), hookStatus(hookOn)).
+		Row(u.Mark(cursorOn), "Cursor", mcpLabel(agentwire.CursorMCPPath(root), ".cursor/mcp.json"), cursorCapture).
+		Row(u.Mark(codexOn), "Codex", codexMCP, codexCapture).
+		Render()
 }
 
 // renderAgentGuide explains how to add Contexo to agents/harnesses beyond the
@@ -47,30 +56,30 @@ func renderIntegrationTable(out io.Writer, root string, deps mcpWireDeps) {
 // each row points at the agent's own config so its docs remain the source of
 // truth.
 func renderAgentGuide(out io.Writer) {
-	fmt.Fprintln(out, "Add Contexo to another agent or harness")
-	fmt.Fprintln(out, "---------------------------------------")
+	u := ui.Plain(out)
+	u.Eyebrow("ADD CONTEXO TO ANOTHER AGENT OR HARNESS")
+	fmt.Fprintln(out)
 	fmt.Fprintln(out, `Contexo's MCP server is a standard stdio server:  command "ctx", args ["mcp"].`)
 	fmt.Fprintln(out, "Add that to the agent's own MCP config — same server everywhere; only the")
 	fmt.Fprintln(out, "file and format differ:")
 	fmt.Fprintln(out)
 
-	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "  AGENT\tCONFIG\tFORMAT / HOW")
-	fmt.Fprintln(w, "  Claude Code\t./.mcp.json\tJSON mcpServers   — ctx mcp install --tool=claude")
-	fmt.Fprintln(w, "  Cursor\t./.cursor/mcp.json\tJSON mcpServers   — ctx mcp install --tool=cursor")
-	fmt.Fprintln(w, "  Codex\t~/.codex/config.toml\tTOML [mcp_servers.contexo]   — ctx mcp install --tool=codex")
-	fmt.Fprintln(w, "  Windsurf\t~/.codeium/windsurf/mcp_config.json\tJSON mcpServers")
-	fmt.Fprintln(w, "  OpenCode\t./opencode.json\tJSON  mcp: { contexo: { type: \"local\", command: [\"ctx\",\"mcp\"] } }")
-	fmt.Fprintln(w, "  Hermes\tconfig.yaml\tYAML  mcp_servers: { contexo: { command: ctx, args: [mcp] } }")
-	fmt.Fprintln(w, "  OpenClaw\t(CLI-managed)\trun the `openclaw mcp` command")
-	_ = w.Flush()
+	u.Table("AGENT", "CONFIG", "FORMAT / HOW").
+		Row("Claude Code", "./.mcp.json", "JSON mcpServers   — ctx mcp install --tool=claude").
+		Row("Cursor", "./.cursor/mcp.json", "JSON mcpServers   — ctx mcp install --tool=cursor").
+		Row("Codex", "~/.codex/config.toml", "TOML [mcp_servers.contexo]   — ctx mcp install --tool=codex").
+		Row("Windsurf", "~/.codeium/windsurf/mcp_config.json", "JSON mcpServers").
+		Row("OpenCode", "./opencode.json", `JSON  mcp: { contexo: { type: "local", command: ["ctx","mcp"] } }`).
+		Row("Hermes", "config.yaml", "YAML  mcp_servers: { contexo: { command: ctx, args: [mcp] } }").
+		Row("OpenClaw", "(CLI-managed)", "run the `openclaw mcp` command").
+		Render()
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, `  JSON mcpServers entry:   "contexo": { "command": "ctx", "args": ["mcp"] }`)
 	fmt.Fprintln(out, "  Any other MCP client: add the same server; see its docs for the exact path.")
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Capture (the Stop hook): Claude Code, Codex, and Cursor are supported —")
-	fmt.Fprintln(out, "  ctx hooks install --tool=claude|codex|cursor|all")
+	fmt.Fprintln(out, "Capture (the Stop hook): Claude Code, Codex, and Cursor are supported.")
+	u.Hint("try", "ctx hooks install --tool=claude|codex|cursor|all")
 	fmt.Fprintln(out, "Claude parses its transcript; Codex and Cursor pair their prompt + response")
 	fmt.Fprintln(out, "hooks inline. Other MCP-capable harnesses get the tools now; capture as they")
 	fmt.Fprintln(out, "expose a stop/turn-end hook.")

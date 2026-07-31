@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -22,7 +25,7 @@ func newLogCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("log: not authenticated (run 'ctx auth login')")
+				return ui.Suggest(errors.New("log: not authenticated"), "ctx auth login")
 			}
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" || cfg.RepoID == "" {
@@ -38,14 +41,21 @@ func newLogCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No commits yet")
 				return nil
 			}
+			// A table so author names of different lengths stop shifting the
+			// message column. Cells stay untoned: tabwriter measures a cell in
+			// runes, so a pre-styled body cell under a styled header pads the
+			// column by the difference in escape length and visibly misaligns
+			// the next column.
+			t := ui.From(cmd).Table("COMMIT", "WHEN", "WHO", "MESSAGE")
 			for _, c := range commits {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %s — %s\n",
+				t.Row(
 					shortSHA(c.SHA),
 					c.Time.Format("2006-01-02 15:04"),
 					c.Author,
 					c.Message,
 				)
 			}
+			t.Render()
 			return nil
 		},
 	}

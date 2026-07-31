@@ -1,5 +1,11 @@
 # Contexo — Usage Walkthrough
 
+> **Canonical docs live at <https://docs.contexo.live>.** That site is generated
+> from the CLI's own command surface and re-captures real terminal output on
+> every release, so it cannot drift. This walkthrough is hand-maintained and
+> will lag it — prefer the site when the two disagree, and treat the transcripts
+> below as illustrative rather than byte-exact.
+
 Concrete end-to-end flow from zero. Two roles:
 
 - **Admin** (one-time setup): runs the Contexo server and invites developers (Google sign-in, invite keys, or — for simple instances — a legacy shared key).
@@ -254,14 +260,17 @@ Verify:
 
 ```
 $ ctx status
-Initialized: yes
-Server: https://api.contexo.live
-Repo: chompchat
-Authenticated: yes
-User: sugihAF <sugih@yourcompany.com>
-Local pages: 0
-Last pull: (never)
-Pages never pushed: 0
+contexo  ● connected
+
+── REMOTE
+server     https://api.contexo.live
+repo       chompchat
+user       sugihAF <sugih@yourcompany.com>
+auth       yes (pat)
+
+── KNOWLEDGE
+pages      0 local · 0 never pushed
+last pull  (never)
 ```
 
 ### 2.4 Wire it into your AI agent

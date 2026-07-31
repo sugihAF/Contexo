@@ -5,6 +5,7 @@ import (
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // repoClient is the shared preflight for repo-scoped ctx subcommands (members,
@@ -16,13 +17,13 @@ func repoClient(name string) (*sync.Client, string, error) {
 	cfg, _ := config.Load(root)
 	creds, _ := config.LoadCredentials(root)
 	if creds == nil || creds.Bearer() == "" {
-		return nil, "", fmt.Errorf("%s: not authenticated — run 'ctx login' first", name)
+		return nil, "", ui.Suggest(fmt.Errorf("%s: not authenticated", name), "ctx auth login")
 	}
 	if cfg.ServerURL == "" {
-		return nil, "", fmt.Errorf("%s: server URL not set — run 'ctx remote set <url>' first", name)
+		return nil, "", ui.Suggest(fmt.Errorf("%s: server URL not set", name), "ctx remote set <url>")
 	}
 	if cfg.RepoID == "" {
-		return nil, "", fmt.Errorf("%s: repo id not set — run 'ctx remote set-repo <id>' first", name)
+		return nil, "", ui.Suggest(fmt.Errorf("%s: repo id not set", name), "ctx remote set-repo <id>")
 	}
 	return sync.NewClient(cfg.ServerURL, creds.Bearer()), cfg.RepoID, nil
 }
