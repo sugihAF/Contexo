@@ -1,15 +1,19 @@
 package cli
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	goSync "sync"
 
 	"github.com/sugihAF/contexo/internal/diff"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
+
+// previewConcurrency bounds in-flight server reads during a push preview.
+const previewConcurrency = 8
 
 // pushPreview describes one file in a push batch alongside how it would
 // change the server-side version (or "new page" if the path isn't there yet).
@@ -34,29 +38,44 @@ const (
 // against the to-be-pushed bytes. Failures to read are surfaced as
 // pushStatusError, not fatal — the user still sees they tried to push that
 // file (the actual push will succeed or 409 as before).
+// Reads run concurrently: this used to be one blocking round trip per file,
+// so a 40-page push waited on 40 sequential requests. Results are written to
+// their own index rather than appended, so the output order stays the file
+// order regardless of which response lands first.
 func computePushPreview(client *sync.Client, repoID string, files []sync.PushFile) []pushPreview {
-	out := make([]pushPreview, 0, len(files))
-	for _, f := range files {
-		previewItem := pushPreview{Path: f.Path}
-		serverBytes, serverSHA, err := client.ReadPage(repoID, f.Path)
-		switch {
-		case errors.Is(err, sync.ErrPageNotFound):
-			previewItem.Status = pushStatusNew
-		case err != nil:
-			previewItem.Status = pushStatusError
-			previewItem.ReadErr = err
-		default:
-			d := diff.PageSections(serverBytes, []byte(f.Content), serverSHA, "local")
-			previewItem.Diff = &d
-			if isEmptyDiff(&d) {
-				previewItem.Status = pushStatusNoChange
-			} else {
-				previewItem.Status = pushStatusEdit
+	out := make([]pushPreview, len(files))
+	sem := make(chan struct{}, previewConcurrency)
+	var wg goSync.WaitGroup
+
+	for i, f := range files {
+		wg.Add(1)
+		go func(i int, f sync.PushFile) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			previewItem := pushPreview{Path: f.Path}
+			serverBytes, serverSHA, err := client.ReadPage(repoID, f.Path)
+			switch {
+			case errors.Is(err, sync.ErrPageNotFound):
+				previewItem.Status = pushStatusNew
+			case err != nil:
+				previewItem.Status = pushStatusError
+				previewItem.ReadErr = err
+			default:
+				d := diff.PageSections(serverBytes, []byte(f.Content), serverSHA, "local")
+				previewItem.Diff = &d
+				if isEmptyDiff(&d) {
+					previewItem.Status = pushStatusNoChange
+				} else {
+					previewItem.Status = pushStatusEdit
+				}
 			}
-		}
-		previewItem.LineHint = renderPreviewLine(previewItem)
-		out = append(out, previewItem)
+			previewItem.LineHint = renderPreviewLine(previewItem)
+			out[i] = previewItem
+		}(i, f)
 	}
+	wg.Wait()
 	return out
 }
 
@@ -157,17 +176,12 @@ func renderPreview(out io.Writer, repoID string, previews []pushPreview, showDif
 	return hasEdits
 }
 
-// confirm reads a y/N response from stdin. Defaults to N. Returns false if
-// stdin isn't a TTY (callers should pre-screen that case and decide what to
-// do, e.g. auto-proceed for scripts).
+// confirm reads a y/N response. Defaults to N; EOF declines.
+//
+// This is a thin wrapper over ui.Prompter, kept so callers retain an
+// injectable io.Reader seam. It is the single confirm implementation for the
+// CLI -- there used to be five, with four different prompt strings and three
+// different EOF behaviours.
 func confirm(in io.Reader, out io.Writer, prompt string) (bool, error) {
-	fmt.Fprintf(out, "%s [y/N]: ", prompt)
-	reader := bufio.NewReader(in)
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return false, fmt.Errorf("confirm: read input: %w", err)
-	}
-	line = strings.ToLower(strings.TrimSpace(line))
-	return line == "y" || line == "yes", nil
+	return ui.Plain(out).Prompter(in).Confirm(prompt)
 }
-

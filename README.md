@@ -121,6 +121,19 @@ ctx update [--check]           Self-update to the latest release (--check: repor
 ctx version [--short]          Print the installed version
 ```
 
+**Terminal output**
+
+`ctx` colours its output on a terminal and prints plain text everywhere else,
+so piping and redirecting stay parseable. Machine surfaces — `ctx mcp`,
+`ctx capture turn`, shell completion, `--json`, and `ctx version --short` —
+never carry styling at all.
+
+```
+NO_COLOR=1        Disable colour entirely (honoured automatically)
+CTX_THEME=light   Use the light-background palette (default: dark)
+CTX_ASCII=1       Use ASCII marks instead of ✔ ▲ ✖ ● (for consoles lacking the glyphs)
+```
+
 ## MCP
 
 Resources (read-only):
@@ -252,8 +265,15 @@ the real cobra tree, so the reference can't drift from the code. Regenerate it
 whenever a command, flag or MCP tool changes — it's part of cutting a release:
 
 ```
-go run ./cmd/ctxdocs > ../contexo-landing/apps/docs/src/data/contexo-cli.json
+go run -ldflags "-X github.com/sugihAF/contexo/internal/version.Version=$(git describe --tags --abbrev=0)" \
+  ./cmd/ctxdocs > ../contexo-landing/apps/docs/src/data/contexo-cli.json
 ```
+
+The `-ldflags` stamp matters: without it the snapshot records `"version":
+"dev"` and the docs site's "generated against ctx <version>" headline
+regresses. After regenerating, re-capture the terminal transcripts too —
+`npm run capture --workspace apps/docs` from the `contexo-landing` checkout —
+otherwise the site keeps showing the previous release's output.
 
 `cmd/ctxdocs` is build-time tooling only: `.goreleaser.yaml` builds `./cmd/ctx`
 alone, so it never ships in a release binary.

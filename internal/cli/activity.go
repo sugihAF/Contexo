@@ -3,12 +3,12 @@ package cli
 import (
 	"fmt"
 	"io"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 func newActivityCmd() *cobra.Command {
@@ -40,16 +40,17 @@ Pulls are recorded only when pages were actually received, so routine
 
 // renderActivity writes one aligned row per event: email, action, timestamp.
 func renderActivity(w io.Writer, events []sync.ActivityEvent) {
+	u := ui.Plain(w)
 	if len(events) == 0 {
-		fmt.Fprintln(w, "no activity yet")
+		fmt.Fprintln(u.Out(), u.Style(ui.FG3, "no activity yet"))
 		return
 	}
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	t := u.Table("WHO", "WHAT", "WHEN")
 	for _, e := range events {
 		when := time.Unix(e.CreatedAt, 0).UTC().Format("2006-01-02 15:04 UTC")
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Email, activityVerb(e.Action), when)
+		t.Row(e.Email, activityVerb(e.Action), when)
 	}
-	_ = tw.Flush()
+	t.Render()
 }
 
 // activityVerb renders a stored action as a past-tense verb for display.

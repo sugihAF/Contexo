@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/indexer"
@@ -28,11 +31,11 @@ func newPullCmd() *cobra.Command {
 			}
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				return fmt.Errorf("pull: no credentials, run 'ctx auth login' first")
+				return ui.Suggest(errors.New("pull: not authenticated"), "ctx auth login")
 			}
 			serverURL := chooseServerURL(creds, cfg)
 			if serverURL == "" {
-				return fmt.Errorf("pull: no server URL configured (run 'ctx remote add')")
+				return ui.Suggest(errors.New("pull: no server URL configured"), "ctx remote set <url>")
 			}
 			if cfg.RepoID == "" {
 				return fmt.Errorf("pull: no repo_id configured in .contexo/config.json")

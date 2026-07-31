@@ -1,16 +1,15 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 func newAuthCmd() *cobra.Command {
@@ -54,6 +53,7 @@ over a loopback redirect. Use --no-browser to fall back to a paste-the-token
 prompt, or pass --token directly to skip the browser entirely.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
+			u := ui.From(cmd)
 
 			// Resolve which token value to use. --token wins; --api-key is
 			// deprecated but accepted.
@@ -97,9 +97,9 @@ prompt, or pass --token directly to skip the browser entirely.`,
 				} else if !stdinIsTTY() {
 					return fmt.Errorf("a token is required (--token, or run interactively for the browser flow)")
 				} else {
-					fmt.Fprint(cmd.OutOrStdout(), "Token: ")
-					reader := bufio.NewReader(os.Stdin)
-					input, err := reader.ReadString('\n')
+					// Reads cmd.InOrStdin(), not os.Stdin: the old direct read
+					// could not be redirected or tested.
+					input, err := u.Prompter(cmd.InOrStdin()).Line("Token")
 					if err != nil {
 						return fmt.Errorf("auth: read input: %w", err)
 					}
@@ -158,7 +158,7 @@ prompt, or pass --token directly to skip the browser entirely.`,
 			// set-repo` later.
 			if cfg.RepoID == "" && cfg.ServerURL != "" && stdinIsTTY() {
 				client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-				chosenRepo, err := selectRepoInteractive(client, cmd.OutOrStdout())
+				chosenRepo, err := selectRepoInteractive(client, cmd.InOrStdin(), cmd.OutOrStdout())
 				if err == nil && chosenRepo != "" {
 					cfg.RepoID = chosenRepo
 					if saveErr := config.Save(root, cfg); saveErr != nil {
@@ -167,14 +167,16 @@ prompt, or pass --token directly to skip the browser entirely.`,
 				}
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Authenticated (%s)", creds.Kind())
+			// Built up then emitted in ONE write: four separate Fprintf calls
+			// could tear across a partial write and leave a half-line.
+			line := fmt.Sprintf("Authenticated (%s)", creds.Kind())
 			if cfg.ServerURL != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), " · server: %s", cfg.ServerURL)
+				line += fmt.Sprintf(" · server: %s", cfg.ServerURL)
 			}
 			if cfg.RepoID != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), " · repo: %s", cfg.RepoID)
+				line += fmt.Sprintf(" · repo: %s", cfg.RepoID)
 			}
-			fmt.Fprintln(cmd.OutOrStdout())
+			u.Success("%s", line)
 			return nil
 		},
 	}
@@ -196,24 +198,28 @@ func newAuthStatusCmd() *cobra.Command {
 		Short: "Show authentication status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
+			u := ui.From(cmd)
 			creds, err := config.LoadCredentials(root)
 			if err != nil || creds == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Not authenticated")
+				u.Warn("Not authenticated")
+				u.Hint("try", "ctx auth login")
 				return nil
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Authenticated: yes")
-			if creds.ServerURL != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", creds.ServerURL)
-			}
-			if creds.UserName != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "User: %s <%s>\n", creds.UserName, creds.UserEmail)
 			}
 			tok := creds.Bearer()
 			masked := tok
 			if len(masked) > 8 {
 				masked = masked[:4] + "..." + masked[len(masked)-4:]
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token: %s (%s)\n", masked, creds.Kind())
+
+			u.Eyebrow("AUTH")
+			u.Field("status", "authenticated")
+			if creds.ServerURL != "" {
+				u.Field("server", creds.ServerURL)
+			}
+			if creds.UserName != "" {
+				u.Field("user", fmt.Sprintf("%s <%s>", creds.UserName, creds.UserEmail))
+			}
+			u.Field("token", fmt.Sprintf("%s (%s)", masked, creds.Kind()))
 			return nil
 		},
 	}

@@ -14,11 +14,15 @@ var rootDir string
 // NewRootCmd creates the root ctx command.
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "ctx",
-		Short:        "Contexo CLI — share AI agent knowledge across a team",
-		Long:         "ctx manages a per-project knowledge base of distilled AI sessions and syncs it with a Contexo server so teammates' agents start from the same context.",
-		SilenceUsage: true,
-		Version:      version.Version,
+		Use:   "ctx",
+		Short: "Contexo CLI — share AI agent knowledge across a team",
+		Long:  "ctx manages a per-project knowledge base of distilled AI sessions and syncs it with a Contexo server so teammates' agents start from the same context.",
+		// SilenceErrors hands rendering to cmd/ctx/main.go, which prints the
+		// failure plus its structured advice instead of cobra's bare
+		// "Error: <msg>". Without it every error would print twice.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Version:       version.Version,
 		// Runs only after a subcommand's RunE succeeds; emits the (cached,
 		// opt-out, TTY-gated) "update available" nudge. Never errors.
 		PersistentPostRun: func(cmd *cobra.Command, args []string) {

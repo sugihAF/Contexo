@@ -1,12 +1,13 @@
 package cli
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -22,10 +23,11 @@ at the joined repo, so 'ctx push' / 'ctx pull' work immediately.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
+			u := ui.From(cmd)
 			cfg, _ := config.Load(root)
 			creds, _ := config.LoadCredentials(root)
 			if creds == nil || creds.Bearer() == "" {
-				return fmt.Errorf("join: not authenticated — run 'ctx login --token <token>' first")
+				return ui.Suggest(errors.New("join: not authenticated"), "ctx auth login")
 			}
 			if cfg.ServerURL == "" {
 				return fmt.Errorf("join: server URL not set — run 'ctx remote set <url>' first")
@@ -35,8 +37,9 @@ at the joined repo, so 'ctx push' / 'ctx pull' work immediately.`,
 			if len(args) == 1 {
 				key = args[0]
 			} else {
-				fmt.Fprint(cmd.OutOrStdout(), "Invite key: ")
-				input, err := bufio.NewReader(os.Stdin).ReadString('\n')
+				// Reads cmd.InOrStdin(), not os.Stdin: the old direct read
+				// could not be redirected or tested.
+				input, err := u.Prompter(cmd.InOrStdin()).Line("Invite key")
 				if err != nil {
 					return fmt.Errorf("join: read input: %w", err)
 				}
@@ -57,7 +60,8 @@ at the joined repo, so 'ctx push' / 'ctx pull' work immediately.`,
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Joined %s as %s. 'ctx pull' to fetch existing pages.\n", repoID, role)
+			u.Success("Joined %s as %s.", repoID, role)
+			u.Hint("run", "ctx pull")
 			return nil
 		},
 	}

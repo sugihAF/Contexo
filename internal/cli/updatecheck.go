@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/sugihAF/contexo/internal/ui"
 	"github.com/sugihAF/contexo/internal/updater"
 	"github.com/sugihAF/contexo/internal/version"
 )
@@ -22,14 +23,17 @@ type updateCache struct {
 	LatestVersion string    `json:"latest_version"`
 }
 
-// suppressedCommands never emit the nudge: mcp/capture produce machine-read
-// output (a stray line corrupts JSON-RPC or the capture buffer), and
-// version/update would be redundant or recursive.
+// suppressedCommands never emit the nudge: mcp/capture/completion produce
+// machine-read output (a stray line corrupts JSON-RPC, the capture buffer, or
+// a sourced completion script), and version/update would be redundant or
+// recursive. Keep in sync with machineCommand in internal/ui/mode.go.
 var suppressedCommands = map[string]bool{
-	"mcp":     true,
-	"capture": true,
-	"version": true,
-	"update":  true,
+	"mcp":        true,
+	"capture":    true,
+	"completion": true,
+	"__complete": true,
+	"version":    true,
+	"update":     true,
 }
 
 // shouldRunUpdateCheck decides whether the post-command nudge should run. Pure
@@ -85,9 +89,14 @@ func maybeNudge(cmd *cobra.Command) {
 	}
 
 	if latest != "" && updater.IsNewer(latest, version.Version) {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"\n\033[2m✨ ctx %s available (you have %s) — run `ctx update`\033[0m\n",
-			latest, version.Version)
+		// Styled through the UI rather than a hardcoded \033[2m: a bare escape
+		// is emitted even when stderr is a file, where it is just noise.
+		// NOTE the asymmetry above is deliberate — the TTY probe is on stdout
+		// while the write goes to stderr, which is what keeps the nudge off
+		// `ctx completion bash > file`. ui.Plain here only supplies colour.
+		stderr := cmd.ErrOrStderr()
+		fmt.Fprintf(stderr, "\n%s\n", ui.Plain(stderr).Style(ui.FG4,
+			fmt.Sprintf("✨ ctx %s available (you have %s) — run `ctx update`", latest, version.Version)))
 	}
 }
 

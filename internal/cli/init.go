@@ -10,6 +10,7 @@ import (
 
 	"github.com/sugihAF/contexo/internal/cli/agentwire"
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // NewInitCmd creates the ctx init command.
@@ -44,6 +45,7 @@ func NewInitCmd() *cobra.Command {
 func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks bool) error {
 	root := GetRootDir()
 	hubDir := config.ContexoDirPath(root)
+	u := ui.From(cmd)
 
 	dirs := []string{
 		hubDir,
@@ -72,6 +74,13 @@ func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks b
 		return err
 	}
 
+	// One eyebrow over the whole wiring run, so the per-step lines below read
+	// as a section rather than as loose noise. Skipped entirely when every
+	// step is turned off and there would be nothing under the label.
+	if !skipMCP || !skipGitignore || !skipHooks {
+		u.Eyebrow("SETUP")
+	}
+
 	if !skipMCP {
 		if err := wireClaudeMCP(cmd, root); err != nil {
 			return err
@@ -82,7 +91,7 @@ func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks b
 			}
 		}
 		if detectCodex() {
-			fmt.Fprintln(cmd.OutOrStdout(), "  Codex detected — run `ctx mcp install --tool=codex` to wire it (writes the GLOBAL ~/.codex/config.toml).")
+			u.Step("Codex detected — run `ctx mcp install --tool=codex` to wire it (writes the GLOBAL ~/.codex/config.toml).")
 		}
 	}
 	if !skipGitignore {
@@ -93,31 +102,34 @@ func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks b
 	if !skipHooks {
 		// Failing here would be more annoying than helpful — the hook is a
 		// nice-to-have, not load-bearing for init's core job. Warn and move on.
-		if err := installHook(cmd, root); err != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "  Warning: could not install Claude Stop hook: %v (run 'ctx hooks install' later)\n", err)
+		if err := installHook(cmd, root, true); err != nil {
+			u.Warn("could not install Claude Stop hook: %v (run 'ctx hooks install' later)", err)
 		}
 		// Codex capture hooks are project-local and safe to auto-install when
 		// Codex is present (same logic as auto-wiring Cursor's MCP).
 		if detectCodex() {
-			if err := installCodexCaptureHooks(cmd, root); err != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "  Warning: could not install Codex capture hooks: %v\n", err)
+			if err := installCodexCaptureHooks(cmd, root, true); err != nil {
+				u.Warn("could not install Codex capture hooks: %v", err)
 			}
 		}
 		if detectCursor() {
-			if err := installCursorCaptureHooks(cmd, root); err != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "  Warning: could not install Cursor capture hooks: %v\n", err)
+			if err := installCursorCaptureHooks(cmd, root, true); err != nil {
+				u.Warn("could not install Cursor capture hooks: %v", err)
 			}
 		}
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Initialized .contexo in %s\n", root)
+	fmt.Fprintln(out)
+	u.Success("Initialized .contexo in %s", root)
 	fmt.Fprintln(out)
 	renderIntegrationTable(out, root, defaultMCPWireDeps())
 	fmt.Fprintln(out)
 	renderAgentGuide(out)
 	return nil
 }
+
+// stepLine renders one line of a per-agent wiring log (init's SETUP section,
 
 func writeIfAbsent(path, content string) error {
 	if _, err := os.Stat(path); err == nil {
@@ -140,10 +152,11 @@ func wireClaudeMCP(cmd *cobra.Command, root string) error {
 	if err != nil {
 		return fmt.Errorf("init: write .mcp.json: %w", err)
 	}
+	u := ui.From(cmd)
 	if changed {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Wired Claude Code (.mcp.json) — restart your agent to load the contexo server")
+		u.Step("Wired Claude Code (.mcp.json) — restart your agent to load the contexo server")
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "  .mcp.json already has the contexo entry; leaving it alone")
+		u.Step(".mcp.json already has the contexo entry; leaving it alone")
 	}
 	return nil
 }
@@ -155,10 +168,11 @@ func wireCursorMCP(cmd *cobra.Command, root string) error {
 	if err != nil {
 		return fmt.Errorf("init: write .cursor/mcp.json: %w", err)
 	}
+	u := ui.From(cmd)
 	if changed {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Cursor detected — wired .cursor/mcp.json")
+		u.Step("Cursor detected — wired .cursor/mcp.json")
 	} else {
-		fmt.Fprintln(cmd.OutOrStdout(), "  .cursor/mcp.json already has the contexo entry; leaving it alone")
+		u.Step(".cursor/mcp.json already has the contexo entry; leaving it alone")
 	}
 	return nil
 }
@@ -181,7 +195,7 @@ func updateGitignore(cmd *cobra.Command, root string) error {
 		if err := os.WriteFile(giPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("init: write .gitignore: %w", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "  Created .gitignore with .contexo/")
+		ui.From(cmd).Step("Created .gitignore with .contexo/")
 		return nil
 	}
 
@@ -206,7 +220,7 @@ func updateGitignore(cmd *cobra.Command, root string) error {
 	if _, err := f.WriteString(addition); err != nil {
 		return fmt.Errorf("init: append .gitignore: %w", err)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "  Added .contexo/ to .gitignore")
+	ui.From(cmd).Step("Added .contexo/ to .gitignore")
 	return nil
 }
 

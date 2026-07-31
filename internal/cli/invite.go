@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -45,8 +48,14 @@ func newInviteMintCmd() *cobra.Command {
 			if key.Label != "" {
 				labelPart = fmt.Sprintf(" · label %q", key.Label)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\nexpires %s%s\n", token, expires, labelPart)
-			fmt.Fprintf(cmd.OutOrStdout(), "share this with a teammate; they run 'ctx join %s'\n", token)
+			out := cmd.OutOrStdout()
+			// The token is a secret the user copy-pastes: it is written raw on
+			// its own line, never styled, truncated, or wrapped. Only the
+			// surrounding metadata gets any tone.
+			fmt.Fprintln(out, token)
+			fmt.Fprintln(out, ui.From(cmd).Style(ui.FG4,
+				fmt.Sprintf("expires %s%s", expires, labelPart)))
+			fmt.Fprintf(out, "share this with a teammate; they run 'ctx join %s'\n", token)
 			return nil
 		},
 	}
@@ -67,23 +76,29 @@ func newInviteListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			u := ui.From(cmd)
 			if len(keys) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no invite keys")
 				return nil
 			}
 			now := time.Now().Unix()
+			// Cells stay untoned on purpose. Pre-styled cells reach tabwriter
+			// with their escape bytes counted as width, and two tones of
+			// different escape length in one column misalign the next.
+			t := u.Table("KEY", "STATUS", "EXPIRES", "LABEL")
 			for _, k := range keys {
 				status := "active"
 				if k.ExpiresAt <= now {
 					status = "expired"
 				}
-				expires := time.Unix(k.ExpiresAt, 0).UTC().Format("2006-01-02 15:04 UTC")
 				label := k.Label
 				if label == "" {
 					label = "(no label)"
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  expires %s  %s\n", k.ID, status, expires, label)
+				t.Row(k.ID, status,
+					time.Unix(k.ExpiresAt, 0).UTC().Format("2006-01-02 15:04 UTC"), label)
 			}
+			t.Render()
 			return nil
 		},
 	}
@@ -102,7 +117,7 @@ func newInviteRevokeCmd() *cobra.Command {
 			if err := client.DeleteInviteKey(repoID, args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "revoked %s\n", args[0])
+			ui.From(cmd).Success("revoked %s", args[0])
 			return nil
 		},
 	}
@@ -116,7 +131,7 @@ func inviteClient() (*sync.Client, string, error) {
 	cfg, _ := config.Load(root)
 	creds, _ := config.LoadCredentials(root)
 	if creds == nil || creds.Bearer() == "" {
-		return nil, "", fmt.Errorf("invite: not authenticated — run 'ctx login' first")
+		return nil, "", ui.Suggest(errors.New("invite: not authenticated"), "ctx auth login")
 	}
 	if cfg.ServerURL == "" {
 		return nil, "", fmt.Errorf("invite: server URL not set — run 'ctx remote set <url>' first")
