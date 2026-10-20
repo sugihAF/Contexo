@@ -222,7 +222,9 @@ func isExitCode(err error, code int) bool {
 }
 
 // Read returns the file content at HEAD and the sha of the last commit that
-// touched the file. Returns os.ErrNotExist if the file doesn't exist.
+// touched the file. Returns os.ErrNotExist if the path is not a file at HEAD:
+// never written, deleted, a directory (e.g. "wiki"), or the repo has no
+// commits. An empty file is present, with empty non-nil content.
 func (s *Store) Read(repoID, filePath string) ([]byte, string, error) {
 	if !s.Exists(repoID) {
 		return nil, "", ErrRepoNotFound
@@ -231,12 +233,31 @@ func (s *Store) Read(repoID, filePath string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	dir := s.repoDir(repoID)
-	sha, content, err := s.lastCommitForPath(dir, filePath)
+	out, err := s.git(dir, "log", "-n1", "--format=%H", "--", filePath)
+	if err != nil {
+		if strings.Contains(out, "does not have any commits") {
+			return nil, "", os.ErrNotExist
+		}
+		return nil, "", fmt.Errorf("gitstore: log path: %w: %s", err, out)
+	}
+	sha := strings.TrimSpace(out)
+	if sha == "" {
+		return nil, "", os.ErrNotExist
+	}
+	// The content comes from the path's own last commit, which holds the same
+	// bytes as HEAD. Reading both from one commit keeps them paired even when
+	// a write lands between the two git calls; reading HEAD instead could
+	// return new content with the old sha, or vice versa. Absence is blobAt's
+	// ok (a deletion or a tree), never nil content: an empty page is a page.
+	content, ok, err := s.blobAt(dir, sha, filePath)
 	if err != nil {
 		return nil, "", err
 	}
-	if sha == "" {
+	if !ok {
 		return nil, "", os.ErrNotExist
+	}
+	if content == nil {
+		content = []byte{}
 	}
 	return content, sha, nil
 }
@@ -306,8 +327,10 @@ func (s *Store) HeadSHAForPath(repoID, filePath string) (string, error) {
 }
 
 // ReadAtSha returns the contents of filePath at the given commit sha.
-// Returns ErrUnknownSHA if the sha doesn't resolve, or ErrPathNotAtSHA if the
-// commit exists but doesn't contain the file.
+// Returns ErrUnknownSHA if the sha doesn't resolve to a commit, or
+// ErrPathNotAtSHA if the commit exists but filePath is not a file in it
+// (never written, deleted, or a directory). An empty file is returned as
+// empty, non-nil content.
 func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
 	if !s.Exists(repoID) {
 		return nil, ErrRepoNotFound
@@ -323,25 +346,85 @@ func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
 	}
 	dir := s.repoDir(repoID)
 	// First verify the sha resolves so we can return a clean ErrUnknownSHA.
-	if out, err := s.git(dir, "rev-parse", "--verify", sha+"^{commit}"); err != nil {
+	out, err := s.git(dir, "rev-parse", "--verify", sha+"^{commit}")
+	if err != nil {
 		if isUnknownRev(out) {
 			return nil, ErrUnknownSHA
 		}
 		return nil, fmt.Errorf("gitstore: rev-parse %s: %w: %s", sha, err, out)
 	}
-	cmd := exec.Command("git", "show", sha+":"+filePath)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	// Read through the resolved full id, so an abbreviation cannot turn
+	// ambiguous between the two git calls. blobAt decides absence by exit
+	// status and object type (a tree such as "wiki" is not a page), never by
+	// git's message text.
+	commit := strings.TrimSpace(out)
+	content, ok, err := s.blobAt(dir, commit, filePath)
 	if err != nil {
-		// `git show` exits non-zero with "exists on disk, but not in" or
-		// "does not exist" when the path is absent at this revision.
-		s := string(out)
-		if strings.Contains(s, "exists on disk, but not in") || strings.Contains(s, "does not exist") {
-			return nil, ErrPathNotAtSHA
-		}
-		return nil, fmt.Errorf("gitstore: show %s:%s: %w: %s", sha, filePath, err, s)
+		return nil, err
 	}
-	return out, nil
+	if !ok {
+		return nil, ErrPathNotAtSHA
+	}
+	if content == nil {
+		content = []byte{}
+	}
+	return content, nil
+}
+
+// ValidSHA reports whether s is acceptable as a client-supplied commit id: 4
+// to 64 hex characters, either case (an abbreviated or full SHA-1 or SHA-256
+// id). Callers validate a request's sha (e.g. ?at) with it before any git
+// call, so flags (--all, -G.), ref names (HEAD, main) and rev syntax (abcd^)
+// never reach git. Unlike isHexRef it rejects "", which must not silently
+// mean "HEAD".
+func ValidSHA(s string) bool {
+	if len(s) < 4 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ReadPageAt returns filePath's content at commit sha (full or abbreviated)
+// and pathSHA, the full id of the last commit at or before sha that touched
+// filePath: the sha a client records as the page's parent. Errors, checked in
+// this order: ErrRepoNotFound; ErrUnknownSHA when sha is not ValidSHA (before
+// any git call) or does not resolve to a commit; ErrUnsafePath; and
+// ErrPathNotAtSHA when filePath is not a file at sha (never written, deleted,
+// or a directory).
+func (s *Store) ReadPageAt(repoID, filePath, sha string) (content []byte, pathSHA string, err error) {
+	if !s.Exists(repoID) {
+		return nil, "", ErrRepoNotFound
+	}
+	if !ValidSHA(sha) {
+		return nil, "", ErrUnknownSHA
+	}
+	if err := validatePagePath(filePath); err != nil {
+		return nil, "", err
+	}
+	content, err = s.ReadAtSha(repoID, filePath, sha)
+	if err != nil {
+		return nil, "", err
+	}
+	// sha and filePath are both validated above, so neither can be read by
+	// git as an option.
+	out, err := s.git(s.repoDir(repoID), "log", "-n1", "--format=%H", sha, "--", filePath)
+	if err != nil {
+		if isUnknownRev(out) {
+			return nil, "", ErrUnknownSHA
+		}
+		return nil, "", fmt.Errorf("gitstore: log %s -- %s: %w: %s", sha, filePath, err, out)
+	}
+	pathSHA = strings.TrimSpace(out)
+	if pathSHA == "" {
+		return nil, "", ErrPathNotAtSHA
+	}
+	return content, pathSHA, nil
 }
 
 func isUnknownRev(out string) bool {

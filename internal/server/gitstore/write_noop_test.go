@@ -3,7 +3,9 @@ package gitstore
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	gosync "sync"
 	"testing"
 )
@@ -209,5 +211,160 @@ func TestWriteConcurrentSameRepo(t *testing.T) {
 		if files := splitLines(out); len(files) != 1 {
 			t.Errorf("commit %s touches %v, want exactly one path", c.SHA, files)
 		}
+	}
+}
+
+// TestReadPageAtPathSHAAtOrBefore: ReadPageAt returns the page as of the
+// requested commit together with the path's own last commit at or before it,
+// which is the sha a client records as the page's parent.
+func TestReadPageAtPathSHAAtOrBefore(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "alpha v1", "")
+	c2 := wp02Write(t, s, "wiki/b.md", "beta", "")
+	c3 := wp02Write(t, s, "wiki/a.md", "alpha v2", c1)
+
+	cases := []struct{ at, want, wantSHA string }{
+		{c1, "alpha v1", c1},
+		{c2, "alpha v1", c1},
+		{c2[:7], "alpha v1", c1},
+		{strings.ToUpper(c2[:7]), "alpha v1", c1},
+		{c3, "alpha v2", c3},
+	}
+	for _, tc := range cases {
+		content, pathSHA, err := s.ReadPageAt("r", "wiki/a.md", tc.at)
+		if err != nil {
+			t.Errorf("at %s: %v", tc.at, err)
+			continue
+		}
+		if string(content) != tc.want || pathSHA != tc.wantSHA {
+			t.Errorf("at %s: got %q@%s, want %q@%s", tc.at, content, pathSHA, tc.want, tc.wantSHA)
+		}
+	}
+}
+
+func TestValidSHA(t *testing.T) {
+	hex40 := strings.Repeat("0123456789", 4)
+	hex64 := strings.Repeat("abcdef0123456789", 4)
+	for _, s := range []string{"abcd", "abcdef1", "ABCDEF1", "AbCd", hex40, strings.ToUpper(hex64), hex64} {
+		if !ValidSHA(s) {
+			t.Errorf("ValidSHA(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "abc", "zz", "--all", "-G.", "HEAD", "main", "abcd^", "abcd~1", "abcd ", " abcd", "abcd:x", hex64 + "a"} {
+		if ValidSHA(s) {
+			t.Errorf("ValidSHA(%q) = true, want false", s)
+		}
+	}
+}
+
+// TestReadPageAtErrors pins the documented error order: repo, then sha
+// syntax (before any git call), then path safety, then git resolution.
+func TestReadPageAtErrors(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "alpha", "")
+	wp02Write(t, s, "wiki/b.md", "beta", "")
+
+	cases := []struct {
+		name, repo, path, at string
+		want                 error
+	}{
+		{"missing repo", "ghost", "wiki/a.md", c1, ErrRepoNotFound},
+		{"missing repo wins", "ghost", "wiki/-x.md", "zz", ErrRepoNotFound},
+		{"empty sha", "r", "wiki/a.md", "", ErrUnknownSHA},
+		{"non-hex sha", "r", "wiki/a.md", "zz", ErrUnknownSHA},
+		{"flag sha", "r", "wiki/a.md", "--all", ErrUnknownSHA},
+		{"grep flag sha", "r", "wiki/a.md", "-G.", ErrUnknownSHA},
+		{"ref name", "r", "wiki/a.md", "HEAD", ErrUnknownSHA},
+		{"too short", "r", "wiki/a.md", "abc", ErrUnknownSHA},
+		{"too long", "r", "wiki/a.md", strings.Repeat("a", 65), ErrUnknownSHA},
+		{"sha checked before path", "r", "wiki/-x.md", "zz", ErrUnknownSHA},
+		{"flag path", "r", "wiki/-x.md", c1, ErrUnsafePath},
+		{"traversal", "r", "../x.md", c1, ErrUnsafePath},
+		{"unknown commit", "r", "wiki/a.md", strings.Repeat("deadbeef", 5), ErrUnknownSHA},
+		{"path added later", "r", "wiki/b.md", c1, ErrPathNotAtSHA},
+		{"never written", "r", "wiki/none.md", c1, ErrPathNotAtSHA},
+	}
+	for _, tc := range cases {
+		content, pathSHA, err := s.ReadPageAt(tc.repo, tc.path, tc.at)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %q@%q err=%v, want %v", tc.name, content, pathSHA, err, tc.want)
+		}
+	}
+}
+
+// TestReadPageAtDirectoryIsAbsent: a tree path such as "wiki" is not a page,
+// so it must not come back as a tree listing.
+func TestReadPageAtDirectoryIsAbsent(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "alpha", "")
+
+	if content, pathSHA, err := s.ReadPageAt("r", "wiki", c1); !errors.Is(err, ErrPathNotAtSHA) {
+		t.Errorf("ReadPageAt(wiki) = %q@%q err=%v, want ErrPathNotAtSHA", content, pathSHA, err)
+	}
+	if content, err := s.ReadAtSha("r", "wiki", c1); !errors.Is(err, ErrPathNotAtSHA) {
+		t.Errorf("ReadAtSha(wiki) = %q err=%v, want ErrPathNotAtSHA", content, err)
+	}
+}
+
+// TestReadEmptyPageIsPresent: an empty page is a page. Whether exec hands
+// back a nil or an empty slice for empty stdout is an implementation detail,
+// so absence is decided by blobAt's ok and empty content is never nil.
+func TestReadEmptyPageIsPresent(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/empty.md", "", "")
+
+	content, sha, err := s.Read("r", "wiki/empty.md")
+	if err != nil || content == nil || len(content) != 0 || sha != c1 {
+		t.Errorf("Read = %q (nil=%v) @%s err=%v, want empty non-nil content @%s", content, content == nil, sha, err, c1)
+	}
+	if content, err := s.ReadAtSha("r", "wiki/empty.md", c1); err != nil || content == nil || len(content) != 0 {
+		t.Errorf("ReadAtSha = %q (nil=%v) err=%v, want empty non-nil content", content, content == nil, err)
+	}
+	content, pathSHA, err := s.ReadPageAt("r", "wiki/empty.md", c1)
+	if err != nil || content == nil || len(content) != 0 || pathSHA != c1 {
+		t.Errorf("ReadPageAt = %q (nil=%v) @%s err=%v, want empty non-nil content @%s", content, content == nil, pathSHA, err, c1)
+	}
+}
+
+// TestReadDeletedOrDirectoryIsNotExist: Read reports os.ErrNotExist for a
+// path that is not a file at HEAD (deleted, a directory, never written, or an
+// empty repo) instead of a 200 with an empty body or a tree listing.
+func TestReadDeletedOrDirectoryIsNotExist(t *testing.T) {
+	s := wp02Store(t)
+	if content, sha, err := s.Read("r", "wiki/a.md"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("empty repo: Read = %q@%q err=%v, want os.ErrNotExist", content, sha, err)
+	}
+
+	c1 := wp02Write(t, s, "wiki/a.md", "alpha", "")
+	c2 := wp02Write(t, s, "wiki/b.md", "beta", "")
+	dir := s.repoDir("r")
+	if out, err := s.git(dir, "rm", "-q", "--", "wiki/a.md"); err != nil {
+		t.Fatalf("git rm: %v %s", err, out)
+	}
+	if out, err := s.git(dir, "commit", "-q", "-m", "delete a"); err != nil {
+		t.Fatalf("git commit: %v %s", err, out)
+	}
+	del, err := s.HeadSHA("r")
+	if err != nil || del == c2 {
+		t.Fatalf("deletion commit: %s err=%v", del, err)
+	}
+
+	for _, p := range []string{"wiki/a.md", "wiki", "wiki/never.md"} {
+		if content, sha, err := s.Read("r", p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("Read(%q) = %q@%q err=%v, want os.ErrNotExist", p, content, sha, err)
+		}
+	}
+	if content, sha, err := s.Read("r", "wiki/b.md"); err != nil || string(content) != "beta" || sha != c2 {
+		t.Errorf("Read(b) = %q@%s err=%v, want beta@%s", content, sha, err, c2)
+	}
+
+	if _, _, err := s.ReadPageAt("r", "wiki/a.md", del); !errors.Is(err, ErrPathNotAtSHA) {
+		t.Errorf("ReadPageAt(a, deletion) err=%v, want ErrPathNotAtSHA", err)
+	}
+	if _, err := s.ReadAtSha("r", "wiki/a.md", del); !errors.Is(err, ErrPathNotAtSHA) {
+		t.Errorf("ReadAtSha(a, deletion) err=%v, want ErrPathNotAtSHA", err)
+	}
+	if content, sha, err := s.ReadPageAt("r", "wiki/a.md", c2); err != nil || string(content) != "alpha" || sha != c1 {
+		t.Errorf("ReadPageAt(a, c2) = %q@%s err=%v, want alpha@%s", content, sha, err, c1)
 	}
 }

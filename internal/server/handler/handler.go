@@ -188,13 +188,23 @@ func (h *Handler) ListPages(c *gin.Context) {
 	pages, err := h.store.ListPages(repoID)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if pages == nil {
+		pages = []gitstore.PageMeta{} // an empty repo lists [], never null
+	}
 	c.JSON(http.StatusOK, gin.H{"pages": pages})
+}
+
+// errorWithCode writes {"error": msg, "code": code}. Clients branch on the
+// code; msg keeps the text older clients match ("repo not found", "page not
+// found"), so adding the code is backward compatible.
+func errorWithCode(c *gin.Context, status int, msg, code string) {
+	c.JSON(status, gin.H{"error": msg, "code": code})
 }
 
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
@@ -217,7 +227,15 @@ func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 }
 
-// ReadPage handles GET /v1/repos/:id/pages/*path.
+// ReadPage handles GET /v1/repos/:id/pages/*path: the page at HEAD, or with
+// ?at=<sha> the page as of that commit (capability pages.at).
+//
+// A ?at read answers 200 with X-Contexo-At (the requested sha echoed
+// verbatim, abbreviations included) and X-Page-SHA (the path's own last
+// commit at or before it). Servers that predate ?at ignore the parameter and
+// serve HEAD with a 200, so clients trust a ?at response only when it echoes
+// X-Contexo-At. Every error body carries a code: invalid_path, invalid_sha,
+// repo_not_found, page_not_found (HEAD) or sha_not_found (?at).
 func (h *Handler) ReadPage(c *gin.Context) {
 	repoID := c.Param("id")
 	if !h.requireMember(c, repoID) {
@@ -225,20 +243,51 @@ func (h *Handler) ReadPage(c *gin.Context) {
 	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing page path"})
+		errorWithCode(c, http.StatusBadRequest, "missing page path", "invalid_path")
 		return
 	}
+
+	if at, hasAt := c.GetQuery("at"); hasAt {
+		// Validated before any git call, so a flag (--all, -G.) or a ref name
+		// never reaches git. An empty ?at= is invalid, not "HEAD".
+		if !gitstore.ValidSHA(at) {
+			errorWithCode(c, http.StatusBadRequest, "invalid sha", "invalid_sha")
+			return
+		}
+		content, pathSHA, err := h.store.ReadPageAt(repoID, path, at)
+		if err != nil {
+			switch {
+			case errors.Is(err, gitstore.ErrRepoNotFound):
+				errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
+			case errors.Is(err, gitstore.ErrUnsafePath):
+				errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+			case errors.Is(err, gitstore.ErrUnknownSHA):
+				errorWithCode(c, http.StatusNotFound, "sha not found", "sha_not_found")
+			case errors.Is(err, gitstore.ErrPathNotAtSHA):
+				errorWithCode(c, http.StatusNotFound, "page not found at sha", "sha_not_found")
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		c.Header("X-Contexo-At", at)
+		c.Header("X-Page-SHA", pathSHA)
+		c.Data(http.StatusOK, "text/markdown", content)
+		return
+	}
+
 	content, sha, err := h.store.Read(repoID, path)
 	if err != nil {
-		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-			return
+		switch {
+		case errors.Is(err, gitstore.ErrRepoNotFound):
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
+		case errors.Is(err, os.ErrNotExist):
+			errorWithCode(c, http.StatusNotFound, "page not found", "page_not_found")
+		case errors.Is(err, gitstore.ErrUnsafePath):
+			errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		if errors.Is(err, os.ErrNotExist) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "page not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("X-Page-SHA", sha)
@@ -414,7 +463,7 @@ func (h *Handler) Pull(c *gin.Context) {
 	paths, head, err := h.store.ChangedSince(repoID, since)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -451,7 +500,7 @@ func (h *Handler) Timeline(c *gin.Context) {
 	commits, err := h.store.Log(repoID, limit)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -478,7 +527,7 @@ func (h *Handler) History(c *gin.Context) {
 	commits, err := h.store.LogPath(repoID, path, limit)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
