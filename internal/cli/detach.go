@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,10 +82,14 @@ func runDetach(cmd *cobra.Command, root string, assumeYes, keepKnowledge bool) e
 	}
 	u := ui.From(cmd)
 	if !plan.anyAction() {
+		msg := "Nothing to detach — no Contexo wiring or .contexo/ directory found here."
 		if plan.vscodeManual {
+			// The manual line names a contexo entry, so the summary must not
+			// claim that no Contexo wiring was found.
 			fmt.Fprintln(u.Out(), vscodeDetachManualLine)
+			msg = "Nothing to detach automatically — remove the .vscode/mcp.json entry above by hand."
 		}
-		fmt.Fprintln(u.Out(), u.Style(ui.FG2, "Nothing to detach — no Contexo wiring or .contexo/ directory found here."))
+		fmt.Fprintln(u.Out(), u.Style(ui.FG2, msg))
 		return nil
 	}
 
@@ -150,9 +153,7 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 	case vscodeWired:
 		plan.removeVSCodeEntry = true
 	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
-		if raw, rerr := os.ReadFile(plan.vscodePath); rerr == nil && bytes.Contains(raw, []byte(`"contexo"`)) {
-			plan.vscodeManual = true
-		}
+		plan.vscodeManual = vscodeJSONCMentionsContexo(plan.vscodePath)
 	}
 
 	// Codex's MCP server lives in its GLOBAL config; only remove it when codex

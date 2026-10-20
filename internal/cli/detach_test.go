@@ -387,6 +387,11 @@ func TestDetachLeavesJSONCVSCodeConfig(t *testing.T) {
 				t.Errorf("output missing %q; got:\n%s", want, out.String())
 			}
 		}
+		// The line above just named a contexo entry, so the summary must not
+		// claim that no Contexo wiring was found.
+		if strings.Contains(out.String(), "no Contexo wiring") {
+			t.Errorf("summary contradicts the manual-removal line; got:\n%s", out.String())
+		}
 		wp05AssertBytes(t, p, wp05VSCodeJSONC)
 	})
 }

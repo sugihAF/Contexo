@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -243,10 +244,24 @@ func uninstallJSONTarget(out io.Writer, label, path, rel string) {
 	}
 }
 
+// vscodeJSONCMentionsContexo reports whether the .vscode/mcp.json at path
+// (one already refused as not strict JSON) mentions a "contexo" key. Only then
+// is there an entry for the user to remove by hand: VS Code documents the file
+// as JSONC, so a commented file that never held contexo is ordinary. Shared by
+// ctx mcp uninstall and ctx detach so both say the same thing about a file.
+func vscodeJSONCMentionsContexo(path string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && bytes.Contains(raw, []byte(`"`+agentwire.ServerName+`"`))
+}
+
 // uninstallVSCodeTarget mirrors uninstallJSONTarget for ./.vscode/mcp.json,
 // leaving a JSONC file untouched.
 func uninstallVSCodeTarget(out io.Writer, path string) {
 	removed, deleted, err := agentwire.UnwireVSCode(path)
+	if errors.Is(err, agentwire.ErrUnparseableVSCodeConfig) && !vscodeJSONCMentionsContexo(path) {
+		// A JSONC file without contexo holds nothing of ours: report a no-op.
+		err = nil
+	}
 	u := ui.Plain(out)
 	switch {
 	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):

@@ -346,3 +346,30 @@ func TestMCPUninstallVSCodeJSONCLeftAlone(t *testing.T) {
 	}
 	wp05AssertBytes(t, p, wp05VSCodeJSONC)
 }
+
+// TestMCPUninstallVSCodeJSONCWithoutContexo: VS Code documents mcp.json as
+// JSONC, so a commented file that never held contexo is ordinary. Uninstall
+// (including the default --tool=all) must not ask the user to remove an
+// entry that is not there, matching detach.
+func TestMCPUninstallVSCodeJSONCWithoutContexo(t *testing.T) {
+	const body = "{\n  // only my own server\n  \"servers\": {\"github\": {\"type\": \"http\", \"url\": \"https://api.githubcopilot.com/mcp/\"}}\n}\n"
+	for _, tool := range []string{"all", "vscode"} {
+		t.Run(tool, func(t *testing.T) {
+			wp05IsolateHome(t)
+			project := tmpContexoProject(t)
+			p := wp05SeedVSCode(t, project, body)
+			cmd, out := bufCmd()
+			if err := runMCPUninstall(cmd, project, tool, wp05Deps(false)); err != nil {
+				t.Fatalf("uninstall %s: %v", tool, err)
+			}
+			s := out.String()
+			if strings.Contains(s, "remove servers.contexo manually") {
+				t.Errorf("no contexo entry exists, so no manual step is needed; got:\n%s", s)
+			}
+			if !strings.Contains(s, "VS Code not wired (.vscode/mcp.json); nothing to do.") {
+				t.Errorf("missing the VS Code no-op line; got:\n%s", s)
+			}
+			wp05AssertBytes(t, p, body)
+		})
+	}
+}
