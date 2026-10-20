@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -90,51 +91,134 @@ func (s *Store) Exists(repoID string) bool {
 	return err == nil
 }
 
-// Write writes a file, commits it, and returns the new HEAD sha.
-// If parentSHA is non-empty, it must match the latest commit sha that touched
-// filePath; otherwise returns ErrConflict with a *Conflict describing the
-// current state.
+// Write writes a file, commits it, and returns the commit sha that now holds
+// the content: the new commit, or the path's own last commit when the content
+// was unchanged. If parentSHA is non-empty, it must match the latest commit sha
+// that touched filePath; otherwise returns ErrConflict with a *Conflict
+// describing the current state. See WriteWithOptions.
 func (s *Store) Write(repoID, filePath string, content []byte, authorName, authorEmail, message, parentSHA string) (string, *Conflict, error) {
+	res, conflict, err := s.WriteWithOptions(repoID, filePath, content, WriteOptions{
+		AuthorName:  authorName,
+		AuthorEmail: authorEmail,
+		Message:     message,
+		ParentSHA:   parentSHA,
+	})
+	return res.SHA, conflict, err
+}
+
+// WriteOptions configures WriteWithOptions.
+type WriteOptions struct {
+	AuthorName, AuthorEmail, Message string
+	// ParentSHA, when non-empty, must equal the last commit that touched the
+	// path, otherwise the write is a conflict.
+	ParentSHA string
+	// ExpectAbsent makes the write create-only: if the path already exists at
+	// HEAD the write is a conflict (ExpectedParentSHA ""). It wins over
+	// ParentSHA. Clients send it for a page they have never synced, which
+	// closes the same-path create race (contract push.expect_absent).
+	ExpectAbsent bool
+}
+
+// WriteResult is the outcome of a successful (non-conflicting) write.
+type WriteResult struct {
+	// SHA is the commit that holds the written content: the new commit when
+	// Changed, otherwise the path's own last commit (repo HEAD only when the
+	// path has no history). Never repo HEAD for an unchanged page.
+	SHA string
+	// Changed reports whether a new commit was created.
+	Changed bool
+}
+
+// WriteWithOptions writes a file and commits it alone. Writes to one repo are
+// serialized in-process, so the parent check, the no-op detection and the
+// commit see a consistent HEAD even when several clients push at once.
+func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o WriteOptions) (WriteResult, *Conflict, error) {
 	if !s.Exists(repoID) {
-		return "", nil, ErrRepoNotFound
+		return WriteResult{}, nil, ErrRepoNotFound
 	}
 	if err := validatePagePath(filePath); err != nil {
-		return "", nil, err
+		return WriteResult{}, nil, err
 	}
 	dir := s.repoDir(repoID)
+	unlock := lockRepo(dir)
+	defer unlock()
 
-	currentSHA, currentContent, _ := s.lastCommitForPath(dir, filePath)
-	if parentSHA != "" && currentSHA != "" && parentSHA != currentSHA {
-		return "", &Conflict{
+	currentSHA, currentContent, err := s.lastCommitForPath(dir, filePath)
+	if err != nil {
+		return WriteResult{}, nil, err
+	}
+	if o.ExpectAbsent {
+		if _, exists, _ := s.blobAt(dir, "HEAD", filePath); exists {
+			return WriteResult{}, &Conflict{
+				Path:              filePath,
+				CurrentSHA:        currentSHA,
+				CurrentContent:    currentContent,
+				ExpectedParentSHA: "",
+			}, ErrConflict
+		}
+	} else if o.ParentSHA != "" && currentSHA != "" && o.ParentSHA != currentSHA {
+		return WriteResult{}, &Conflict{
 			Path:              filePath,
 			CurrentSHA:        currentSHA,
 			CurrentContent:    currentContent,
-			ExpectedParentSHA: parentSHA,
+			ExpectedParentSHA: o.ParentSHA,
 		}, ErrConflict
 	}
 
 	abs := filepath.Join(dir, filepath.FromSlash(filePath))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", nil, fmt.Errorf("gitstore: mkdir: %w", err)
+		return WriteResult{}, nil, fmt.Errorf("gitstore: mkdir: %w", err)
 	}
 	if err := os.WriteFile(abs, content, 0o644); err != nil {
-		return "", nil, fmt.Errorf("gitstore: write: %w", err)
+		return WriteResult{}, nil, fmt.Errorf("gitstore: write: %w", err)
 	}
 	if out, err := s.git(dir, "add", "--", filePath); err != nil {
-		return "", nil, fmt.Errorf("gitstore: add: %w: %s", err, out)
+		return WriteResult{}, nil, fmt.Errorf("gitstore: add: %w: %s", err, out)
 	}
 
-	authorArg := fmt.Sprintf("--author=%s <%s>", authorName, authorEmail)
-	out, err := s.git(dir, "commit", authorArg, "-m", message)
-	if err != nil {
-		if strings.Contains(out, "nothing to commit") {
-			sha, _ := s.headSHA(dir)
-			return sha, nil, nil
+	// No-op detection by exit status, not by matching git's "nothing to
+	// commit" text, which is translated under non-English locales. Exit 0
+	// means the staged path equals HEAD; exit 1 means it differs.
+	if out, err := s.git(dir, "diff", "--cached", "--quiet", "--", filePath); err == nil {
+		// Unchanged: report the commit that last touched THIS path. Returning
+		// repo HEAD here (the old behaviour) handed clients a sha that is not
+		// in the path's history, so their next push 409'd (false drift).
+		if currentSHA != "" {
+			return WriteResult{SHA: currentSHA}, nil, nil
 		}
-		return "", nil, fmt.Errorf("gitstore: commit: %w: %s", err, out)
+		head, herr := s.headSHA(dir)
+		return WriteResult{SHA: head}, nil, herr
+	} else if !isExitCode(err, 1) {
+		return WriteResult{}, nil, fmt.Errorf("gitstore: diff --cached: %w: %s", err, out)
+	}
+
+	// `commit -- <path>` commits only this path, so nothing else left in the
+	// index (e.g. by a crashed earlier write) is swept into this commit.
+	authorArg := fmt.Sprintf("--author=%s <%s>", o.AuthorName, o.AuthorEmail)
+	if out, err := s.git(dir, "commit", authorArg, "-m", o.Message, "--", filePath); err != nil {
+		return WriteResult{}, nil, fmt.Errorf("gitstore: commit: %w: %s", err, out)
 	}
 	sha, err := s.headSHA(dir)
-	return sha, nil, err
+	if err != nil {
+		return WriteResult{}, nil, err
+	}
+	return WriteResult{SHA: sha, Changed: true}, nil, nil
+}
+
+// repoLocks serializes writes per repo directory (in-process; the server is a
+// single process per data root). Values are *sync.Mutex.
+var repoLocks sync.Map
+
+func lockRepo(dir string) (unlock func()) {
+	v, _ := repoLocks.LoadOrStore(dir, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func isExitCode(err error, code int) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == code
 }
 
 // Read returns the file content at HEAD and the sha of the last commit that
@@ -539,10 +623,36 @@ func isHexRef(s string) bool {
 }
 
 func (s *Store) git(dir string, args ...string) (string, error) {
+	out, err := gitCmd(dir, args...).CombinedOutput()
+	return string(out), err
+}
+
+// gitCmd builds a git command in dir with LC_ALL=C. Several helpers here
+// (isUnknownRev, the "does not have any commits" checks) match git's English
+// messages, which a translated git would otherwise change under the host's
+// locale.
+func gitCmd(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd
+}
+
+// blobAt returns the content of filePath at rev when the path is a file
+// (blob) in rev's tree. ok is false when rev does not resolve, or the path is
+// absent or not a file (e.g. a directory) at rev. Absence is decided by git's
+// exit status and the object type, never by message text.
+func (s *Store) blobAt(dir, rev, filePath string) (content []byte, ok bool, err error) {
+	obj := rev + ":" + filePath
+	typ, terr := gitCmd(dir, "cat-file", "-t", obj).Output()
+	if terr != nil || strings.TrimSpace(string(typ)) != "blob" {
+		return nil, false, nil
+	}
+	out, err := gitCmd(dir, "cat-file", "blob", obj).Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("gitstore: cat-file %s: %w", obj, err)
+	}
+	return out, true, nil
 }
 
 func (s *Store) headSHA(dir string) (string, error) {
@@ -571,10 +681,8 @@ func (s *Store) lastCommitForPath(dir, filePath string) (string, []byte, error) 
 	if sha == "" {
 		return "", nil, nil
 	}
-	show := exec.Command("git", "show", "HEAD:"+filePath)
-	show.Dir = dir
-	content, err := show.Output()
-	if err != nil {
+	content, ok, err := s.blobAt(dir, "HEAD", filePath)
+	if err != nil || !ok {
 		return sha, nil, nil
 	}
 	return sha, content, nil
