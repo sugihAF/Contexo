@@ -60,6 +60,23 @@ func TestIntegrationTableHasVSCodeRow(t *testing.T) {
 		renderIntegrationTable(out, project, testDeps(false, nil))
 		return out.String()
 	}
+	// VS Code has no Stop-hook capture, so its CAPTURE cell (the row's last
+	// field) is "-" in every state, never "not installed" (which would read as
+	// a feature waiting to be set up). Other rows already print "not
+	// installed", so a substring check on the whole table cannot see this.
+	assertNoCapture := func(t *testing.T, s string) {
+		t.Helper()
+		for _, line := range strings.Split(s, "\n") {
+			if !strings.Contains(line, "VS Code") {
+				continue
+			}
+			if f := strings.Fields(line); f[len(f)-1] != "-" {
+				t.Errorf("VS Code row should end in the \"-\" capture cell; row: %q", line)
+			}
+			return
+		}
+		t.Errorf("no VS Code row in:\n%s", s)
+	}
 	t.Run("fresh", func(t *testing.T) {
 		wp05IsolateHome(t)
 		s := render(tmpContexoProject(t))
@@ -68,6 +85,7 @@ func TestIntegrationTableHasVSCodeRow(t *testing.T) {
 				t.Errorf("integration table missing %q; got:\n%s", want, s)
 			}
 		}
+		assertNoCapture(t, s)
 	})
 	t.Run("wired", func(t *testing.T) {
 		wp05IsolateHome(t)
@@ -79,14 +97,17 @@ func TestIntegrationTableHasVSCodeRow(t *testing.T) {
 		if !strings.Contains(s, "wired (.vscode/mcp.json)") || strings.Contains(s, "not wired (.vscode/mcp.json)") {
 			t.Errorf("VS Code should show wired (not 'not wired'); got:\n%s", s)
 		}
+		assertNoCapture(t, s)
 	})
 	t.Run("jsonc", func(t *testing.T) {
 		wp05IsolateHome(t)
 		project := tmpContexoProject(t)
 		wp05SeedVSCode(t, project, wp05VSCodeJSONC)
-		if s := render(project); !strings.Contains(s, "not strict JSON (.vscode/mcp.json)") {
+		s := render(project)
+		if !strings.Contains(s, "not strict JSON (.vscode/mcp.json)") {
 			t.Errorf("a JSONC VS Code file should be flagged; got:\n%s", s)
 		}
+		assertNoCapture(t, s)
 	})
 }
 
