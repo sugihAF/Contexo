@@ -1,7 +1,17 @@
 package syncstate
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"math"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,11 +53,65 @@ const (
 	lockTimeoutEnv     = "CONTEXO_LOCK_TIMEOUT"
 )
 
+// Polling and removal policy. A waiting Lock polls every lockPollMin,
+// doubling up to lockPollMax. Removing the lock or its guard is retried like
+// fsutil's rename (contract §4): on Windows a reader that has the file open
+// makes the delete fail with access-denied or a sharing violation.
+const (
+	lockPollMin          = 25 * time.Millisecond
+	lockPollMax          = 250 * time.Millisecond
+	lockRoundAttempts    = 4 // create/inspect/reclaim passes per poll
+	lockRemoveAttempts   = 5
+	lockRemoveRetryDelay = 50 * time.Millisecond
+	lockMaxFileSize      = 64 << 10 // a larger lock file is garbage; read only this much
+)
+
+// The removal guard. Every removal of .sync/lock (a stale reclaim or an
+// unlock) happens while holding .sync/lock.guard, a file created with
+// O_CREATE|O_EXCL and removed right after. Creating the lock needs no
+// guard: O_EXCL already lets only one process create it. With removals
+// serialized, the guard holder's re-read and remove act as one
+// compare-and-delete, so two waiters reclaiming the same stale lock cannot
+// both win, and an unlock never deletes a lock another acquisition wrote.
+// A guard is held for well under a second; one older than lockGuardStaleAge
+// belongs to a process that died inside the critical section and is
+// cleared.
+const (
+	lockGuardStaleAge = 5 * time.Second
+	lockGuardPoll     = 10 * time.Millisecond
+	lockGuardWait     = lockGuardStaleAge + time.Second // how long unlock waits for the guard
+)
+
+// lockGuardPath returns <hub>/.sync/lock.guard.
+func lockGuardPath(hub string) string { return LockPath(hub) + ".guard" }
+
+// lockRetryError is a transient failure (see isTransientLockErr) that blocked
+// one acquisition round. Lock keeps polling through it and returns it only if
+// it persists until the deadline.
+type lockRetryError struct{ err error }
+
+func (e *lockRetryError) Error() string { return e.err.Error() }
+func (e *lockRetryError) Unwrap() error { return e.err }
+
 // DefaultLockWait is how long push, pull, resolve and repair wait for the
 // lock: env CONTEXO_LOCK_TIMEOUT as a Go duration ("3s") or integer seconds
 // ("7"), otherwise 10s.
 func DefaultLockWait() time.Duration {
-	return defaultLockTimeout
+	v := strings.TrimSpace(os.Getenv(lockTimeoutEnv))
+	if v == "" {
+		return defaultLockTimeout
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		if d < 0 {
+			return defaultLockTimeout
+		}
+		return d
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 || n > math.MaxInt64/int64(time.Second) {
+		return defaultLockTimeout
+	}
+	return time.Duration(n) * time.Second
 }
 
 // Lock takes the cross-process .sync/lock for command, waiting up to wait
@@ -57,11 +121,315 @@ func DefaultLockWait() time.Duration {
 // lock is not reentrant. unlock is idempotent and removes the file only
 // while it still holds this acquisition's pid, host and started_at.
 func Lock(hubDir, command string, wait time.Duration) (unlock func(), err error) {
-	return nil, errNotImplemented
+	deadline := time.Now().Add(max(wait, 0))
+	host := lockHost()
+	poll := lockPollMin
+	var holder LockInfo
+	for {
+		unlock, h, err := acquireOnce(hubDir, command, host)
+		if unlock != nil {
+			return unlock, nil
+		}
+		var retry *lockRetryError
+		switch {
+		case errors.As(err, &retry):
+		case err != nil:
+			return nil, err
+		default:
+			holder = h
+		}
+		now := time.Now()
+		if !now.Before(deadline) {
+			if retry != nil {
+				return nil, fmt.Errorf("syncstate: lock: %w", retry.err)
+			}
+			holder.StartedAt = holder.StartedAt.UTC().Truncate(time.Second)
+			return nil, &BusyError{Holder: holder}
+		}
+		time.Sleep(min(poll, deadline.Sub(now)))
+		poll = min(2*poll, lockPollMax)
+	}
 }
 
 // TryLock is Lock without waiting: ok is false (with a nil error) when a
 // live holder has the lock. err reports only I/O failures.
 func TryLock(hubDir, command string) (unlock func(), ok bool, err error) {
-	return nil, false, errNotImplemented
+	unlock, _, err = acquireOnce(hubDir, command, lockHost())
+	if unlock != nil {
+		return unlock, true, nil
+	}
+	var retry *lockRetryError
+	if err != nil && !errors.As(err, &retry) {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// lockHost is the host name recorded in, and compared against, lock files.
+func lockHost() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown"
+	}
+	return h
+}
+
+// acquireOnce makes one acquisition round: create the lock, or inspect the
+// existing one and reclaim it when stale. It returns a non-nil unlock on
+// success. Otherwise holder is the live holder (zero when its file is not
+// parseable yet) and err is nil, or err is an I/O failure, wrapped in
+// *lockRetryError when transient.
+func acquireOnce(hub, command, host string) (unlock func(), holder LockInfo, err error) {
+	if err := EnsureSyncDir(hub); err != nil {
+		return nil, LockInfo{}, lockIOError(err)
+	}
+	path := LockPath(hub)
+	for attempt := 0; attempt < lockRoundAttempts; attempt++ {
+		ours, err := createLockFile(path, command, host)
+		if err == nil {
+			return newUnlock(hub, ours), LockInfo{}, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, LockInfo{}, lockIOError(err)
+		}
+		cur, mtime, err := readLockFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // released since the create failed
+		}
+		if err != nil {
+			return nil, LockInfo{}, lockIOError(err)
+		}
+		info, stale := judgeLock(cur, mtime, host, time.Now())
+		holder = info
+		if !stale {
+			return nil, holder, nil
+		}
+		reclaimed, err := reclaimLock(hub, cur)
+		if err != nil {
+			return nil, holder, err
+		}
+		if !reclaimed {
+			return nil, holder, nil // another process holds the guard
+		}
+	}
+	return nil, holder, nil
+}
+
+// lockIOError wraps an acquisition I/O failure, marking transient ones.
+func lockIOError(err error) error {
+	if isTransientLockErr(err) {
+		return &lockRetryError{err: err}
+	}
+	return fmt.Errorf("syncstate: lock: %w", err)
+}
+
+// createLockFile creates path with O_CREATE|O_EXCL and writes this
+// acquisition's LockInfo to it. It returns the bytes written, which unlock
+// compares against later.
+func createLockFile(path, command, host string) ([]byte, error) {
+	data, err := json.Marshal(LockInfo{
+		PID:       os.Getpid(),
+		Host:      host,
+		Command:   command,
+		StartedAt: time.Now().UTC().Truncate(time.Second),
+	})
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// The file is ours and too young for anyone to judge it stale, so
+		// it is removed without the guard.
+		_ = removeLockFile(path)
+		return nil, err
+	}
+	return data, nil
+}
+
+// readLockFile returns the lock file's content (at most lockMaxFileSize
+// bytes) and its mtime, both from the same open file. Anything but a
+// regular file at the lock path is an error, never a holder.
+func readLockFile(path string) ([]byte, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, time.Time{}, fmt.Errorf("%s: not a regular file", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, lockMaxFileSize))
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return data, fi.ModTime(), nil
+}
+
+// judgeLock decides whether lock content data, last modified at mtime, is
+// stale for a process on host at now. It returns the parsed holder (zero
+// when the content does not decode).
+//
+//   - Not valid JSON (empty or torn): possibly still being written, so stale
+//     only once its mtime is older than lockUnparsableAge.
+//   - Complete JSON that does not decode to a LockInfo (pid not an integer,
+//     started_at not a time, not an object), or a pid <= 0: no live ctx
+//     wrote it, so stale on any host. kill(0, 0) would signal the whole
+//     process group and report it alive.
+//   - started_at older than lockStaleAge: stale on any host.
+//   - Same host and the pid is not a live process: stale.
+//
+// A lock from another host with a live-looking pid is never stale before
+// lockStaleAge, because its pid cannot be checked here.
+func judgeLock(data []byte, mtime time.Time, host string, now time.Time) (LockInfo, bool) {
+	if !json.Valid(data) {
+		return LockInfo{}, now.Sub(mtime) > lockUnparsableAge
+	}
+	var info LockInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return LockInfo{}, true
+	}
+	if info.PID <= 0 || now.Sub(info.StartedAt) > lockStaleAge {
+		return info, true
+	}
+	return info, info.Host == host && !processAlive(info.PID)
+}
+
+// reclaimLock removes the stale lock content judged under the removal
+// guard, only if the file still holds exactly judged. reclaimed is true
+// when the caller should retry creating the lock now (the stale lock is
+// gone, or it changed and must be judged again); false means another
+// process holds the guard.
+func reclaimLock(hub string, judged []byte) (reclaimed bool, err error) {
+	guard := lockGuardPath(hub)
+	took, err := takeLockGuard(guard)
+	if err != nil {
+		return false, lockIOError(err)
+	}
+	if !took {
+		return false, nil
+	}
+	defer func() { _ = removeLockFile(guard) }()
+	if _, err := removeLockIfUnchanged(LockPath(hub), judged); err != nil {
+		return false, lockIOError(err)
+	}
+	return true, nil
+}
+
+// takeLockGuard tries once to create the removal guard, first clearing a
+// guard older than lockGuardStaleAge. took is false when another process
+// holds a fresh guard (or a transient error got in the way).
+func takeLockGuard(guard string) (took bool, err error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(guard, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			// Only the file's existence matters; a failed close leaves it.
+			_ = f.Close()
+			return true, nil
+		}
+		if isTransientLockErr(err) {
+			return false, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return false, err
+		}
+		fi, err := os.Lstat(guard)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			if isTransientLockErr(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if time.Since(fi.ModTime()) <= lockGuardStaleAge {
+			return false, nil
+		}
+		// Its holder died inside the critical section.
+		_ = removeLockFile(guard)
+	}
+	return false, nil
+}
+
+// newUnlock returns the idempotent unlock for an acquisition that wrote
+// ours to the lock file.
+func newUnlock(hub string, ours []byte) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() { releaseLock(hub, ours, lockGuardWait) })
+	}
+}
+
+// releaseLock removes the lock file if it still holds exactly ours, under
+// the removal guard. It waits up to guardWait for the guard; past that (a
+// guard that can be neither taken nor cleared) it falls back to an
+// unguarded re-read and remove, since leaving a lock behind would block
+// every other ctx until it goes stale. Errors are dropped: unlock has no
+// way to report them, and a lock left behind is reclaimed once stale.
+func releaseLock(hub string, ours []byte, guardWait time.Duration) {
+	path, guard := LockPath(hub), lockGuardPath(hub)
+	deadline := time.Now().Add(guardWait)
+	for {
+		took, err := takeLockGuard(guard)
+		if took {
+			_, _ = removeLockIfUnchanged(path, ours)
+			_ = removeLockFile(guard)
+			return
+		}
+		if err != nil || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(lockGuardPoll)
+	}
+	_, _ = removeLockIfUnchanged(path, ours)
+}
+
+// removeLockIfUnchanged re-reads path and removes it only if it holds
+// exactly want. A missing file is not an error.
+func removeLockIfUnchanged(path string, want []byte) (removed bool, err error) {
+	cur, _, err := readLockFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(cur, want) {
+		return false, nil
+	}
+	if err := removeLockFile(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// removeLockFile removes path, retrying transient failures at most
+// lockRemoveAttempts times lockRemoveRetryDelay apart. A missing file is
+// not an error.
+func removeLockFile(path string) error {
+	for attempt := 1; ; attempt++ {
+		err := os.Remove(path)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if attempt >= lockRemoveAttempts || !isTransientLockErr(err) {
+			return err
+		}
+		time.Sleep(lockRemoveRetryDelay)
+	}
 }
