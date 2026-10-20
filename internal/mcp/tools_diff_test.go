@@ -122,7 +122,7 @@ func TestToolDiff_NoServer(t *testing.T) {
 	if res == nil || !res.IsError {
 		t.Fatalf("expected error result, got %+v", res)
 	}
-	if !strings.Contains(res.Content[0].Text, "server not configured") {
-		t.Errorf("expected 'server not configured' error, got %s", res.Content[0].Text)
+	if !strings.Contains(res.Content[0].Text, "not authenticated") {
+		t.Errorf("expected 'not authenticated' error, got %s", res.Content[0].Text)
 	}
 }

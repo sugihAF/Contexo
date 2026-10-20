@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	gosync "sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,169 @@ import (
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
+// wp03Token is the bearer every resolution test stores in the credentials.
+const wp03Token = "ctxp_wp03_mcp_trap_token"
+
+// wp03IsolateHome points HOME and USERPROFILE (os.UserHomeDir on Windows) at
+// a temp dir, so no test can read the developer's real global credentials
+// and send them anywhere. t.Setenv forbids t.Parallel in the caller.
+func wp03IsolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+// wp03Hit is one request the trap server A received.
+type wp03Hit struct {
+	Method, Path, Auth string
+}
+
+// wp03Trap is the MCP copy of the cli trap pair (package cli imports mcp, so
+// the helper cannot be shared): A records every request and answers it; B
+// fails the test on any request. The credentials point at A and the
+// workspace config at B.
+type wp03Trap struct {
+	A, B *httptest.Server
+
+	mu   gosync.Mutex
+	hits []wp03Hit
+}
+
+// wp03TrapServers answers every route on A generically, so the WP-2.1
+// rewrites of push and pull that call new routes keep passing.
+func wp03TrapServers(t *testing.T) *wp03Trap {
+	t.Helper()
+	return wp03TrapServersWith(t, http.HandlerFunc(wp03GenericA))
+}
+
+// wp03TrapServersWith is wp03TrapServers with A's answers served by h. A
+// still records each request before delegating to h.
+func wp03TrapServersWith(t *testing.T, h http.Handler) *wp03Trap {
+	t.Helper()
+	tr := &wp03Trap{}
+	tr.A = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tr.mu.Lock()
+		tr.hits = append(tr.hits, wp03Hit{Method: r.Method, Path: r.URL.Path, Auth: r.Header.Get("Authorization")})
+		tr.mu.Unlock()
+		h.ServeHTTP(w, r)
+	}))
+	tr.B = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("workspace server B received %s %s (Authorization %q); requests must go to the credentials' server",
+			r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(tr.A.Close)
+	t.Cleanup(tr.B.Close)
+	return tr
+}
+
+// wp03GenericA is trap A's default answer for every route.
+func wp03GenericA(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	p := r.URL.Path
+	switch {
+	case r.Method == http.MethodGet && strings.HasSuffix(p, "/pages"):
+		_, _ = w.Write([]byte(`{"pages":[]}`))
+	case r.Method == http.MethodGet && strings.Contains(p, "/pages/"):
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"page not found","code":"page_not_found"}`))
+	case r.Method == http.MethodPost && strings.HasSuffix(p, "/sync/push"):
+		_, _ = w.Write([]byte(`{"pushed":[],"conflicts":[]}`))
+	case r.Method == http.MethodGet && strings.HasSuffix(p, "/sync/pull"):
+		_, _ = w.Write([]byte(`{"new_head":"","files":[]}`))
+	default:
+		_, _ = w.Write([]byte(`{}`))
+	}
+}
+
+// Hits returns a copy of the requests A received so far.
+func (tr *wp03Trap) Hits() []wp03Hit {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return append([]wp03Hit(nil), tr.hits...)
+}
+
+// Reset forgets A's recorded hits, so one test can check several tools.
+func (tr *wp03Trap) Reset() {
+	tr.mu.Lock()
+	tr.hits = nil
+	tr.mu.Unlock()
+}
+
+// AssertOnlyA asserts A received at least one request carrying
+// 'Bearer <token>' and reports whether it did. B fails the test by itself
+// on any request.
+func (tr *wp03Trap) AssertOnlyA(t *testing.T, label, token string) bool {
+	t.Helper()
+	for _, h := range tr.Hits() {
+		if h.Auth == "Bearer "+token {
+			return true
+		}
+	}
+	t.Errorf("%s: server A received no request with 'Bearer %s'; hits: %+v", label, token, tr.Hits())
+	return false
+}
+
+// wp03SplitCreds writes the workspace config {configURL, repo "test-repo"}
+// and GLOBAL credentials {wp03Token, credsURL} under the isolated HOME. An
+// empty credsURL leaves the credentials without a server_url.
+func wp03SplitCreds(t *testing.T, root, configURL, credsURL string) {
+	t.Helper()
+	if err := config.Save(root, &config.Config{Version: 1, ServerURL: configURL, RepoID: "test-repo"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := config.SaveGlobalCredentials(&config.Credentials{
+		Token: wp03Token, ServerURL: credsURL,
+		UserName: "wp03", UserEmail: "wp03@example.test",
+	}); err != nil {
+		t.Fatalf("save global creds: %v", err)
+	}
+}
+
+// wp03ToolCall is one remote tool invocation.
+type wp03ToolCall struct {
+	name string
+	args map[string]interface{}
+}
+
+// wp03RemoteToolCalls lists every tool that talks to the server, with args
+// that reach the client call against setupCaptureServer's pages.
+func wp03RemoteToolCalls() []wp03ToolCall {
+	return []wp03ToolCall{
+		{"ctx_push", map[string]interface{}{"no_distill": true}},
+		{"ctx_pull", map[string]interface{}{}},
+		{"ctx_history", map[string]interface{}{"slug": "foo"}},
+		{"ctx_diff", map[string]interface{}{"slug": "foo"}},
+		{"ctx_evolution", map[string]interface{}{"slug": "foo"}},
+	}
+}
+
+// wp03ResultText returns the result's first text, or "" when there is none.
+func wp03ResultText(res *ToolResult) string {
+	if res == nil || len(res.Content) == 0 {
+		return ""
+	}
+	return res.Content[0].Text
+}
+
+// wp03WantError asserts res is an error result whose text contains every
+// one of wants.
+func wp03WantError(t *testing.T, label string, res *ToolResult, wants ...string) {
+	t.Helper()
+	if res == nil || !res.IsError {
+		t.Errorf("%s: want an error result, got %+v", label, res)
+		return
+	}
+	text := wp03ResultText(res)
+	for _, w := range wants {
+		if !strings.Contains(text, w) {
+			t.Errorf("%s: error %q does not contain %q", label, text, w)
+		}
+	}
+}
+
 // setupCaptureServer builds a Server bound to a tmp project that has:
 //   - .contexo/ with a concept page and an entity page
 //   - credentials + config pointing at the optional httptest server
@@ -25,8 +189,10 @@ import (
 //
 // When pushServer is nil, no creds/server are wired — useful for tests
 // that only assert the early-return branches (PUSH_PAUSED or errors).
+// HOME is isolated, so the developer's global credentials are never read.
 func setupCaptureServer(t *testing.T, withBuffer bool, pushServer *httptest.Server) (*Server, string) {
 	t.Helper()
+	wp03IsolateHome(t)
 	projectRoot := t.TempDir()
 	contexoDir := config.ContexoDirPath(projectRoot)
 	if err := os.MkdirAll(contexoDir, 0o755); err != nil {
@@ -378,6 +544,118 @@ func TestPushHandshakeNudgesEntityCoverage(t *testing.T) {
 	}
 	if !strings.Contains(text, `type="entity"`) {
 		t.Errorf(`handshake should mention ctx_write_page(type="entity"): %s`, text)
+	}
+}
+
+// TestMCPToolsUseResolvedServer: GLOBAL credentials belong to A while the
+// workspace config names B. ctx_status reports A and warns about B, and
+// every remote tool sends its request, with the bearer, only to A.
+func TestMCPToolsUseResolvedServer(t *testing.T) {
+	tr := wp03TrapServers(t)
+	srv, root := setupCaptureServer(t, false, nil)
+	wp03SplitCreds(t, root, tr.B.URL, tr.A.URL)
+
+	res := srv.HandleToolCall(context.Background(), "ctx_status", map[string]interface{}{})
+	if res == nil || res.IsError {
+		t.Fatalf("ctx_status: want ok, got %+v", res)
+	}
+	status := wp03ResultText(res)
+	for _, want := range []string{
+		"Server: " + tr.A.URL + "\n",
+		"Warning: config server_url " + tr.B.URL + " differs from your credentials' server; using " + tr.A.URL,
+		"Repo: test-repo",
+		"User: wp03 <wp03@example.test>",
+		"Authenticated: true",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("ctx_status missing %q:\n%s", want, status)
+		}
+	}
+
+	for _, call := range wp03RemoteToolCalls() {
+		tr.Reset()
+		res := srv.HandleToolCall(context.Background(), call.name, call.args)
+		if !tr.AssertOnlyA(t, call.name, wp03Token) {
+			t.Logf("%s result: %+v", call.name, res)
+		}
+	}
+}
+
+// TestMCPToolsReportRemoteErrorAdvice: when the remote is unusable every
+// remote tool fails before sending anything, with the RemoteError message
+// and the command that fixes it.
+func TestMCPToolsReportRemoteErrorAdvice(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string, tr *wp03Trap)
+		wants []string
+	}{
+		{
+			name:  "no credentials",
+			setup: func(t *testing.T, root string, tr *wp03Trap) {},
+			wants: []string{"not authenticated", "(run 'ctx auth login')"},
+		},
+		{
+			name: "empty-token project credentials shadow valid global ones",
+			setup: func(t *testing.T, root string, tr *wp03Trap) {
+				wp03SplitCreds(t, root, tr.B.URL, tr.A.URL)
+				if err := config.SaveCredentials(root, &config.Credentials{ServerURL: tr.A.URL}); err != nil {
+					t.Fatalf("save project creds: %v", err)
+				}
+			},
+			wants: []string{"not authenticated", "(run 'ctx auth login')"},
+		},
+		{
+			name: "global credentials without server_url",
+			setup: func(t *testing.T, root string, tr *wp03Trap) {
+				wp03SplitCreds(t, root, tr.B.URL, "")
+			},
+			wants: []string{"server URL unresolved", "(run 'ctx auth login --server <url>')"},
+		},
+		{
+			name: "credentials with server_url but no repo",
+			setup: func(t *testing.T, root string, tr *wp03Trap) {
+				if err := config.SaveGlobalCredentials(&config.Credentials{Token: wp03Token, ServerURL: tr.A.URL}); err != nil {
+					t.Fatalf("save global creds: %v", err)
+				}
+			},
+			wants: []string{"repo not configured", "(run 'ctx remote set-repo <id>')"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := wp03TrapServers(t)
+			srv, root := setupCaptureServer(t, false, nil)
+			c.setup(t, root, tr)
+			for _, call := range wp03RemoteToolCalls() {
+				res := srv.HandleToolCall(context.Background(), call.name, call.args)
+				wp03WantError(t, call.name, res, append([]string{call.name + ": "}, c.wants...)...)
+			}
+			if hits := tr.Hits(); len(hits) != 0 {
+				t.Errorf("nothing may be sent while the remote is unusable; A received %+v", hits)
+			}
+		})
+	}
+}
+
+// TestMCPCorruptCredentialsIsCleanError: an unparsable credentials file is a
+// clean tool error naming the tool, never a nil-pointer panic.
+func TestMCPCorruptCredentialsIsCleanError(t *testing.T) {
+	tr := wp03TrapServers(t)
+	srv, root := setupCaptureServer(t, false, nil)
+	wp03SplitCreds(t, root, tr.B.URL, tr.A.URL)
+	if err := os.WriteFile(config.CredentialsPath(root), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write corrupt creds: %v", err)
+	}
+
+	res := srv.HandleToolCall(context.Background(), "ctx_status", map[string]interface{}{})
+	wp03WantError(t, "ctx_status", res, "ctx_status: credentials: parse")
+	for _, call := range wp03RemoteToolCalls() {
+		res := srv.HandleToolCall(context.Background(), call.name, call.args)
+		wp03WantError(t, call.name, res, call.name+": credentials: parse")
+	}
+	if hits := tr.Hits(); len(hits) != 0 {
+		t.Errorf("nothing may be sent with corrupt credentials; A received %+v", hits)
 	}
 }
 
