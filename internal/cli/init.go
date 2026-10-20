@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ func NewInitCmd() *cobra.Command {
 	var (
 		skipMCP       bool
 		skipCursor    bool
+		skipVSCode    bool
 		skipGitignore bool
 		skipHooks     bool
 	)
@@ -26,23 +28,25 @@ func NewInitCmd() *cobra.Command {
 		Short: "Initialize .contexo knowledge directory",
 		Long: "Creates a .contexo/ tree in the current project for storing AI " +
 			"knowledge pages. Wires Contexo's MCP server into Claude Code (.mcp.json) " +
-			"and, when Cursor is detected, into Cursor (.cursor/mcp.json); prints how " +
-			"to wire Codex when it's detected. Adds .contexo/ to .gitignore so the " +
+			"and, when they are detected, into Cursor (.cursor/mcp.json) and VS Code " +
+			"(.vscode/mcp.json); prints how to wire Codex when it's detected. Adds " +
+			".contexo/ to .gitignore so the " +
 			"knowledge isn't committed to your project's git history, and registers a " +
 			"Claude Code Stop hook so per-turn capture starts working in the next " +
 			"agent session. Idempotent — re-running leaves existing entries alone.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInit(cmd, skipMCP, skipCursor, skipGitignore, skipHooks)
+			return runInit(cmd, skipMCP, skipCursor, skipVSCode, skipGitignore, skipHooks)
 		},
 	}
-	cmd.Flags().BoolVar(&skipMCP, "no-mcp", false, "skip wiring the MCP server into agent configs (.mcp.json, .cursor/mcp.json)")
+	cmd.Flags().BoolVar(&skipMCP, "no-mcp", false, "skip wiring the MCP server into agent configs (.mcp.json, .cursor/mcp.json, .vscode/mcp.json)")
 	cmd.Flags().BoolVar(&skipCursor, "no-cursor", false, "skip auto-wiring Cursor (.cursor/mcp.json) even when Cursor is detected")
+	cmd.Flags().BoolVar(&skipVSCode, "no-vscode", false, "skip auto-wiring VS Code (.vscode/mcp.json) even when VS Code is detected")
 	cmd.Flags().BoolVar(&skipGitignore, "no-gitignore", false, "skip adding .contexo/ to .gitignore")
 	cmd.Flags().BoolVar(&skipHooks, "no-hooks", false, "skip registering the Claude Code Stop hook for per-turn capture")
 	return cmd
 }
 
-func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks bool) error {
+func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipVSCode, skipGitignore, skipHooks bool) error {
 	root := GetRootDir()
 	hubDir := config.ContexoDirPath(root)
 	u := ui.From(cmd)
@@ -87,6 +91,11 @@ func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipGitignore, skipHooks b
 		}
 		if !skipCursor && detectCursor() {
 			if err := wireCursorMCP(cmd, root); err != nil {
+				return err
+			}
+		}
+		if !skipVSCode && detectVSCode() {
+			if err := wireVSCodeMCP(cmd, root); err != nil {
 				return err
 			}
 		}
@@ -175,6 +184,26 @@ func wireCursorMCP(cmd *cobra.Command, root string) error {
 		u.Step("Cursor detected — wired .cursor/mcp.json")
 	} else {
 		u.Step(".cursor/mcp.json already has the contexo entry; leaving it alone")
+	}
+	return nil
+}
+
+// wireVSCodeMCP adds the contexo MCP server to ./.vscode/mcp.json (VS Code's
+// workspace config). Called only when VS Code is detected. A JSONC file is
+// left untouched: init prints the entry to add by hand and carries on.
+func wireVSCodeMCP(cmd *cobra.Command, root string) error {
+	u := ui.From(cmd)
+	changed, err := agentwire.WireVSCode(agentwire.VSCodeMCPPath(root))
+	switch {
+	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
+		warnVSCodeManual(u)
+	case err != nil:
+		return fmt.Errorf("init: write .vscode/mcp.json: %w", err)
+	case changed:
+		u.Step("VS Code detected — wired .vscode/mcp.json")
+		u.Step(".vscode/ is usually committed: teammates need ctx on PATH")
+	default:
+		u.Step(".vscode/mcp.json already has the contexo entry; leaving it alone")
 	}
 	return nil
 }
