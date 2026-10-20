@@ -103,6 +103,23 @@ func (s *Store) List(filter Filter) ([]*schema.Page, error) {
 	return out, err
 }
 
+// WalkedFile is one page file found by WalkAll. Page and ParseErr come from
+// schema.ParsePage on Data with a leading UTF-8 BOM stripped; exactly one of
+// them is non-nil.
+type WalkedFile struct {
+	Rel      string
+	Data     []byte
+	Page     *schema.Page
+	ParseErr error
+}
+
+// WalkAll calls fn for every *.md file under the store root, including files
+// that do not parse, with the same filter as Walk: dot-directories below the
+// root and the top-level index.md / tags.md are skipped.
+func (s *Store) WalkAll(fn func(f WalkedFile) error) error {
+	return fmt.Errorf("pagestore: WalkAll not implemented")
+}
+
 // Walk traverses every page in the store and calls fn with the parsed Page
 // and its forward-slash relative path. Malformed pages and the top-level
 // index.md / tags.md files are skipped silently.

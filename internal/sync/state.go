@@ -50,3 +50,10 @@ func SaveState(hubDir string, s *State) error {
 	}
 	return os.WriteFile(path, data, 0o644)
 }
+
+// LoadStateOrEmpty is LoadState for readers that must not fail on a corrupt
+// file: a parse failure gives an empty State with corrupt=true and a nil
+// error. err reports only other I/O errors.
+func LoadStateOrEmpty(hubDir string) (s *State, corrupt bool, err error) {
+	return nil, false, fmt.Errorf("sync: LoadStateOrEmpty not implemented")
+}
