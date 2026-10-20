@@ -47,15 +47,28 @@ func (t *Task) start() {
 	sp.Style = t.u.style(Accent)
 	m := &spinModel{sp: sp, label: t.label, u: t.u}
 
-	t.prog = tea.NewProgram(m,
+	// WithInput(nil): the spinner reads no keys. On bubbletea's default input
+	// a terminal stdin goes raw, so ^C arrives as a KeyMsg this model drops
+	// instead of raising SIGINT; a non-terminal stdin makes it open /dev/tty
+	// (CONIN$ on Windows), which tests must never touch.
+	prog := tea.NewProgram(m,
 		tea.WithOutput(t.u.w),
+		tea.WithInput(nil),
 		tea.WithoutSignalHandler(),
 		tea.WithoutCatchPanics(),
 	)
-	t.done = make(chan struct{})
+	done := make(chan struct{})
+
+	t.mu.Lock()
+	t.prog = prog
+	t.done = done
+	t.mu.Unlock()
+
+	// The goroutine closes over the locals, never the fields: it may first be
+	// scheduled after finish has already set t.prog to nil.
 	go func() {
-		defer close(t.done)
-		_, _ = t.prog.Run()
+		defer close(done)
+		_, _ = prog.Run()
 	}()
 }
 
