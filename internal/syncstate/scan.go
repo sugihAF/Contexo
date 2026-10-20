@@ -1,6 +1,13 @@
 package syncstate
 
-import "github.com/sugihAF/contexo/internal/schema"
+import (
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/sugihAF/contexo/internal/schema"
+	"github.com/sugihAF/contexo/internal/store/pagestore"
+)
 
 // Invalid stages (contract InvalidStage literals).
 const (
@@ -39,5 +46,47 @@ type LocalScan struct {
 // path_mismatch when Frontmatter.RelPath() differs from the file path,
 // otherwise valid with Hash set.
 func ScanLocal(hub string) (*LocalScan, error) {
-	return nil, errNotImplemented
+	info, err := os.Stat(hub)
+	if err != nil {
+		return nil, fmt.Errorf("syncstate: scan %s: %w", hub, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("syncstate: scan %s: not a directory", hub)
+	}
+	scan := &LocalScan{Files: map[string]*LocalFile{}, Paths: []string{}}
+	err = (&pagestore.Store{Root: hub}).WalkAll(func(f pagestore.WalkedFile) error {
+		lf := &LocalFile{Path: f.Rel, Data: f.Data, Page: f.Page}
+		lf.Invalid = classifyLocal(f)
+		if lf.Invalid == nil {
+			lf.Hash = Hash(f.Data)
+		}
+		scan.Files[f.Rel] = lf
+		scan.Paths = append(scan.Paths, f.Rel)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("syncstate: scan %s: %w", hub, err)
+	}
+	sort.Strings(scan.Paths)
+	return scan, nil
+}
+
+// classifyLocal returns why a walked file is invalid, or nil when it is a
+// valid page at its own path. The stages are checked in contract order.
+func classifyLocal(f pagestore.WalkedFile) *InvalidInfo {
+	if f.ParseErr != nil {
+		return &InvalidInfo{Stage: StageParse, Message: f.ParseErr.Error()}
+	}
+	fm := &f.Page.Frontmatter
+	if err := fm.Validate(); err != nil {
+		return &InvalidInfo{Stage: StageValidate, Message: err.Error()}
+	}
+	if want := fm.RelPath(); want != f.Rel {
+		return &InvalidInfo{
+			Stage:        StagePathMismatch,
+			Message:      "frontmatter type and slug place this page at " + want,
+			ExpectedPath: want,
+		}
+	}
+	return nil
 }

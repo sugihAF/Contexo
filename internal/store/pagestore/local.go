@@ -1,6 +1,7 @@
 package pagestore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -115,25 +116,29 @@ type WalkedFile struct {
 
 // WalkAll calls fn for every *.md file under the store root, including files
 // that do not parse, with the same filter as Walk: dot-directories below the
-// root and the top-level index.md / tags.md are skipped.
+// root and the top-level index.md / tags.md are skipped. A root that is
+// itself a symlink is followed; symlinks below it are not.
 func (s *Store) WalkAll(fn func(f WalkedFile) error) error {
-	return fmt.Errorf("pagestore: WalkAll not implemented")
-}
-
-// Walk traverses every page in the store and calls fn with the parsed Page
-// and its forward-slash relative path. Malformed pages and the top-level
-// index.md / tags.md files are skipped silently.
-func (s *Store) Walk(fn func(p *schema.Page, relPath string) error) error {
-	return filepath.WalkDir(s.Root, func(path string, d fs.DirEntry, err error) error {
+	root := s.Root
+	if fi, err := os.Lstat(root); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+	}
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path != root && errors.Is(err, fs.ErrNotExist) {
+				return nil // removed while walking
+			}
 			return err
 		}
 		if d.IsDir() {
 			// Skip dot-directories (e.g. .migrate-cache holding an external
-			// clone, or a stray .git) so their files never masquerade as store
-			// pages and get listed/indexed/pushed. Never skip the store root
-			// itself, whose base name may start with '.' (e.g. ".contexo").
-			if path != s.Root && strings.HasPrefix(d.Name(), ".") {
+			// clone, a stray .git, or .sync holding base and conflict copies)
+			// so their files never masquerade as store pages and get
+			// listed/indexed/pushed. Never skip the store root itself, whose
+			// base name may start with '.' (e.g. ".contexo").
+			if path != root && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -141,7 +146,7 @@ func (s *Store) Walk(fn func(p *schema.Page, relPath string) error) error {
 		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
-		rel, _ := filepath.Rel(s.Root, path)
+		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
 		if rel == "index.md" || rel == "tags.md" {
 			return nil
@@ -149,14 +154,36 @@ func (s *Store) Walk(fn func(p *schema.Page, relPath string) error) error {
 
 		data, err := os.ReadFile(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Removed (or a dangling symlink) since the directory was
+				// listed: not a page any more.
+				return nil
+			}
 			return fmt.Errorf("pagestore: read %s: %w", rel, err)
 		}
-		p, parseErr := schema.ParsePage(data)
-		if parseErr != nil {
+		p, parseErr := schema.ParsePage(stripBOM(data))
+		return fn(WalkedFile{Rel: rel, Data: data, Page: p, ParseErr: parseErr})
+	})
+}
+
+// Walk traverses every page in the store and calls fn with the parsed Page
+// and its forward-slash relative path. Malformed pages and the top-level
+// index.md / tags.md files are skipped silently. It is WalkAll restricted to
+// the files that parse, so a page with a leading UTF-8 BOM is visited too.
+func (s *Store) Walk(fn func(p *schema.Page, relPath string) error) error {
+	return s.WalkAll(func(f WalkedFile) error {
+		if f.ParseErr != nil {
 			return nil
 		}
-		return fn(p, rel)
+		return fn(f.Page, f.Rel)
 	})
+}
+
+// stripBOM drops one leading UTF-8 byte-order mark. It deliberately
+// duplicates syncstate.StripBOM, which this package cannot import (syncstate
+// imports pagestore).
+func stripBOM(b []byte) []byte {
+	return bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
 }
 
 func matchFilter(p *schema.Page, f Filter) bool {
