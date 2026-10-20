@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -55,8 +56,27 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newGenerateCmd())
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newUpdateCmd())
+	cmd.AddCommand(newShowCmd())
+	cmd.AddCommand(newResolveCmd())
+	cmd.AddCommand(newRepairCmd())
 
 	return cmd
+}
+
+// Execute runs ctx with args and returns the process exit code. Stage-0
+// skeleton: the envelope seam is implemented by WP-0.1 Task C.
+func Execute(args []string, stdout, stderr io.Writer) int {
+	if args == nil {
+		args = []string{}
+	}
+	root := NewRootCmd()
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	if _, err := root.ExecuteC(); err != nil {
+		return 1
+	}
+	return 0
 }
 
 // GetRootDir returns the project root directory.

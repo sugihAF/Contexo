@@ -3,6 +3,10 @@ package ui
 import (
 	"errors"
 	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
 
 // CLIError carries a failure plus the commands that fix it, so advice stops
@@ -58,3 +62,25 @@ func (u *UI) RenderError(err error) {
 		u.Hint("try", c)
 	}
 }
+
+// ToContractError maps any error chain to the contract error the envelope
+// carries. Stage-0 skeleton: implemented by WP-0.1 Task C.
+func ToContractError(err error) *contract.Error {
+	return contract.New(contract.CodeInternal, err.Error())
+}
+
+// Coded attaches a contract code (and advice) to err.
+func Coded(err error, code contract.ErrorCode, advice ...string) error {
+	if err == nil {
+		return nil
+	}
+	return &contract.Error{Code: code, Message: err.Error(), Advice: advice, Err: err}
+}
+
+// EnvelopeMode reports whether a failure of cmd must be rendered as the
+// ctx.error.v1 envelope (E21).
+func EnvelopeMode(cmd *cobra.Command, args []string) bool { return false }
+
+// RenderEnvelope writes err as exactly one envelope line and returns its
+// exit code.
+func (u *UI) RenderEnvelope(err error) int { return contract.ExitInternal }

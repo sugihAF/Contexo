@@ -3,26 +3,69 @@ package sync
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	stdsync "sync"
 	"time"
 
 	"github.com/sugihAF/contexo/internal/diff"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
+
+// DefaultClientName is the X-Contexo-Client value when neither the
+// CONTEXO_CLIENT env var nor SetClientName supplies one.
+const DefaultClientName = "ctx-cli"
 
 // Client speaks HTTP to the Contexo server.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	clientName string
-	http       *http.Client
+	baseURL string
+	apiKey  string
+	http    *http.Client
+
+	// mu guards everything below: status fans requests out from goroutines.
+	mu            stdsync.Mutex
+	clientName    string
+	serverVersion string
+	serverCaps    []contract.ServerCapability
+	capsKnown     bool
 }
 
-// SetClientName sets the X-Contexo-Client identifier sent on pulls so the
-// server can attribute who/what pulled (e.g. "ctx-cli", "claude-code").
-func (c *Client) SetClientName(name string) { c.clientName = name }
+// SetClientName sets the X-Contexo-Client identifier sent on every request so
+// the server can attribute who/what synced (e.g. "ctx-cli", "claude-code").
+// The CONTEXO_CLIENT env var wins over it.
+func (c *Client) SetClientName(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clientName = name
+}
+
+// ServerInfo reports the X-Contexo-Server-Version and X-Contexo-Capabilities
+// headers of the most recent response. known is false before any response;
+// after a response without the capabilities header, known is true and caps
+// is empty (an old server).
+func (c *Client) ServerInfo() (version string, caps []contract.ServerCapability, known bool) {
+	return "", []contract.ServerCapability{}, false
+}
+
+// ListPages returns the last-touch metadata of every page in the repo
+// (GET /v1/repos/:id/pages). It never returns a nil slice on success.
+func (c *Client) ListPages(repoID string) ([]PageMeta, error) {
+	return nil, &NetworkError{Op: "list pages", Err: errNotImplemented}
+}
+
+// ReadPageAt fetches path as of commit sha (GET .../pages/<path>?at=<sha>).
+// The second value is X-Page-SHA, the last commit touching path at or before
+// sha. A response without an X-Contexo-At echo equal to sha (an old server
+// that ignored ?at and served HEAD) is ErrServerUnsupported.
+func (c *Client) ReadPageAt(repoID, path, sha string) ([]byte, string, error) {
+	return nil, "", &NetworkError{Op: "read page at", Err: errNotImplemented}
+}
+
+// errNotImplemented marks a Stage-0 skeleton stub.
+var errNotImplemented = errors.New("not implemented")
 
 // requestTimeout bounds every call this client makes. Without it a
 // black-holed network hangs `ctx status` and `ctx push` forever -- and any

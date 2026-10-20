@@ -14,11 +14,25 @@ type PushRequest struct {
 	Files       []PushFile `json:"files"`
 }
 
-// PushFile is one file in a push request.
+// PushFile is one file in a push request. ExpectAbsent asks the server to
+// refuse the write with a conflict when the path already exists (E7); ctx
+// sends it iff the path has no base.
 type PushFile struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	ParentSHA string `json:"parent_sha,omitempty"`
+	Path         string `json:"path"`
+	Content      string `json:"content"`
+	ParentSHA    string `json:"parent_sha,omitempty"`
+	ExpectAbsent bool   `json:"expect_absent,omitempty"`
+}
+
+// PageMeta is one entry of GET /v1/repos/:id/pages. It mirrors
+// gitstore.PageMeta on the wire; SHA is the last commit that touched Path.
+type PageMeta struct {
+	Path    string    `json:"path"`
+	SHA     string    `json:"sha"`
+	Author  string    `json:"author"`
+	Email   string    `json:"email"`
+	Time    time.Time `json:"time"`
+	Message string    `json:"message"`
 }
 
 // PushResponse is what the server returns for a push.
