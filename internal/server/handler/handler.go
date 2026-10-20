@@ -253,11 +253,24 @@ func (h *Handler) Push(c *gin.Context) {
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
 		return
 	}
 	var req sync.PushRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
+		return
+	}
+	// expect_absent is read from the same bytes through a handler-local shadow
+	// type: sync.PushFile is the client's wire type and gains the field
+	// separately. Both decodes agree once it has.
+	var flags pushFileFlags
+	if err := json.Unmarshal(body, &flags); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
 		return
 	}
@@ -311,11 +324,16 @@ func (h *Handler) Push(c *gin.Context) {
 
 	var conflicts []sync.Conflict
 	var pushed []sync.PushedFile
-	var newHead string
+	var changed []string
 
-	for _, file := range req.Files {
-		sha, conflict, err := h.store.Write(repoID, file.Path, []byte(file.Content),
-			req.AuthorName, req.AuthorEmail, req.Message, file.ParentSHA)
+	for i, file := range req.Files {
+		res, conflict, err := h.store.WriteWithOptions(repoID, file.Path, []byte(file.Content), gitstore.WriteOptions{
+			AuthorName:   req.AuthorName,
+			AuthorEmail:  req.AuthorEmail,
+			Message:      req.Message,
+			ParentSHA:    file.ParentSHA,
+			ExpectAbsent: flags.expectAbsent(i),
+		})
 		if err != nil {
 			if errors.Is(err, gitstore.ErrConflict) {
 				// Layer 4 enrichment: read the ancestor content (the version
@@ -344,27 +362,45 @@ func (h *Handler) Push(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		pushed = append(pushed, sync.PushedFile{Path: file.Path, SHA: sha})
-		newHead = sha
+		// An unchanged page stays in pushed with its own last-touch commit, so
+		// the client records a sha that is in the path's history.
+		pushed = append(pushed, sync.PushedFile{Path: file.Path, SHA: res.SHA})
+		if res.Changed {
+			changed = append(changed, file.Path)
+		}
 	}
 
-	if newHead == "" {
-		newHead, _ = h.store.HeadSHA(repoID)
-	}
+	// new_head is the repo HEAD after the batch, never the sha of whichever
+	// file happened to be last (which, for an unchanged file, is an older
+	// commit).
+	newHead, _ := h.store.HeadSHA(repoID)
 
 	status := http.StatusOK
 	if len(conflicts) > 0 {
 		status = http.StatusConflict
 	}
-	// Record a "push" only when at least one file was actually committed.
-	if len(pushed) > 0 {
-		h.recordActivity(c, repoID, "push", pushDetail(pushed))
+	// Record a "push" only when at least one file was actually committed, and
+	// list only those files, so re-pushing unchanged pages adds no noise.
+	if len(changed) > 0 {
+		h.recordActivity(c, repoID, "push", pushDetail(changed, activityClient(c)))
 	}
 	c.JSON(status, sync.PushResponse{
 		NewHead:   newHead,
 		Pushed:    pushed,
 		Conflicts: conflicts,
 	})
+}
+
+// pushFileFlags is a shadow decode of the push body for per-file flags that
+// sync.PushFile does not carry.
+type pushFileFlags struct {
+	Files []struct {
+		ExpectAbsent bool `json:"expect_absent"`
+	} `json:"files"`
+}
+
+func (f pushFileFlags) expectAbsent(i int) bool {
+	return i < len(f.Files) && f.Files[i].ExpectAbsent
 }
 
 // Pull handles GET /v1/repos/:id/sync/pull?since=<sha>.
@@ -397,7 +433,7 @@ func (h *Handler) Pull(c *gin.Context) {
 	// Record a "pull" only when pages were actually received, so no-op
 	// "already up to date" polls don't flood the feed.
 	if len(files) > 0 {
-		h.recordActivity(c, repoID, "pull", pullDetail(c.Request.Header.Get("X-Contexo-Client")))
+		h.recordActivity(c, repoID, "pull", pullDetail(activityClient(c)))
 	}
 	c.JSON(http.StatusOK, sync.PullResponse{NewHead: head, Files: files})
 }

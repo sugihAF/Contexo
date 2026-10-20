@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -73,22 +76,43 @@ func rawDetail(detail string) json.RawMessage {
 	return json.RawMessage(detail)
 }
 
-// pushDetail builds the JSON detail for a push event: the paths committed
-// (capped so a giant push doesn't bloat the row).
-func pushDetail(pushed []sync.PushedFile) string {
+// pushDetail builds the JSON detail for a push event: the paths actually
+// committed (capped so a giant push doesn't bloat the row) and the announced
+// client name (X-Contexo-Client), omitted when the client sent none. The
+// shape is sync.ActivityDetail.
+func pushDetail(changed []string, client string) string {
 	const maxPaths = 50
-	paths := make([]string, 0, len(pushed))
-	for i, p := range pushed {
-		if i >= maxPaths {
-			break
-		}
-		paths = append(paths, p.Path)
+	if len(changed) > maxPaths {
+		changed = changed[:maxPaths]
 	}
-	b, err := json.Marshal(map[string][]string{"paths": paths})
+	b, err := json.Marshal(sync.ActivityDetail{Paths: changed, Client: client})
 	if err != nil {
 		return ""
 	}
 	return string(b)
+}
+
+// maxClientLen caps the stored X-Contexo-Client value. Real names look like
+// "contexo-vscode/0.2.0" or "ctx-mcp"; the header is client-controlled and is
+// persisted into every member's activity feed.
+const maxClientLen = 128
+
+// activityClient returns the request's X-Contexo-Client header, trimmed, with
+// control characters dropped and capped at maxClientLen bytes on a rune
+// boundary.
+func activityClient(c *gin.Context) string {
+	raw := strings.TrimSpace(c.GetHeader("X-Contexo-Client"))
+	var b strings.Builder
+	for _, r := range raw {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			continue
+		}
+		if b.Len()+utf8.RuneLen(r) > maxClientLen {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // pullDetail builds the JSON detail for a pull event from the announced client
