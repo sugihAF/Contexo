@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/sugihAF/contexo/internal/config"
@@ -8,22 +9,48 @@ import (
 	"github.com/sugihAF/contexo/internal/ui"
 )
 
+// openRemote is the ONLY place in package cli that builds a sync client. The
+// server URL and token come from config.ResolveRemote, so a global token is
+// never sent to a URL taken from the workspace config. name prefixes the
+// errors so each command's messages read naturally.
+//
+// The returned remote is nil only when ResolveRemote itself failed (an
+// unreadable or corrupt config or credentials file). When RequireAuth or
+// RequireRepo fails, it is returned with the error and a nil client, so
+// callers can still report what was resolved. Those errors carry their advice
+// through ui.Suggest and keep the *config.RemoteError reachable via Unwrap.
+func openRemote(root, name string, needRepo bool) (*config.Remote, *sync.Client, error) {
+	rr, err := config.ResolveRemote(root)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if err := rr.RequireAuth(); err != nil {
+		return rr, nil, suggestRemote(name, err)
+	}
+	if needRepo {
+		if err := rr.RequireRepo(); err != nil {
+			return rr, nil, suggestRemote(name, err)
+		}
+	}
+	return rr, sync.NewClient(rr.ServerURL, rr.Token), nil
+}
+
+func suggestRemote(name string, err error) error {
+	wrapped := fmt.Errorf("%s: %w", name, err)
+	var re *config.RemoteError
+	if errors.As(err, &re) {
+		return ui.Suggest(wrapped, re.ErrorAdvice()...)
+	}
+	return wrapped
+}
+
 // repoClient is the shared preflight for repo-scoped ctx subcommands (members,
-// activity, …): load config + credentials, verify the project is wired up, and
-// return a sync client plus the current repo id. name prefixes the errors so
-// each command's messages read naturally.
+// activity, …): resolve the remote, verify the project is wired up, and
+// return a sync client plus the current repo id.
 func repoClient(name string) (*sync.Client, string, error) {
-	root := GetRootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || creds.Bearer() == "" {
-		return nil, "", ui.Suggest(fmt.Errorf("%s: not authenticated", name), "ctx auth login")
+	rr, client, err := openRemote(GetRootDir(), name, true)
+	if err != nil {
+		return nil, "", err
 	}
-	if cfg.ServerURL == "" {
-		return nil, "", ui.Suggest(fmt.Errorf("%s: server URL not set", name), "ctx remote set <url>")
-	}
-	if cfg.RepoID == "" {
-		return nil, "", ui.Suggest(fmt.Errorf("%s: repo id not set", name), "ctx remote set-repo <id>")
-	}
-	return sync.NewClient(cfg.ServerURL, creds.Bearer()), cfg.RepoID, nil
+	return client, rr.RepoID, nil
 }
