@@ -8,10 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sugihAF/contexo/internal/cli/agentwire"
 )
 
 func TestDetachRemovesCursorEntry(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	cursorPath := agentwire.CursorMCPPath(project)
 	if err := os.MkdirAll(filepath.Dir(cursorPath), 0o755); err != nil {
@@ -38,6 +41,7 @@ func TestDetachRemovesCursorEntry(t *testing.T) {
 }
 
 func TestDetachDeletesCursorFileWhenOnlyEntry(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	cursorPath := agentwire.CursorMCPPath(project)
 	if err := os.MkdirAll(filepath.Dir(cursorPath), 0o755); err != nil {
@@ -57,6 +61,7 @@ func TestDetachDeletesCursorFileWhenOnlyEntry(t *testing.T) {
 }
 
 func TestDetachRemovesCodexWhenWired(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	var calls [][]string
 	px, pr := detectCodex, codexRunner
@@ -85,6 +90,7 @@ func TestDetachRemovesCodexWhenWired(t *testing.T) {
 }
 
 func TestDetachPurgesByDefault(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	writeMCP(t, project, `{"mcpServers":{"contexo":{"command":"ctx","args":["mcp"]}}}`)
 	writeFile(t, filepath.Join(project, ".gitignore"),
@@ -114,6 +120,7 @@ func TestDetachPurgesByDefault(t *testing.T) {
 }
 
 func TestDetachKeepKnowledge(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	writeMCP(t, project, `{"mcpServers":{"contexo":{"command":"ctx","args":["mcp"]}}}`)
 
@@ -134,6 +141,7 @@ func TestDetachKeepKnowledge(t *testing.T) {
 }
 
 func TestDetachPreservesOtherMCPServers(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	writeMCP(t, project, `{"mcpServers":{"contexo":{"command":"ctx","args":["mcp"]},"other":{"command":"foo"}}}`)
 
@@ -163,6 +171,7 @@ func TestDetachPreservesOtherMCPServers(t *testing.T) {
 }
 
 func TestDetachNoOpWhenNothingPresent(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := t.TempDir() // bare dir — no .contexo/, no .mcp.json, no hook
 	cmd := newDetachCmd()
 	out := &bytes.Buffer{}
@@ -178,6 +187,7 @@ func TestDetachNoOpWhenNothingPresent(t *testing.T) {
 }
 
 func TestDetachWithoutConfirmationAborts(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	cmd := newDetachCmd()
 	cmd.SetOut(&bytes.Buffer{})
@@ -193,6 +203,7 @@ func TestDetachWithoutConfirmationAborts(t *testing.T) {
 }
 
 func TestDetachReportsUnpushedPages(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	// Drop a page into the store so the unpushed counter trips. Use a
 	// minimal-but-valid frontmatter; pagestore needs a parseable doc.
@@ -219,6 +230,7 @@ func TestDetachReportsUnpushedPages(t *testing.T) {
 }
 
 func TestDetachRemovesCodexHooks(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	if _, err := agentwire.WireCodexHooks(project); err != nil {
 		t.Fatalf("wire codex hooks: %v", err)
@@ -239,6 +251,7 @@ func TestDetachRemovesCodexHooks(t *testing.T) {
 }
 
 func TestDetachRemovesCursorHooks(t *testing.T) {
+	wp05WithVSCodeDetected(t, false)
 	project := tmpContexoProject(t)
 	if _, err := agentwire.WireCursorHooks(project); err != nil {
 		t.Fatalf("wire cursor hooks: %v", err)
@@ -252,6 +265,150 @@ func TestDetachRemovesCursorHooks(t *testing.T) {
 	if wired, _ := agentwire.CursorHooksWired(project); wired {
 		t.Errorf("detach should remove Cursor capture hooks")
 	}
+}
+
+// wp05DetachCmd is newDetachCmd writing stdout into the returned buffer.
+func wp05DetachCmd() (*cobra.Command, *bytes.Buffer) {
+	cmd := newDetachCmd()
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(&bytes.Buffer{})
+	return cmd, out
+}
+
+// TestDetachUnwiresVSCode runs with VS Code NOT detected: detach cleans up
+// what is on disk regardless of what is installed.
+func TestDetachUnwiresVSCode(t *testing.T) {
+	t.Run("only_entry", func(t *testing.T) {
+		wp05IsolateHome(t)
+		withDetection(t, false, false)
+		wp05WithVSCodeDetected(t, false)
+		project := tmpContexoProject(t)
+		p := agentwire.VSCodeMCPPath(project)
+		if _, err := agentwire.WireVSCode(p); err != nil {
+			t.Fatalf("WireVSCode: %v", err)
+		}
+		cmd, out := wp05DetachCmd()
+		if err := runDetach(cmd, project, true, false); err != nil {
+			t.Fatalf("detach: %v", err)
+		}
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf(".vscode/mcp.json held only contexo and should be deleted; stat err=%v", err)
+		}
+		for _, want := range []string{`remove the "contexo" entry from .vscode/mcp.json`, "Removed .vscode/mcp.json"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output missing %q; got:\n%s", want, out.String())
+			}
+		}
+	})
+	t.Run("other_servers", func(t *testing.T) {
+		wp05IsolateHome(t)
+		withDetection(t, false, false)
+		wp05WithVSCodeDetected(t, false)
+		project := tmpContexoProject(t)
+		p := wp05SeedVSCode(t, project, `{"servers":{"github":{"type":"http","url":"https://api.githubcopilot.com/mcp/"},"contexo":{"type":"stdio","command":"ctx","args":["mcp"]}}}`)
+		cmd, out := wp05DetachCmd()
+		if err := runDetach(cmd, project, true, false); err != nil {
+			t.Fatalf("detach: %v", err)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf(".vscode/mcp.json should be kept (another server is left): %v", err)
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			t.Fatalf("parse .vscode/mcp.json: %v", err)
+		}
+		servers, _ := obj["servers"].(map[string]interface{})
+		if _, ok := servers["contexo"]; ok {
+			t.Errorf("contexo entry should be removed; got %s", data)
+		}
+		if _, ok := servers["github"]; !ok {
+			t.Errorf("github server should be preserved; got %s", data)
+		}
+		if !strings.Contains(out.String(), "Removed contexo entry from .vscode/mcp.json") {
+			t.Errorf("missing removal line; got:\n%s", out.String())
+		}
+	})
+	t.Run("keep_knowledge", func(t *testing.T) {
+		wp05IsolateHome(t)
+		withDetection(t, false, false)
+		wp05WithVSCodeDetected(t, false)
+		project := tmpContexoProject(t)
+		p := agentwire.VSCodeMCPPath(project)
+		if _, err := agentwire.WireVSCode(p); err != nil {
+			t.Fatalf("WireVSCode: %v", err)
+		}
+		cmd, _ := wp05DetachCmd()
+		if err := runDetach(cmd, project, true, true /* keepKnowledge */); err != nil {
+			t.Fatalf("detach: %v", err)
+		}
+		if wired, _ := agentwire.WiredVSCode(p); wired {
+			t.Errorf("--keep-knowledge must still remove the VS Code entry")
+		}
+		if _, err := os.Stat(filepath.Join(project, ".contexo")); err != nil {
+			t.Errorf(".contexo/ should still exist with --keep-knowledge: %v", err)
+		}
+	})
+}
+
+func TestDetachLeavesJSONCVSCodeConfig(t *testing.T) {
+	const manual = "remove servers.contexo manually"
+	t.Run("with_project", func(t *testing.T) {
+		wp05IsolateHome(t)
+		withDetection(t, false, false)
+		wp05WithVSCodeDetected(t, false)
+		project := tmpContexoProject(t)
+		p := wp05SeedVSCode(t, project, wp05VSCodeJSONC)
+		cmd, out := wp05DetachCmd()
+		if err := runDetach(cmd, project, true, false); err != nil {
+			t.Fatalf("detach must not fail on a JSONC .vscode/mcp.json: %v", err)
+		}
+		wp05AssertBytes(t, p, wp05VSCodeJSONC)
+		if !strings.Contains(out.String(), manual) {
+			t.Errorf("plan should tell the user to remove the entry by hand; got:\n%s", out.String())
+		}
+		if _, err := os.Stat(filepath.Join(project, ".contexo")); !os.IsNotExist(err) {
+			t.Errorf("the rest of detach should still run; .contexo stat err=%v", err)
+		}
+	})
+	t.Run("nothing_else", func(t *testing.T) {
+		wp05IsolateHome(t)
+		withDetection(t, false, false)
+		wp05WithVSCodeDetected(t, false)
+		project := t.TempDir() // bare: no .contexo/, nothing else to detach
+		p := wp05SeedVSCode(t, project, wp05VSCodeJSONC)
+		cmd, out := wp05DetachCmd()
+		if err := runDetach(cmd, project, true, false); err != nil {
+			t.Fatalf("detach: %v", err)
+		}
+		for _, want := range []string{manual, "Nothing to detach"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output missing %q; got:\n%s", want, out.String())
+			}
+		}
+		wp05AssertBytes(t, p, wp05VSCodeJSONC)
+	})
+}
+
+func TestDetachIgnoresJSONCWithoutContexo(t *testing.T) {
+	wp05IsolateHome(t)
+	withDetection(t, false, false)
+	wp05WithVSCodeDetected(t, false)
+	project := t.TempDir()
+	body := "{\n  // someone else's servers\n  \"servers\": {\"github\": {\"type\": \"http\", \"url\": \"https://api.githubcopilot.com/mcp/\"},},\n}\n"
+	p := wp05SeedVSCode(t, project, body)
+	cmd, out := wp05DetachCmd()
+	if err := runDetach(cmd, project, true, false); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if !strings.Contains(out.String(), "Nothing to detach") {
+		t.Errorf("expected 'Nothing to detach'; got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "remove servers.contexo manually") {
+		t.Errorf("a JSONC file without contexo needs no manual step; got:\n%s", out.String())
+	}
+	wp05AssertBytes(t, p, body)
 }
 
 func writeMCP(t *testing.T, project, body string) {
