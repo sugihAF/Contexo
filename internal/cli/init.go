@@ -138,11 +138,13 @@ func writeIfAbsent(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// detectCursor / detectCodex are indirections over agentwire's probes so
-// tests can simulate an environment with or without those agents installed.
+// detectCursor / detectCodex / detectVSCode are indirections over agentwire's
+// probes so tests can simulate an environment with or without those agents
+// installed.
 var (
 	detectCursor = agentwire.CursorInstalled
 	detectCodex  = agentwire.CodexInstalled
+	detectVSCode = agentwire.VSCodeInstalled
 )
 
 // wireClaudeMCP adds the contexo MCP server to the project's ./.mcp.json

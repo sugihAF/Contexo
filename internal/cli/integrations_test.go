@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/sugihAF/contexo/internal/cli/agentwire"
 )
 
 func TestIntegrationTableListsAllAgents(t *testing.T) {
@@ -52,6 +54,42 @@ func TestIntegrationTableCodexWiredWhenInstalled(t *testing.T) {
 	}
 }
 
+func TestIntegrationTableHasVSCodeRow(t *testing.T) {
+	render := func(project string) string {
+		out := &bytes.Buffer{}
+		renderIntegrationTable(out, project, testDeps(false, nil))
+		return out.String()
+	}
+	t.Run("fresh", func(t *testing.T) {
+		wp05IsolateHome(t)
+		s := render(tmpContexoProject(t))
+		for _, want := range []string{"VS Code", "not wired (.vscode/mcp.json)"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("integration table missing %q; got:\n%s", want, s)
+			}
+		}
+	})
+	t.Run("wired", func(t *testing.T) {
+		wp05IsolateHome(t)
+		project := tmpContexoProject(t)
+		if _, err := agentwire.WireVSCode(agentwire.VSCodeMCPPath(project)); err != nil {
+			t.Fatalf("WireVSCode: %v", err)
+		}
+		s := render(project)
+		if !strings.Contains(s, "wired (.vscode/mcp.json)") || strings.Contains(s, "not wired (.vscode/mcp.json)") {
+			t.Errorf("VS Code should show wired (not 'not wired'); got:\n%s", s)
+		}
+	})
+	t.Run("jsonc", func(t *testing.T) {
+		wp05IsolateHome(t)
+		project := tmpContexoProject(t)
+		wp05SeedVSCode(t, project, wp05VSCodeJSONC)
+		if s := render(project); !strings.Contains(s, "not strict JSON (.vscode/mcp.json)") {
+			t.Errorf("a JSONC VS Code file should be flagged; got:\n%s", s)
+		}
+	})
+}
+
 func TestAgentGuideCoversKnownAgentsAndCapture(t *testing.T) {
 	out := &bytes.Buffer{}
 	renderAgentGuide(out)
@@ -63,6 +101,8 @@ func TestAgentGuideCoversKnownAgentsAndCapture(t *testing.T) {
 		"Hermes", "config.yaml",
 		"OpenClaw", "openclaw mcp",
 		"~/.codex/config.toml",
+		// VS Code: its own file, servers key and root-binding entry
+		"./.vscode/mcp.json", "--tool=vscode", "${workspaceFolder}",
 		// the universal server entry + how-to
 		`"command": "ctx", "args": ["mcp"]`,
 		"ctx mcp install",
