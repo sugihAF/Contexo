@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":11,"error":{"code":"quota_exceeded","message":"Free tier is limited to 5 repos.","advice":[],"retryable":false,"http_status":402,"details":{"quota_code":"quota_repos","limit":5,"upgrade_url":"https://contexo.live/#pricing"}}}

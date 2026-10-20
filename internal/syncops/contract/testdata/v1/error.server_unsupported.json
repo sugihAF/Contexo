@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":10,"error":{"code":"server_unsupported","message":"show: the server cannot read past versions (pages.at); update the Contexo server","advice":[],"retryable":false,"details":{"missing":["pages.at"]}}}

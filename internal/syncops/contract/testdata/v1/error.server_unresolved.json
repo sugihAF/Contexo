@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":5,"error":{"code":"server_unresolved","message":"pull: your global credentials have no server_url, so ctx will not send the token to the server named in .contexo/config.json","advice":["ctx auth login --server <url>"],"retryable":false}}

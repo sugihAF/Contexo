@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":3,"error":{"code":"usage","message":"resolve: pass exactly one of --ours or --theirs","advice":[],"retryable":false}}

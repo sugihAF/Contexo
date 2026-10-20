@@ -1,0 +1,22 @@
+{
+  "schema": "ctx.push.v1",
+  "dry_run": false,
+  "message": "Document settlement cut-off times",
+  "server_url": "https://api.contexo.live",
+  "repo_id": "acme-payments",
+  "new_head": "86832cf632a6c438200c9edf6ef4e78f7f3d271c",
+  "pushed": [
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "kind": "update",
+      "sha": "86832cf632a6c438200c9edf6ef4e78f7f3d271c"
+    }
+  ],
+  "conflicts": [],
+  "skipped": [],
+  "distill": {
+    "required": true,
+    "bypassed": true
+  },
+  "warnings": []
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "https://api.contexo.live",
+  "repo_id": "acme-payments",
+  "head": "e5f60a1b2c3d4e5f60718293a4b5c6d7e8f90a1b",
+  "written": [
+    {
+      "path": "wiki/analyses/q3-chargebacks.md",
+      "sha": "e5f60a1b2c3d4e5f60718293a4b5c6d7e8f90a1b",
+      "kind": "create"
+    },
+    {
+      "path": "wiki/concepts/idempotency-keys.md",
+      "sha": "e5f60a1b2c3d4e5f60718293a4b5c6d7e8f90a1b",
+      "kind": "update"
+    }
+  ],
+  "adopted": [
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "sha": "b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f80"
+    }
+  ],
+  "skipped": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "conflict",
+      "reason": "conflict",
+      "server_sha": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d"
+    },
+    {
+      "path": "wiki/concepts/webhook-signing.md",
+      "state": "conflict",
+      "reason": "conflict",
+      "server_sha": "6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7"
+    },
+    {
+      "path": "wiki/entities/fraud-service.md",
+      "state": "deleted_local",
+      "reason": "deleted_local",
+      "server_sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6"
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "reason": "modified"
+    }
+  ],
+  "reindexed": true,
+  "warnings": []
+}

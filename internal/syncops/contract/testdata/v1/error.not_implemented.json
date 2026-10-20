@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":10,"error":{"code":"not_implemented","message":"show: not implemented in this ctx build","advice":["ctx update"],"retryable":false}}

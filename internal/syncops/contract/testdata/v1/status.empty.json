@@ -1,0 +1,57 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2026-11-03T09:31:18Z",
+  "offline": false,
+  "root": "/Users/alice/code/payments",
+  "contexo_dir": "/Users/alice/code/payments/.contexo",
+  "project": {
+    "repo_id": "acme-payments",
+    "config_server_url": "https://contexo.acme.dev",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "https://contexo.acme.dev",
+    "url_source": "credentials",
+    "version": "0.7.0",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "pat",
+    "user_name": "Alice Tan",
+    "user_email": "alice@acme.dev"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2026-11-03T09:31:18Z",
+    "repo_exists": true,
+    "page_count": 0
+  },
+  "counts": {
+    "unchanged": 0,
+    "modified": 0,
+    "new": 0,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 0,
+    "behind": 0
+  },
+  "pages": [],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

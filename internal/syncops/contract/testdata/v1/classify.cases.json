@@ -1,0 +1,489 @@
+{
+  "contract_version": 1,
+  "cases": [
+    {
+      "id": "r01",
+      "desc": "L invalid, B valid, R present with sr == sb (not moved): invalid",
+      "input": {
+        "local": {
+          "kind": "invalid"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        }
+      },
+      "expected": {
+        "state": "invalid",
+        "notes": []
+      },
+      "scm_group": "invalid"
+    },
+    {
+      "id": "r02",
+      "desc": "L invalid, B valid, R present with sr != sb (moved): invalid, remote_changed",
+      "input": {
+        "local": {
+          "kind": "invalid"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "invalid",
+        "notes": [
+          "remote_changed"
+        ]
+      },
+      "scm_group": "invalid"
+    },
+    {
+      "id": "r03",
+      "desc": "L absent, B valid, R present with sr == sb: deleted_local",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        }
+      },
+      "expected": {
+        "state": "deleted_local",
+        "notes": []
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r03b",
+      "desc": "L absent, B set (stale), R unknown: deleted_local",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "stale",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        },
+        "remote": {
+          "kind": "unknown"
+        }
+      },
+      "expected": {
+        "state": "deleted_local",
+        "notes": []
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r04",
+      "desc": "L absent, B valid, R present with sr != sb (moved): deleted_local, remote_changed",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "deleted_local",
+        "notes": [
+          "remote_changed"
+        ]
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r05",
+      "desc": "L absent, B valid, R absent: deleted_local, missing_on_server",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "absent"
+        }
+      },
+      "expected": {
+        "state": "deleted_local",
+        "notes": [
+          "missing_on_server"
+        ]
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r06",
+      "desc": "L absent, B none, R present: incoming_new",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "none"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "incoming_new",
+        "notes": []
+      },
+      "scm_group": "incoming"
+    },
+    {
+      "id": "r07",
+      "desc": "L absent, B none, R absent: no entry",
+      "input": {
+        "local": {
+          "kind": "absent"
+        },
+        "base": {
+          "kind": "none"
+        },
+        "remote": {
+          "kind": "absent"
+        }
+      },
+      "expected": {
+        "state": "",
+        "notes": []
+      },
+      "scm_group": null
+    },
+    {
+      "id": "r08",
+      "desc": "L valid, B none, R present: conflict both_added",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "none"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "conflict",
+        "conflict_kind": "both_added",
+        "notes": []
+      },
+      "scm_group": "conflicts"
+    },
+    {
+      "id": "r09",
+      "desc": "L valid, B none, R absent: new",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "none"
+        },
+        "remote": {
+          "kind": "absent"
+        }
+      },
+      "expected": {
+        "state": "new",
+        "notes": []
+      },
+      "scm_group": "new"
+    },
+    {
+      "id": "r10",
+      "desc": "L valid, B none, R unknown: new",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "none"
+        },
+        "remote": {
+          "kind": "unknown"
+        }
+      },
+      "expected": {
+        "state": "new",
+        "notes": []
+      },
+      "scm_group": "new"
+    },
+    {
+      "id": "r11",
+      "desc": "L valid, B stale, R absent: new, missing_on_server",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "stale",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        },
+        "remote": {
+          "kind": "absent"
+        }
+      },
+      "expected": {
+        "state": "new",
+        "notes": [
+          "missing_on_server"
+        ]
+      },
+      "scm_group": "new"
+    },
+    {
+      "id": "r12",
+      "desc": "L valid, B stale, R present: unverified",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "stale",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "unverified",
+        "notes": []
+      },
+      "scm_group": null
+    },
+    {
+      "id": "r12b",
+      "desc": "L valid, B stale, R unknown: unverified",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "stale",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        },
+        "remote": {
+          "kind": "unknown"
+        }
+      },
+      "expected": {
+        "state": "unverified",
+        "notes": []
+      },
+      "scm_group": null
+    },
+    {
+      "id": "r13",
+      "desc": "L valid, B valid, R absent: new, missing_on_server (push re-creates it)",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "absent"
+        }
+      },
+      "expected": {
+        "state": "new",
+        "notes": [
+          "missing_on_server"
+        ]
+      },
+      "scm_group": "new"
+    },
+    {
+      "id": "r14",
+      "desc": "L valid with hL == hB, B valid, R present with sr == sb: unchanged",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        }
+      },
+      "expected": {
+        "state": "unchanged",
+        "notes": []
+      },
+      "scm_group": null
+    },
+    {
+      "id": "r15",
+      "desc": "L valid with hL != hB, B valid, R present with sr == sb: modified",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f"
+        }
+      },
+      "expected": {
+        "state": "modified",
+        "notes": []
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r16",
+      "desc": "L valid with hL == hB, B valid, R unknown: unchanged",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "unknown"
+        }
+      },
+      "expected": {
+        "state": "unchanged",
+        "notes": []
+      },
+      "scm_group": null
+    },
+    {
+      "id": "r17",
+      "desc": "L valid with hL != hB, B valid, R unknown: modified",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "unknown"
+        }
+      },
+      "expected": {
+        "state": "modified",
+        "notes": []
+      },
+      "scm_group": "changes"
+    },
+    {
+      "id": "r18",
+      "desc": "L valid with hL == hB, B valid, R present with sr != sb: incoming",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "incoming",
+        "notes": []
+      },
+      "scm_group": "incoming"
+    },
+    {
+      "id": "r19",
+      "desc": "L valid with hL != hB, B valid, R present with sr != sb: conflict both_modified",
+      "input": {
+        "local": {
+          "kind": "valid",
+          "hash": "sha256:ef0b53f71c031ab84c6500a91021a17129a65424efe1065b4b3f2cd67359f521"
+        },
+        "base": {
+          "kind": "valid",
+          "sha": "1a8e354f429932ea44e404851bc0356126bfe13f",
+          "hash": "sha256:c962f57bf6627ac871cc526e11f26500dcf1f1e1ba64623c448fa09ae61ef7dc"
+        },
+        "remote": {
+          "kind": "present",
+          "sha": "1e01cd342768276275488b9d1113277ba7b02811"
+        }
+      },
+      "expected": {
+        "state": "conflict",
+        "conflict_kind": "both_modified",
+        "notes": []
+      },
+      "scm_group": "conflicts"
+    }
+  ]
+}

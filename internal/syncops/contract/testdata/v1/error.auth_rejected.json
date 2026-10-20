@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":4,"error":{"code":"auth_rejected","message":"sync: pull failed (401): {\"error\":\"invalid or expired token\"}","advice":["ctx auth login"],"retryable":false,"http_status":401}}

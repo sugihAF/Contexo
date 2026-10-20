@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":5,"error":{"code":"not_initialized","message":"status: no .contexo/ directory in /Users/alice/code/scratch","advice":["ctx init"],"retryable":false}}

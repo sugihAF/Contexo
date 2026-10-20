@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":3,"error":{"code":"invalid_path","message":"show: invalid path \"../credentials.json\": use a '/'-separated .md path relative to .contexo without '.' or '..' segments","advice":[],"retryable":false}}
