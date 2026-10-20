@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -373,6 +374,61 @@ func TestInitVSCodeJSONCWarnsAndContinues(t *testing.T) {
 	}
 	if wired, _ := agentwire.WiredJSON(agentwire.ClaudeMCPPath(project)); !wired {
 		t.Errorf("Claude should still be wired")
+	}
+}
+
+// TestInitVSCodeWireErrorWarnsAndContinues: VS Code wiring runs on detection
+// alone, so a broken .vscode/mcp.json (not JSONC: unreadable, dangling
+// symlink, .vscode a plain file) must not abort init before .contexo/ is
+// git-ignored and the Stop hook is installed.
+func TestInitVSCodeWireErrorWarnsAndContinues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, project string)
+	}{
+		{"vscode_is_a_file", func(t *testing.T, project string) {
+			writeFile(t, filepath.Join(project, ".vscode"), "not a directory\n")
+		}},
+		{"dangling_symlink", func(t *testing.T, project string) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlinks need extra privileges on windows")
+			}
+			if err := os.Mkdir(filepath.Join(project, ".vscode"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "dotfiles-not-cloned", "mcp.json")
+			if err := os.Symlink(target, agentwire.VSCodeMCPPath(project)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project := wp05InitProject(t, true)
+			if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.seed(t, project)
+			cmd, out := wp05InitCmd()
+			if err := runInit(cmd, false, false, false, false, false); err != nil {
+				t.Fatalf("a VS Code wiring failure must not abort init: %v", err)
+			}
+			s := out.String()
+			for _, want := range []string{"could not wire VS Code", "ctx mcp install --tool=vscode"} {
+				if !strings.Contains(s, want) {
+					t.Errorf("output missing %q; got:\n%s", want, s)
+				}
+			}
+			gi, err := os.ReadFile(filepath.Join(project, ".gitignore"))
+			if err != nil || !strings.Contains(string(gi), ".contexo/") {
+				t.Errorf(".contexo/ must still be git-ignored; .gitignore=%q err=%v", gi, err)
+			}
+			if on, _ := hookInstalled(project); !on {
+				t.Errorf("the Claude Stop hook must still be installed")
+			}
+			if wired, _ := agentwire.WiredJSON(agentwire.ClaudeMCPPath(project)); !wired {
+				t.Errorf("Claude should still be wired")
+			}
+		})
 	}
 }
 

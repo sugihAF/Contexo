@@ -95,9 +95,7 @@ func runInit(cmd *cobra.Command, skipMCP, skipCursor, skipVSCode, skipGitignore,
 			}
 		}
 		if !skipVSCode && detectVSCode() {
-			if err := wireVSCodeMCP(cmd, root); err != nil {
-				return err
-			}
+			wireVSCodeMCP(cmd, root) // warns, never aborts: see its doc comment
 		}
 		if detectCodex() {
 			u.Step("Codex detected — run `ctx mcp install --tool=codex` to wire it (writes the GLOBAL ~/.codex/config.toml).")
@@ -191,21 +189,26 @@ func wireCursorMCP(cmd *cobra.Command, root string) error {
 // wireVSCodeMCP adds the contexo MCP server to ./.vscode/mcp.json (VS Code's
 // workspace config). Called only when VS Code is detected. A JSONC file is
 // left untouched: init prints the entry to add by hand and carries on.
-func wireVSCodeMCP(cmd *cobra.Command, root string) error {
+//
+// Any other failure (unreadable file, dangling symlink, .vscode a plain file)
+// is also only a warning. This step runs on detection alone (~/.vscode is
+// common), so like the Stop hook it is a nice-to-have: aborting here would
+// stop init before .contexo/ is git-ignored and the hook is installed. The
+// error itself says whether the read or the write failed.
+func wireVSCodeMCP(cmd *cobra.Command, root string) {
 	u := ui.From(cmd)
 	changed, err := agentwire.WireVSCode(agentwire.VSCodeMCPPath(root))
 	switch {
 	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
 		warnVSCodeManual(u)
 	case err != nil:
-		return fmt.Errorf("init: write .vscode/mcp.json: %w", err)
+		u.Warn("could not wire VS Code (.vscode/mcp.json): %v (run 'ctx mcp install --tool=vscode' later)", err)
 	case changed:
 		u.Step("VS Code detected — wired .vscode/mcp.json")
 		u.Step(".vscode/ is usually committed: teammates need ctx on PATH")
 	default:
 		u.Step(".vscode/mcp.json already has the contexo entry; leaving it alone")
 	}
-	return nil
 }
 
 // updateGitignore adds .contexo/ to the project's .gitignore so the local
