@@ -1,16 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/ui"
-
-	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newHistoryCmd() *cobra.Command {
@@ -34,20 +30,11 @@ func newHistoryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load(root)
+			rr, client, err := openRemote(root, "history", true)
 			if err != nil {
 				return err
 			}
-			creds, err := config.LoadCredentials(root)
-			if err != nil || creds == nil {
-				return ui.Suggest(errors.New("history: not authenticated"), "ctx auth login")
-			}
-			serverURL := chooseServerURL(creds, cfg)
-			if serverURL == "" || cfg.RepoID == "" {
-				return fmt.Errorf("history: server URL or repo_id not configured")
-			}
-			client := sync.NewClient(serverURL, creds.Bearer())
-			commits, err := client.PageHistory(cfg.RepoID, path, limit)
+			commits, err := client.PageHistory(rr.RepoID, path, limit)
 			if err != nil {
 				return err
 			}

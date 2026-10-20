@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/ui"
 )
 
@@ -153,12 +152,11 @@ prompt, or pass --token directly to skip the browser entirely.`,
 			}
 
 			// Offer an interactive repo picker if the user didn't pass --repo
-			// and we have a TTY + server URL. Skipping the picker (or it
-			// erroring) is non-fatal: the user can always run `ctx remote
-			// set-repo` later.
-			if cfg.RepoID == "" && cfg.ServerURL != "" && stdinIsTTY() {
-				client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-				chosenRepo, err := selectRepoInteractive(client, cmd.InOrStdin(), cmd.OutOrStdout())
+			// and we have a TTY; it asks the server the credentials were just
+			// saved for. Skipping the picker (or it erroring) is non-fatal:
+			// the user can always run `ctx remote set-repo` later.
+			if cfg.RepoID == "" && stdinIsTTY() {
+				chosenRepo, err := pickRepo(root, "login", cmd.InOrStdin(), cmd.OutOrStdout())
 				if err == nil && chosenRepo != "" {
 					cfg.RepoID = chosenRepo
 					if saveErr := config.Save(root, cfg); saveErr != nil {
@@ -170,8 +168,8 @@ prompt, or pass --token directly to skip the browser entirely.`,
 			// Built up then emitted in ONE write: four separate Fprintf calls
 			// could tear across a partial write and leave a half-line.
 			line := fmt.Sprintf("Authenticated (%s)", creds.Kind())
-			if cfg.ServerURL != "" {
-				line += fmt.Sprintf(" · server: %s", cfg.ServerURL)
+			if creds.ServerURL != "" {
+				line += fmt.Sprintf(" · server: %s", creds.ServerURL)
 			}
 			if cfg.RepoID != "" {
 				line += fmt.Sprintf(" · repo: %s", cfg.RepoID)

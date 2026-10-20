@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/sugihAF/contexo/internal/ui"
 
-	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
@@ -38,20 +36,11 @@ func newEvolutionCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load(root)
+			rr, client, err := openRemote(root, "evolution", true)
 			if err != nil {
 				return err
 			}
-			creds, err := config.LoadCredentials(root)
-			if err != nil || creds == nil {
-				return ui.Suggest(errors.New("evolution: not authenticated"), "ctx auth login")
-			}
-			serverURL := chooseServerURL(creds, cfg)
-			if serverURL == "" || cfg.RepoID == "" {
-				return fmt.Errorf("evolution: server URL or repo_id not configured")
-			}
-			client := sync.NewClient(serverURL, creds.Bearer())
-			entries, err := client.PageEvolution(cfg.RepoID, path, limit, blame)
+			entries, err := client.PageEvolution(rr.RepoID, path, limit, blame)
 			if err != nil {
 				return err
 			}

@@ -282,3 +282,131 @@ func TestOpenRemoteErrorsKeepCode(t *testing.T) {
 		}
 	})
 }
+
+// wp03UnresolvedProject builds a project whose GLOBAL credentials carry a
+// token but no server_url while its workspace config points at B. Such
+// credentials are unresolved (contract §5, D5): nothing may be sent, least of
+// all to B. HOME is isolated. It returns the project root.
+func wp03UnresolvedProject(t *testing.T, tr *wp03Trap) string {
+	t.Helper()
+	wp03IsolateHome(t)
+	root := t.TempDir()
+	if err := config.Save(root, &config.Config{Version: 1, ServerURL: tr.B.URL, RepoID: "wp03-repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveGlobalCredentials(&config.Credentials{Token: wp03Token}); err != nil {
+		t.Fatal(err)
+	}
+	wp03WritePage(t, root, "foo")
+	return root
+}
+
+// wp03AssertNothingSent asserts A received no request. B fails the test by
+// itself on any request.
+func wp03AssertNothingSent(t *testing.T, tr *wp03Trap, label string) {
+	t.Helper()
+	if hits := tr.Hits(); len(hits) != 0 {
+		t.Errorf("%s: unresolved credentials still reached server A: %+v", label, hits)
+	}
+}
+
+func TestLogHistoryDiffEvolutionUseResolvedServer(t *testing.T) {
+	tr := wp03TrapServers(t)
+	root := wp03Project(t, tr)
+	for _, args := range [][]string{{"log"}, {"history", "foo"}, {"diff", "foo"}, {"evolution", "foo"}} {
+		tr.Reset()
+		// A's generic bodies may not satisfy the command; only the host matters.
+		_, _, _ = wp03Run(t, root, args...)
+		tr.AssertOnlyA(t, strings.Join(args, " "), wp03Token)
+	}
+}
+
+func TestMembersActivityInviteJoinUseResolvedServer(t *testing.T) {
+	tr := wp03TrapServers(t)
+	root := wp03Project(t, tr)
+	// join runs last: it rewrites the config's repo_id from A's answer.
+	for _, args := range [][]string{{"members"}, {"activity"}, {"invite", "list"}, {"join", "ctxi_wp03key"}} {
+		tr.Reset()
+		_, _, _ = wp03Run(t, root, args...)
+		tr.AssertOnlyA(t, strings.Join(args, " "), wp03Token)
+	}
+}
+
+func TestRemoteSetRepoPickerUsesResolvedServer(t *testing.T) {
+	tr := wp03TrapServers(t)
+	root := wp03Project(t, tr)
+
+	var buf bytes.Buffer
+	_, err := pickRepo(root, "set-repo", strings.NewReader(""), &buf)
+	// A lists no repos, so the picker has nothing to offer.
+	if err == nil || !strings.Contains(err.Error(), "no repos available") {
+		t.Errorf("pickRepo error = %v, want 'no repos available' from A's empty list", err)
+	}
+	tr.AssertOnlyA(t, "set-repo picker", wp03Token)
+}
+
+func TestGlobalCredsWithoutServerNeverReachWorkspaceURL(t *testing.T) {
+	tr := wp03TrapServers(t)
+	root := wp03UnresolvedProject(t, tr)
+
+	for _, args := range [][]string{
+		{"log"}, {"history", "foo"}, {"diff", "foo"}, {"evolution", "foo"},
+		{"members"}, {"activity"}, {"invite", "list"}, {"join", "ctxi_k"},
+	} {
+		label := strings.Join(args, " ")
+		_, _, err := wp03Run(t, root, args...)
+		if code := wp03RemoteCode(err); code != "server_unresolved" {
+			t.Errorf("%s: error code = %q (err: %v), want server_unresolved", label, code, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	_, err := pickRepo(root, "set-repo", strings.NewReader(""), &buf)
+	if code := wp03RemoteCode(err); code != "server_unresolved" {
+		t.Errorf("set-repo picker: error code = %q (err: %v), want server_unresolved", code, err)
+	}
+	wp03AssertNothingSent(t, tr, "global credentials without server_url")
+}
+
+func TestRemoteSetNotesCredentialsServer(t *testing.T) {
+	const target = "https://c.example.test"
+	advice := "ctx auth login --server " + target
+
+	t.Run("credentials belong to another server", func(t *testing.T) {
+		tr := wp03TrapServers(t)
+		root := wp03Project(t, tr)
+		stdout, stderr, err := wp03Run(t, root, "remote", "set", target)
+		if err != nil {
+			t.Fatalf("remote set: %v", err)
+		}
+		out := stdout + stderr
+		if !strings.Contains(out, tr.A.URL) || strings.Count(out, advice) != 1 {
+			t.Errorf("remote set must name the credentials' server %s and advise %q once:\n%s", tr.A.URL, advice, out)
+		}
+	})
+
+	t.Run("global credentials without server_url", func(t *testing.T) {
+		tr := wp03TrapServers(t)
+		root := wp03UnresolvedProject(t, tr)
+		stdout, stderr, err := wp03Run(t, root, "remote", "set", target)
+		if err != nil {
+			t.Fatalf("remote set: %v", err)
+		}
+		out := stdout + stderr
+		if !strings.Contains(out, "no server URL") || strings.Count(out, advice) != 1 {
+			t.Errorf("remote set must say the credentials have no server URL and advise %q once:\n%s", advice, out)
+		}
+	})
+
+	t.Run("same server prints no note", func(t *testing.T) {
+		tr := wp03TrapServers(t)
+		root := wp03Project(t, tr)
+		stdout, stderr, err := wp03Run(t, root, "remote", "set", tr.A.URL)
+		if err != nil {
+			t.Fatalf("remote set: %v", err)
+		}
+		if out := stdout + stderr; strings.Contains(out, "ctx auth login") {
+			t.Errorf("remote set to the credentials' own server printed a note:\n%s", out)
+		}
+	})
+}
