@@ -56,7 +56,7 @@ func newStatusCmd() *cobra.Command {
 				u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
 			}
 			if rr.Mismatch {
-				u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. If you trust it, run 'ctx auth login --server %s'",
+				u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
 					rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
 			}
 			if rr.RepoID != "" {

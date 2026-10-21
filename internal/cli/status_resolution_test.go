@@ -44,6 +44,7 @@ func TestStatusShowsMismatchWarning(t *testing.T) {
 	if n := strings.Count(stdout, advice); n != 1 {
 		t.Errorf("status prints %q %d times, want once:\n%s", advice, n, stdout)
 	}
+	wp03AssertSafeLoginHint(t, "status", stdout)
 }
 
 func TestStatusGlobalCredsWithoutServerSendsNothing(t *testing.T) {

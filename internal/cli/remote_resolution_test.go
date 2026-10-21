@@ -370,6 +370,19 @@ func TestGlobalCredsWithoutServerNeverReachWorkspaceURL(t *testing.T) {
 	wp03AssertNothingSent(t, tr, "global credentials without server_url")
 }
 
+// wp03AssertSafeLoginHint checks that advice to log in to a workspace URL
+// names that server's own dashboard and says the global credentials are
+// replaced. A bare `ctx auth login --server <url>` mints on the hosted
+// dashboard and would send that hosted token to <url>.
+func wp03AssertSafeLoginHint(t *testing.T, label, out string) {
+	t.Helper()
+	for _, want := range []string{"--dashboard <its dashboard URL>", "replaces your global credentials"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: login advice lacks %q:\n%s", label, want, out)
+		}
+	}
+}
+
 func TestRemoteSetNotesCredentialsServer(t *testing.T) {
 	const target = "https://c.example.test"
 	advice := "ctx auth login --server " + target
@@ -385,6 +398,7 @@ func TestRemoteSetNotesCredentialsServer(t *testing.T) {
 		if !strings.Contains(out, tr.A.URL) || strings.Count(out, advice) != 1 {
 			t.Errorf("remote set must name the credentials' server %s and advise %q once:\n%s", tr.A.URL, advice, out)
 		}
+		wp03AssertSafeLoginHint(t, "remote set (mismatch)", out)
 	})
 
 	t.Run("global credentials without server_url", func(t *testing.T) {
@@ -398,6 +412,7 @@ func TestRemoteSetNotesCredentialsServer(t *testing.T) {
 		if !strings.Contains(out, "no server URL") || strings.Count(out, advice) != 1 {
 			t.Errorf("remote set must say the credentials have no server URL and advise %q once:\n%s", advice, out)
 		}
+		wp03AssertSafeLoginHint(t, "remote set (unresolved)", out)
 	})
 
 	t.Run("same server prints no note", func(t *testing.T) {

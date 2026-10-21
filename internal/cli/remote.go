@@ -43,10 +43,10 @@ func newRemoteSetCmd() *cobra.Command {
 			if rr, err := config.ResolveRemote(root); err == nil && rr.Token != "" {
 				switch {
 				case rr.Mismatch:
-					fmt.Fprintf(out, "note: your credentials belong to %s; ctx keeps sending them there, not to %s. Run 'ctx auth login --server %s' to use this server.\n",
+					fmt.Fprintf(out, "note: your credentials belong to %s; ctx keeps sending them there, not to %s. To use this server, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials).\n",
 						rr.ServerURL, cfg.ServerURL, cfg.ServerURL)
 				case rr.ServerURL == "":
-					fmt.Fprintf(out, "note: your %s credentials have no server URL, so ctx will not send them to %s. Run 'ctx auth login --server %s'.\n",
+					fmt.Fprintf(out, "note: your %s credentials have no server URL, so ctx will not send them to %s. To use this server, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials).\n",
 						rr.CredsSource, cfg.ServerURL, cfg.ServerURL)
 				}
 			}
