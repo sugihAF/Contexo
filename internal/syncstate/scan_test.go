@@ -3,8 +3,10 @@ package syncstate
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -163,5 +165,27 @@ func TestWP04ScanLocalEmptyAndMissingHub(t *testing.T) {
 	}
 	if _, err := ScanLocal(file); err == nil {
 		t.Error("ScanLocal(regular file): want error, got nil")
+	}
+}
+
+// A hub reached through a Windows junction (`mklink /J`, the usual way to
+// link a directory without admin rights) is scanned, not seen as empty.
+func TestWP04ScanLocalJunctionHub(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("junctions are Windows-only")
+	}
+	realHub := t.TempDir()
+	wp04cmpWrite(t, realHub, "wiki/concepts/good.md", wp04cmpPage("concept", "good", "# Good\n"))
+	wp04cmpWrite(t, realHub, ".sync/base/wiki/concepts/good.md", wp04cmpPage("concept", "good", "# Good\n"))
+	link := filepath.Join(t.TempDir(), ".contexo")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, realHub).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v\n%s", err, out)
+	}
+	scan, err := ScanLocal(link)
+	if err != nil {
+		t.Fatalf("ScanLocal: %v", err)
+	}
+	if want := []string{"wiki/concepts/good.md"}; !reflect.DeepEqual(scan.Paths, want) {
+		t.Errorf("ScanLocal(junction).Paths = %q, want %q", scan.Paths, want)
 	}
 }

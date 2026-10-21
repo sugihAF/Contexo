@@ -104,6 +104,19 @@ func (s *Store) List(filter Filter) ([]*schema.Page, error) {
 	return out, err
 }
 
+// Seams for WalkAll's root resolution; tests use them to stand in for a
+// Windows junction.
+var (
+	walkRootLstat        = os.Lstat
+	walkRootEvalSymlinks = filepath.EvalSymlinks
+)
+
+// walkRootIsDir reports whether Lstat sees path itself as a directory.
+func walkRootIsDir(path string) bool {
+	fi, err := walkRootLstat(path)
+	return err == nil && fi.IsDir()
+}
+
 // WalkedFile is one page file found by WalkAll. Page and ParseErr come from
 // schema.ParsePage on Data with a leading UTF-8 BOM stripped; exactly one of
 // them is non-nil.
@@ -117,12 +130,19 @@ type WalkedFile struct {
 // WalkAll calls fn for every *.md file under the store root, including files
 // that do not parse, with the same filter as Walk: dot-directories below the
 // root and the top-level index.md / tags.md are skipped. A root that is
-// itself a symlink is followed; symlinks below it are not.
+// itself a link to a directory (a symlink, or a Windows junction) is
+// followed; links below it are not.
 func (s *Store) WalkAll(fn func(f WalkedFile) error) error {
 	root := s.Root
-	if fi, err := os.Lstat(root); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+	if fi, err := walkRootLstat(root); err == nil && !fi.IsDir() {
+		// A root that links to a directory: a symlink, or a Windows
+		// junction, which Lstat reports as neither a directory nor a
+		// symlink and EvalSymlinks leaves alone. With a trailing separator
+		// Lstat, and so WalkDir, follows either kind of link.
+		if resolved, err := walkRootEvalSymlinks(root); err == nil && walkRootIsDir(resolved) {
 			root = resolved
+		} else if st, err := os.Stat(root); err == nil && st.IsDir() {
+			root = filepath.Clean(root) + string(filepath.Separator)
 		}
 	}
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

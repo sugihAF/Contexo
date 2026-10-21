@@ -3,8 +3,11 @@ package pagestore
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -206,6 +209,79 @@ func TestWP04WalkAllFollowsSymlinkedRoot(t *testing.T) {
 		t.Fatalf("WalkAll: %v", err)
 	}
 	if len(rels) != 1 || rels[0] != "wiki/concepts/good.md" {
+		t.Errorf("walked %q, want only wiki/concepts/good.md", rels)
+	}
+}
+
+// wp04cmpLinkedTree returns a store tree holding one page (and a base copy
+// that must not be walked) for the linked-root tests.
+func wp04cmpLinkedTree(t *testing.T) string {
+	t.Helper()
+	return wp04cmpTree(t, map[string][]byte{
+		"wiki/concepts/good.md":            wp04cmpPageBytes("good"),
+		".sync/base/wiki/concepts/good.md": wp04cmpPageBytes("good"),
+	})
+}
+
+// wp04cmpWalkRels returns the paths WalkAll visits under root, in order.
+func wp04cmpWalkRels(t *testing.T, root string) []string {
+	t.Helper()
+	var rels []string
+	err := (&Store{Root: root}).WalkAll(func(f WalkedFile) error {
+		rels = append(rels, f.Rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkAll: %v", err)
+	}
+	return rels
+}
+
+// wp04cmpIrregular is a FileInfo reported as neither a directory nor a
+// symlink, as Lstat reports a Windows junction (mount point) since Go 1.23.
+type wp04cmpIrregular struct{ fs.FileInfo }
+
+func (wp04cmpIrregular) Mode() fs.FileMode { return fs.ModeIrregular | 0o777 }
+func (wp04cmpIrregular) IsDir() bool       { return false }
+
+// A store root that links to a directory but that Lstat reports as neither
+// a directory nor a symlink, and that EvalSymlinks leaves alone: a Windows
+// junction. A symlink stands in for it through the root-resolution seams,
+// so this runs on every OS that has symlinks.
+func TestWP04WalkAllFollowsLinkedRootReportedIrregular(t *testing.T) {
+	realRoot := wp04cmpLinkedTree(t)
+	link := filepath.Join(t.TempDir(), ".contexo")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	oldLstat, oldEval := walkRootLstat, walkRootEvalSymlinks
+	t.Cleanup(func() { walkRootLstat, walkRootEvalSymlinks = oldLstat, oldEval })
+	walkRootLstat = func(name string) (fs.FileInfo, error) {
+		fi, err := os.Lstat(name)
+		if err != nil || name != link {
+			return fi, err
+		}
+		return wp04cmpIrregular{fi}, nil
+	}
+	walkRootEvalSymlinks = func(p string) (string, error) { return filepath.Clean(p), nil }
+
+	if rels := wp04cmpWalkRels(t, link); len(rels) != 1 || rels[0] != "wiki/concepts/good.md" {
+		t.Errorf("walked %q, want only wiki/concepts/good.md", rels)
+	}
+}
+
+// The real thing on Windows: `mklink /J` (no admin rights needed) links
+// the store root.
+func TestWP04WalkAllFollowsJunctionRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("junctions are Windows-only")
+	}
+	realRoot := wp04cmpLinkedTree(t)
+	link := filepath.Join(t.TempDir(), ".contexo")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, realRoot).CombinedOutput(); err != nil {
+		t.Skipf("mklink /J: %v\n%s", err, out)
+	}
+	if rels := wp04cmpWalkRels(t, link); len(rels) != 1 || rels[0] != "wiki/concepts/good.md" {
 		t.Errorf("walked %q, want only wiki/concepts/good.md", rels)
 	}
 }
