@@ -105,12 +105,18 @@ func (s *Store) Create(repoID string) (created bool, err error) {
 		return false, fmt.Errorf("gitstore: mkdir repo: %w", err)
 	}
 	if out, err := s.git(dir, "init", "--initial-branch=main"); err != nil {
+		_ = os.RemoveAll(gitDir)
 		return false, fmt.Errorf("gitstore: init: %w: %s", err, out)
 	}
+	// A .git without the committer identity can never commit, and a later
+	// Create would report it as existing: undo the init instead (the lock is
+	// held and .git was certainly absent before it).
 	if out, err := s.git(dir, "config", "user.email", "server@contexo.local"); err != nil {
+		_ = os.RemoveAll(gitDir)
 		return false, fmt.Errorf("gitstore: config email: %w: %s", err, out)
 	}
 	if out, err := s.git(dir, "config", "user.name", "contexo-server"); err != nil {
+		_ = os.RemoveAll(gitDir)
 		return false, fmt.Errorf("gitstore: config name: %w: %s", err, out)
 	}
 	return true, nil
@@ -739,6 +745,11 @@ func (s *Store) ListPages(repoID string) ([]PageMeta, error) {
 			continue
 		}
 		seen[name] = true
+		// Never list what ReadPage refuses (e.g. a git control file committed
+		// before validatePagePath rejected those).
+		if validatePagePath(name) != nil {
+			continue
+		}
 		p := cur
 		p.Path = name
 		pages = append(pages, p)

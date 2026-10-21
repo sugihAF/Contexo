@@ -1181,6 +1181,67 @@ func TestGitControlFilesAreNotPages(t *testing.T) {
 	}
 }
 
+// TestCreateRollsBackHalfInitializedRepo: if git init succeeds but setting
+// the committer identity fails, Create must not leave a .git behind; a later
+// Create would report created=false for a repo that can never commit.
+func TestCreateRollsBackHalfInitializedRepo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fails git config through a /bin/sh wrapper")
+	}
+	s, err := Open(filepath.Join(t.TempDir(), "repos"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("look up git: %v", err)
+	}
+	bin := t.TempDir()
+	wrapper := "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = config ] && exit 1; done\nexec \"$WP02_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	origPath := os.Getenv("PATH")
+	t.Setenv("WP02_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+origPath)
+
+	if created, err := s.Create("half"); err == nil || created {
+		t.Fatalf("Create with a failing git config: created=%v err=%v, want an error", created, err)
+	}
+	if s.Exists("half") {
+		t.Errorf("a half-initialized .git was left behind")
+	}
+	t.Setenv("PATH", origPath)
+	if created, err := s.Create("half"); err != nil || !created {
+		t.Errorf("retry Create: created=%v err=%v, want a fresh repo", created, err)
+	}
+}
+
+// TestListPagesSkipsUnreadableNames: a path ReadPage would refuse (a git
+// control file committed before those were refused) is not listed, so a
+// client never follows the listing into a 400.
+func TestListPagesSkipsUnreadableNames(t *testing.T) {
+	s := wp02Store(t)
+	wp02Write(t, s, "wiki/a.md", "a", "")
+	dir := s.repoDir("r")
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.md text\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if out, err := s.git(dir, "add", "-f", "--", ".gitattributes"); err != nil {
+		t.Fatalf("add: %v %s", err, out)
+	}
+	if out, err := s.git(dir, "commit", "-m", "old attributes", "--", ".gitattributes"); err != nil {
+		t.Fatalf("commit: %v %s", err, out)
+	}
+	pages, err := s.ListPages("r")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pages) != 1 || pages[0].Path != "wiki/a.md" {
+		t.Errorf("listed %+v, want only wiki/a.md", pages)
+	}
+}
+
 // TestWriteExpectAbsentFailsClosed: when the existence check itself fails
 // (cat-file cannot run), a create-only write must fail, not treat the page as
 // absent and overwrite it, which would silently break expect_absent's
