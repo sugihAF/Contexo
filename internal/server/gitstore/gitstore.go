@@ -449,16 +449,7 @@ func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
 // never reach git. Unlike isHexRef it rejects "", which must not silently
 // mean "HEAD".
 func ValidSHA(s string) bool {
-	if len(s) < 4 || len(s) > 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
+	return len(s) >= 4 && isHexRef(s)
 }
 
 // ReadPageAt returns filePath's content at commit sha (full or abbreviated)
