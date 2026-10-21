@@ -366,7 +366,10 @@ func (h *Handler) ReadPage(c *gin.Context) {
 }
 
 // Push handles POST /v1/repos/:id/sync/push. For real users, the first push
-// to a new repo auto-creates and assigns ownership.
+// to a new repo auto-creates it and makes the pusher its owner; the new id
+// must match repoIDPattern (400 otherwise, before any write), and of several
+// concurrent first pushes only the one that created the repo is owner, the
+// others being ordinary (non-member) pushes. Legacy auth creates any id.
 func (h *Handler) Push(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
@@ -422,24 +425,33 @@ func (h *Handler) Push(c *gin.Context) {
 		req.Message = "ctx push"
 	}
 
-	repoExists := h.store.Exists(repoID)
-	if !repoExists {
+	// An existing repo goes straight to the membership check, whatever its
+	// raw id (see createOwnedRepo).
+	if !h.store.Exists(repoID) {
 		// First push to a new repo auto-creates it — gate that like any other
 		// repo creation so the cap can't be bypassed via the CLI/agent.
-		if !h.enforceRepoQuota(c, uid) {
-			return
+		if auth.IsLegacy(uid) || h.users == nil {
+			if !h.enforceRepoQuota(c, uid) {
+				return
+			}
+			if err := h.store.Init(repoID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			// A signed-in user needs a canonical id, and only the push that
+			// created the repo becomes its owner. A push that lost the
+			// create race is an ordinary push to an existing repo.
+			created, ok := h.createOwnedRepo(c, repoID, uid)
+			if !ok {
+				return
+			}
+			if !created && !h.requireMember(c, repoID) {
+				return
+			}
 		}
-		if err := h.store.Init(repoID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if !auth.IsLegacy(uid) && h.users != nil {
-			_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
-		}
-	} else {
-		if !h.requireMember(c, repoID) {
-			return
-		}
+	} else if !h.requireMember(c, repoID) {
+		return
 	}
 
 	var conflicts []sync.Conflict

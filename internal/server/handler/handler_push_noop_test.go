@@ -615,3 +615,146 @@ func TestCreateRepoLegacy_ExistingDottedRepoMember(t *testing.T) {
 		t.Errorf("bob's role in team.notes = %q, want none", r)
 	}
 }
+
+// TestPush_ExistingDottedRepoStillWorks pins the compatibility ruling for
+// push: an EXISTING repo goes straight to the membership check whatever its
+// raw id, so a repo created under "team.notes" before the id pattern keeps
+// taking its member's pushes and keeps refusing everyone else's.
+func TestPush_ExistingDottedRepoStillWorks(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := signIn(t, rig.router, "alice-token")
+	bob := signIn(t, rig.router, "bob-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+	bobID := wp02UserID(t, rig, "bob@example.com")
+	if err := rig.store.Init("team.notes"); err != nil {
+		t.Fatalf("init team.notes: %v", err)
+	}
+	if err := rig.users.AddMember("team.notes", aliceID, userstore.RoleOwner); err != nil {
+		t.Fatalf("alice owns team.notes: %v", err)
+	}
+
+	w, resp := wp02Push(t, rig.router, "team.notes", alice, "", wp02PushFile{Path: "wiki/a.md", Content: "dotted"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("member alice pushes to team.notes: %d %s, want 200", w.Code, w.Body.String())
+	}
+	if content, sha, err := rig.store.Read("team.notes", "wiki/a.md"); err != nil || string(content) != "dotted" || sha != wp02PushedSHA(resp, "wiki/a.md") {
+		t.Errorf("team.notes wiki/a.md = %q@%s (err %v), want dotted@%s", content, sha, err, wp02PushedSHA(resp, "wiki/a.md"))
+	}
+
+	w, _ = wp02Push(t, rig.router, "team.notes", bob, "", wp02PushFile{Path: "wiki/b.md", Content: "intruder"})
+	if w.Code != http.StatusForbidden {
+		t.Errorf("non-member bob pushes to team.notes: %d %s, want 403", w.Code, w.Body.String())
+	}
+	if _, _, err := rig.store.Read("team.notes", "wiki/b.md"); err == nil {
+		t.Errorf("a refused push wrote wiki/b.md")
+	}
+	if r := wp02Role(t, rig, "team.notes", bobID); r != "" {
+		t.Errorf("bob's role in team.notes = %q, want none", r)
+	}
+}
+
+// TestPush_NewRepoIDMustBeCanonical: a signed-in user's first push to a new
+// id outside the pattern used to create the sanitized directory ("my.repo"
+// -> myrepo) under an owner row for the raw id. Whoever later created
+// "myrepo" through POST /v1/repos claimed it as an orphan, while the first
+// pusher kept access through the alias. Now it is a 400 before any write.
+func TestPush_NewRepoIDMustBeCanonical(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := signIn(t, rig.router, "alice-token")
+	bob := signIn(t, rig.router, "bob-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+
+	for _, repo := range []string{"my.repo", "my-repo.", "my.-repo"} {
+		w, _ := wp02Push(t, rig.router, repo, alice, "", wp02PushFile{Path: "wiki/a.md", Content: "squat"})
+		wp02WantRepoIDRule(t, "alice pushes to new "+repo, w)
+		if rig.store.Exists(repo) {
+			t.Errorf("a refused push to %q left a repo on disk", repo)
+		}
+		if r := wp02Role(t, rig, repo, aliceID); r != "" {
+			t.Errorf("a refused push to %q gave alice role %q", repo, r)
+		}
+	}
+	if repos, err := rig.store.ListRepos(); err != nil || len(repos) != 0 {
+		t.Errorf("repos on disk = %v (err %v), want none", repos, err)
+	}
+	if ms, err := rig.users.ListUserRepos(aliceID); err != nil || len(ms) != 0 {
+		t.Errorf("alice's memberships = %+v (err %v), want none", ms, err)
+	}
+
+	// The victim's canonical repo is then really theirs: alice has no way in
+	// through the alias she tried.
+	if w := doJSON(t, rig.router, http.MethodPost, "/v1/repos", bob, map[string]string{"id": "myrepo"}); w.Code != http.StatusCreated {
+		t.Fatalf("bob creates myrepo: %d %s", w.Code, w.Body.String())
+	}
+	if w, _ := wp02Push(t, rig.router, "my.repo", alice, "", wp02PushFile{Path: "wiki/a.md", Content: "squat"}); w.Code != http.StatusForbidden {
+		t.Errorf("alice pushes to bob's myrepo through my.repo: %d %s, want 403", w.Code, w.Body.String())
+	}
+
+	// The legacy key keeps today's behaviour: any id, created on first push.
+	if w, _ := wp02Push(t, rig.router, "legacy.repo", "legacy-key", "", wp02PushFile{Path: "wiki/a.md", Content: "legacy"}); w.Code != http.StatusOK {
+		t.Errorf("legacy key pushes to new legacy.repo: %d %s, want 200", w.Code, w.Body.String())
+	}
+	if !rig.store.Exists("legacy.repo") {
+		t.Errorf("legacy.repo was not created")
+	}
+}
+
+// TestPush_ConcurrentFirstPushOneOwner: two users' first pushes to the same
+// new repo, at once. Checking Exists and then calling Init let both see "new",
+// both become owner and both commit. Now only the push that created the repo
+// is its owner and commits; the other is not a member (403) and writes
+// nothing.
+func TestPush_ConcurrentFirstPushOneOwner(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := signIn(t, rig.router, "alice-token")
+	bob := signIn(t, rig.router, "bob-token")
+	type pusher struct{ bearer, uid, page string }
+	pushers := []pusher{
+		{alice, wp02UserID(t, rig, "alice@example.com"), "wiki/alice.md"},
+		{bob, wp02UserID(t, rig, "bob@example.com"), "wiki/bob.md"},
+	}
+
+	for i := 0; i < 20; i++ {
+		repo := fmt.Sprintf("race-push-%02d", i)
+		got := make([]*httptest.ResponseRecorder, len(pushers))
+		fns := make([]func(), len(pushers))
+		for j, p := range pushers {
+			body := map[string]any{"message": "first", "files": []wp02PushFile{{Path: p.page, Content: p.page}}}
+			fns[j] = func() {
+				got[j] = doJSON(t, rig.router, http.MethodPost, "/v1/repos/"+repo+"/sync/push", p.bearer, body)
+			}
+		}
+		wp02Race(fns...)
+
+		owners, err := rig.users.RepoOwners(repo)
+		if err != nil || len(owners) != 1 {
+			t.Errorf("%s: owners %v (err %v), want exactly one; alice %d %s, bob %d %s", repo, owners, err,
+				got[0].Code, got[0].Body.String(), got[1].Code, got[1].Body.String())
+			continue
+		}
+		for j, p := range pushers {
+			w := got[j]
+			_, _, readErr := rig.store.Read(repo, p.page)
+			if p.uid == owners[0] {
+				var resp sync.PushResponse
+				_ = json.Unmarshal(w.Body.Bytes(), &resp)
+				if w.Code != http.StatusOK || readErr != nil || wp02PushedSHA(resp, p.page) == "" {
+					t.Errorf("%s: winner %s: %d %s, page read err %v, want 200 and the page committed", repo, p.page, w.Code, w.Body.String(), readErr)
+				}
+				continue
+			}
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s: loser %s: %d %s, want 403", repo, p.page, w.Code, w.Body.String())
+			}
+			if readErr == nil {
+				t.Errorf("%s: the loser's %s was committed", repo, p.page)
+			}
+			if r := wp02Role(t, rig, repo, p.uid); r != "" {
+				t.Errorf("%s: the loser has role %q", repo, r)
+			}
+		}
+	}
+}
