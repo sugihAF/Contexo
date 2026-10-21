@@ -182,6 +182,33 @@ func TestWireVSCodeRefusesNonObjectServers(t *testing.T) {
 	}
 }
 
+func TestWireVSCodeWhitespaceOnlyFileIsEmpty(t *testing.T) {
+	// An editor can leave a blank file behind; it holds nothing to protect,
+	// so it is wired like a missing file instead of refused as JSONC.
+	for name, body := range map[string]string{
+		"newline":     "\n",
+		"spaces_crlf": "  \r\n\t\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := VSCodeMCPPath(t.TempDir())
+			wp05Seed(t, p, body)
+			if wired, err := WiredVSCode(p); err != nil || wired {
+				t.Errorf("WiredVSCode = %v, %v; want false, nil", wired, err)
+			}
+			changed, err := WireVSCode(p)
+			if err != nil {
+				t.Fatalf("WireVSCode: %v", err)
+			}
+			if !changed {
+				t.Errorf("wiring a blank file should report changed=true")
+			}
+			if got := wp05Servers(t, readMCP(t, p))[ServerName]; !jsonEqual(got, vscodeEntry()) {
+				t.Errorf("servers.contexo = %v, want %v", got, vscodeEntry())
+			}
+		})
+	}
+}
+
 func TestWireVSCodeReadErrorIsNotUnparseable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory permission bits do not block reads on windows")

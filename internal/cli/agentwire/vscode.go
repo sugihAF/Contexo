@@ -13,6 +13,7 @@ package agentwire
 // VSCodeManualSnippet instead.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,8 @@ func vscodeEntry() map[string]interface{} {
 // loadVSCodeConfig is loadJSONObject plus the VS Code refusals: a JSON parse
 // failure, or a "servers" value that is not an object, becomes
 // ErrUnparseableVSCodeConfig. Read failures (e.g. permission denied) pass
-// through unchanged so they are not mistaken for a JSONC file.
+// through unchanged so they are not mistaken for a JSONC file. A file holding
+// only whitespace is treated like an empty one: there is nothing to protect.
 func loadVSCodeConfig(path string) (map[string]interface{}, error) {
 	obj, err := loadJSONObject(path)
 	if err != nil {
@@ -54,6 +56,9 @@ func loadVSCodeConfig(path string) (map[string]interface{}, error) {
 		var typeErr *json.UnmarshalTypeError
 		switch {
 		case errors.As(err, &syntaxErr):
+			if data, rerr := os.ReadFile(path); rerr == nil && len(bytes.TrimSpace(data)) == 0 {
+				return map[string]interface{}{}, nil
+			}
 			return nil, fmt.Errorf("%w: %s: %v", ErrUnparseableVSCodeConfig, path, syntaxErr)
 		case errors.As(err, &typeErr):
 			return nil, fmt.Errorf("%w: %s: %v", ErrUnparseableVSCodeConfig, path, typeErr)
