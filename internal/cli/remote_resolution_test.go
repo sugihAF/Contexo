@@ -477,6 +477,11 @@ func TestBrowserLoginRefusal(t *testing.T) {
 				if strings.Contains(a, self) {
 					t.Errorf("advice %q hands the workspace URL back as a command to paste", a)
 				}
+				// A bare --token would save a pasted hosted PAT for the
+				// workspace URL; every way out names the server explicitly.
+				if !strings.Contains(a, "--server <url>") {
+					t.Errorf("advice %q does not name the server the token is for", a)
+				}
 			}
 		})
 	}

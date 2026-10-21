@@ -65,7 +65,7 @@ func browserLoginRefusal(serverFlag, dashboardFlag string, cfg *config.Config) e
 		Code: "server_unresolved",
 		Msg: fmt.Sprintf("this project's config points at %s, but the browser login mints tokens on %s for %s; refusing to send a hosted token to %s",
 			cfg.ServerURL, dash, config.DefaultServerURL, cfg.ServerURL),
-		Advice: []string{"ctx auth login --server <url> --dashboard <dashboard-url>", "ctx auth login --token <token>"},
+		Advice: []string{"ctx auth login --server <url> --dashboard <dashboard-url>", "ctx auth login --server <url> --token <token issued by that server>"},
 	})
 }
 
