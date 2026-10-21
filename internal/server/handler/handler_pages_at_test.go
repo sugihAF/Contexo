@@ -199,6 +199,64 @@ func TestReadPageUnsafePathIs400(t *testing.T) {
 	wp02WantError(t, "empty path with ?at", w, http.StatusBadRequest, "invalid_path")
 }
 
+// TestPush_UnsafePathRejectsWholeBatch: an unsafe path anywhere in a push
+// batch rejects the whole batch with 400 invalid_path before anything is
+// written. It used to be a 400 (without a code) after the files before it
+// were already committed, and the client never learned their SHAs.
+func TestPush_UnsafePathRejectsWholeBatch(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	if w, _ := wp02Push(t, rig.router, "batch-repo", "legacy-key", "", wp02PushFile{Path: "wiki/seed.md", Content: "seed"}); w.Code != http.StatusOK {
+		t.Fatalf("seed push: %d %s", w.Code, w.Body.String())
+	}
+	head, err := rig.store.HeadSHA("batch-repo")
+	if err != nil || head == "" {
+		t.Fatalf("head: %q %v", head, err)
+	}
+	okOnDisk := filepath.Join(rig.store.Root, "batch-repo", "wiki", "ok.md")
+
+	for _, bad := range []string{"wiki/-bad.md", "../escape.md", ".git/config", "wiki//x.md", "/abs.md"} {
+		w, _ := wp02Push(t, rig.router, "batch-repo", "legacy-key", "",
+			wp02PushFile{Path: "wiki/ok.md", Content: "ok"}, wp02PushFile{Path: bad, Content: "bad"})
+		if msg := wp02WantError(t, "batch with "+bad, w, http.StatusBadRequest, "invalid_path"); msg != "" && msg != "invalid file path: "+bad {
+			t.Errorf("batch with %s: error %q, want %q", bad, msg, "invalid file path: "+bad)
+		}
+		if got, _ := rig.store.HeadSHA("batch-repo"); got != head {
+			t.Errorf("batch with %s moved HEAD %s -> %s", bad, head, got)
+		}
+		if sha, _ := rig.store.HeadSHAForPath("batch-repo", "wiki/ok.md"); sha != "" {
+			t.Errorf("batch with %s committed wiki/ok.md at %s", bad, sha)
+		}
+		if _, err := os.Lstat(okOnDisk); !os.IsNotExist(err) {
+			t.Errorf("batch with %s wrote wiki/ok.md to the working tree (lstat err %v)", bad, err)
+		}
+	}
+
+	// A refused batch to a NEW repo creates nothing, for a signed-in user too.
+	alice := signIn(t, rig.router, "alice-token")
+	w, _ := wp02Push(t, rig.router, "batch-new", alice, "",
+		wp02PushFile{Path: "wiki/ok.md", Content: "ok"}, wp02PushFile{Path: "wiki/-bad.md", Content: "bad"})
+	wp02WantError(t, "batch to a new repo", w, http.StatusBadRequest, "invalid_path")
+	if rig.store.Exists("batch-new") {
+		t.Errorf("a refused batch created repo batch-new")
+	}
+	if r := wp02Role(t, rig, "batch-new", wp02UserID(t, rig, "alice@example.com")); r != "" {
+		t.Errorf("a refused batch gave alice role %q in batch-new", r)
+	}
+
+	// A case variant of a tracked page passes the up-front check (it is a
+	// valid path) and is refused by the write on a case-insensitive
+	// filesystem; that 400 carries the code too.
+	if _, err := os.Stat(filepath.Join(rig.store.Root, "BATCH-REPO")); err != nil {
+		t.Logf("case-sensitive filesystem: Wiki/Seed.md is a different page, not a case variant")
+		return
+	}
+	w, _ = wp02Push(t, rig.router, "batch-repo", "legacy-key", "", wp02PushFile{Path: "Wiki/Seed.md", Content: "variant"})
+	if msg := wp02WantError(t, "case variant", w, http.StatusBadRequest, "invalid_path"); msg != "" && msg != "invalid file path: Wiki/Seed.md" {
+		t.Errorf("case variant: error %q, want %q", msg, "invalid file path: Wiki/Seed.md")
+	}
+}
+
 // TestHistoryUnsafePathIs400: History answers an unsafe page path with 400
 // invalid_path (it was a 500, LogPath's ErrUnsafePath was unmapped) and a
 // missing path with 400 invalid_path (it had no code), like the page routes.

@@ -397,6 +397,17 @@ func (h *Handler) Push(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
 		return
 	}
+	// Every path is checked before anything is written, a new repo included:
+	// a bad path in the middle of a batch used to come back as a 400 after
+	// the files before it were committed, and the client never learned their
+	// shas. The check is pure, so running it before the membership check
+	// tells a non-member nothing about the repo.
+	for _, file := range req.Files {
+		if err := gitstore.ValidatePagePath(file.Path); err != nil {
+			errorWithCode(c, http.StatusBadRequest, "invalid file path: "+file.Path, "invalid_path")
+			return
+		}
+	}
 	// Author attribution fallback chain:
 	//   1. Use what the client sent (browser-login CLI rounds these through).
 	//   2. If empty and the request is from a real authenticated user, look
@@ -488,7 +499,10 @@ func (h *Handler) Push(c *gin.Context) {
 				continue
 			}
 			if errors.Is(err, gitstore.ErrUnsafePath) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path: " + file.Path})
+				// Still reachable after the up-front check: a case variant
+				// of a tracked page on a case-insensitive filesystem is a
+				// valid path that only the write can refuse.
+				errorWithCode(c, http.StatusBadRequest, "invalid file path: "+file.Path, "invalid_path")
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
