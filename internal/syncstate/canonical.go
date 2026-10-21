@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 
 	"github.com/sugihAF/contexo/internal/schema"
 )
-
-var errNotImplemented = errors.New("syncstate: not implemented")
 
 // utf8BOM is the UTF-8 byte-order mark.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}

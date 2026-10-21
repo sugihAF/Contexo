@@ -17,6 +17,8 @@
 //	conflicts.json       {"schema":"ctx.conflicts.v1","conflicts":{P:{server_sha,base_sha?,kind,source,detected_at,has_content}}}
 //	conflicts/<P>        sanitized server bytes, present iff has_content
 //	lock                 {"pid","host","command","started_at"}, created O_CREATE|O_EXCL
+//	lock.guard           transient O_CREATE|O_EXCL guard held (well under 1 s) while
+//	                     removing lock (stale reclaim or unlock); cleared when older than 5 s
 //	backup/<P>.<YYYYMMDDTHHMMSSZ>  the working file saved before resolve --theirs overwrites it
 //
 // The remote listing cache (remote.json) is RESERVED in contract v1 and is
