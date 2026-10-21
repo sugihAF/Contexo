@@ -920,3 +920,32 @@ func TestLockRepoKeyIsCaseInsensitive(t *testing.T) {
 		t.Fatal("lockRepo(repo) still blocked after lockRepo(Repo) was released")
 	}
 }
+
+// TestChangedSinceKeepsSpacesInNames: validatePagePath accepts leading and
+// trailing spaces, so ChangedSince must return such names verbatim; a trimmed
+// name is a page pull can never read back.
+func TestChangedSinceKeepsSpacesInNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows drops trailing spaces from file names")
+	}
+	s := wp02Store(t)
+	c0 := wp02Write(t, s, "wiki/a.md", "plain", "")
+	spaced := []string{"notes/todo.md ", " lead.md"}
+	for _, p := range spaced {
+		wp02Write(t, s, p, "spaced "+p, "")
+	}
+
+	files, _, err := s.ChangedSince("r", "")
+	if err != nil || !wp02SameSet(files, append([]string{"wiki/a.md"}, spaced...)) {
+		t.Errorf("ChangedSince(\"\") = %q err=%v, want wiki/a.md and %q", files, err, spaced)
+	}
+	files, _, err = s.ChangedSince("r", c0)
+	if err != nil || !wp02SameSet(files, spaced) {
+		t.Errorf("ChangedSince(c0) = %q err=%v, want %q", files, err, spaced)
+	}
+	for _, p := range files {
+		if content, _, err := s.Read("r", p); err != nil || string(content) != "spaced "+p {
+			t.Errorf("Read(%q) = %q err=%v, want %q", p, content, err, "spaced "+p)
+		}
+	}
+}

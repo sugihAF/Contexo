@@ -534,11 +534,17 @@ func (s *Store) ChangedSince(repoID, since string) ([]string, string, error) {
 	return gitPaths(out), head, nil
 }
 
-// gitPaths parses one path name per line of git's plain-text output.
+// gitPaths parses one path name per line of git's plain-text output. Unlike
+// splitLines it never trims spaces: validatePagePath accepts leading and
+// trailing spaces ("notes/todo.md "), and a trimmed name is a page nobody can
+// read back. Only a trailing '\r' is dropped, which no valid page path has.
 func gitPaths(out string) []string {
-	names := splitLines(out)
-	for i, n := range names {
-		names[i] = unquoteGitPath(n)
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line != "" {
+			names = append(names, unquoteGitPath(line))
+		}
 	}
 	return names
 }
