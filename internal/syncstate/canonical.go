@@ -28,7 +28,7 @@ func StripBOM(b []byte) []byte {
 // looking for a fixed point. A lossy pass drops one trailing newline of a
 // final block scalar (or one CR of a CR run), so this settles a summary
 // ending in a few dozen blank lines while bounding the cost of a hostile
-// page. ScanLocal reports a page that does not settle as invalid.
+// page, which then hashes raw-sha256.
 const normalizeMaxPasses = 64
 
 // Normalize is the one comparison form of a page (E6): the fixed point of

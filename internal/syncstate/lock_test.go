@@ -419,16 +419,11 @@ func TestLock_StaleRecovery(t *testing.T) {
 			wp04lockWriteRaw(t, hub, nil)
 		}, false},
 		{"live_pid_fresh", func(t *testing.T, hub string) {
-			// The parent (the go command running this test binary) is alive
-			// and is not this process.
-			wp04lockWrite(t, hub, LockInfo{PID: os.Getppid(), Host: host, Command: "push", StartedAt: wp04lockNow().Add(-9 * time.Minute)})
+			// A same-host lock naming a live pid is held, even our own pid:
+			// a process in another pid namespace with the same hostname can
+			// have it, so it is never judged an orphan before 10 minutes.
+			wp04lockWrite(t, hub, LockInfo{PID: os.Getpid(), Host: host, Command: "push", StartedAt: wp04lockNow().Add(-9 * time.Minute)})
 		}, false},
-		{"own_pid_orphan", func(t *testing.T, hub string) {
-			// This process's pid, but no acquisition of this process wrote
-			// it: a dead predecessor that had the same pid (a restarted
-			// container's pid 1).
-			wp04lockWrite(t, hub, LockInfo{PID: os.Getpid(), Host: host, Command: "push", StartedAt: wp04lockNow()})
-		}, true},
 		{"other_host_dead_pid", func(t *testing.T, hub string) {
 			wp04lockWrite(t, hub, LockInfo{PID: wp04lockDeadPID(t), Host: "wp04-other-host", Command: "push", StartedAt: wp04lockNow()})
 		}, false},
@@ -1148,8 +1143,8 @@ func TestWP04ReclaimChecksFileIdentity(t *testing.T) {
 }
 
 // Two goroutines of one process: the one holding the lock is a live holder
-// for the other, never an orphan of a predecessor with the same pid.
-func TestWP04OwnHeldLockIsNotOrphan(t *testing.T) {
+// for the other (the lock is not reentrant).
+func TestWP04OwnHeldLockIsLive(t *testing.T) {
 	hub := wp04lockHub(t)
 	unlock, err := Lock(hub, "push", 0)
 	if err != nil {

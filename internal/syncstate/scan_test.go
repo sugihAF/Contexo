@@ -11,22 +11,20 @@ import (
 	"testing"
 )
 
-// A page that parses but has no stable normalized form cannot be pushed
-// (push sends Normalize(local)), so it is invalid at the parse stage, never
-// valid with a raw-sha256 hash.
-func TestWP04ScanLocalUnstableIsInvalid(t *testing.T) {
+// A valid page whose Normalize has no fixed point stays valid with its
+// raw-sha256 hash: marking it invalid would make pull skip it forever, while
+// the raw hash still compares equal to an identical base (pulled bytes).
+func TestWP04ScanLocalUnsettledKeepsRawHash(t *testing.T) {
 	hub := t.TempDir()
-	wp04cmpWrite(t, hub, "wiki/concepts/x.md", wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 100), "# X\n"))
+	data := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 100), "# X\n")
+	wp04cmpWrite(t, hub, "wiki/concepts/x.md", data)
 	scan, err := ScanLocal(hub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := scan.Files["wiki/concepts/x.md"]
-	if f == nil || f.Invalid == nil || f.Invalid.Stage != StageParse || f.Hash != "" {
-		t.Fatalf("file = %+v, want invalid at stage parse with no hash", f)
-	}
-	if f.Page == nil {
-		t.Error("Page = nil, want the parsed page (it parses, it just does not settle)")
+	if f == nil || f.Invalid != nil || !strings.HasPrefix(f.Hash, "raw-sha256:") || f.Hash != Hash(data) {
+		t.Fatalf("file = %+v, want valid with the raw-sha256 Hash(data)", f)
 	}
 }
 

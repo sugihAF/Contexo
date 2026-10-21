@@ -222,12 +222,6 @@ func acquireOnce(hub, command, host string) (unlock func(), holder LockInfo, err
 			return nil, LockInfo{}, lockIOError(err)
 		}
 		info, stale := judgeLock(cur, curFI.ModTime(), host, time.Now())
-		if !stale && info.Host == host && info.PID == os.Getpid() && !heldHere(cur) {
-			// Our pid, but no acquisition of this process wrote it: a dead
-			// predecessor that had the same pid (a restarted container's
-			// pid 1), which processAlive cannot tell from us.
-			stale = true
-		}
 		holder = info
 		if !stale {
 			return nil, holder, nil
@@ -251,38 +245,9 @@ func lockIOError(err error) error {
 	return fmt.Errorf("syncstate: lock: %w", err)
 }
 
-// heldLocks counts the lock contents that acquisitions of this process
-// currently hold (on any hub). A lock file naming this process's pid whose
-// content is not counted here was left by a dead predecessor with the same
-// pid. A content is counted from before its file is created until after
-// unlock removed it, so another goroutine never mistakes a live acquisition
-// of this process for such an orphan.
-var heldLocks = struct {
-	sync.Mutex
-	n map[string]int
-}{n: map[string]int{}}
-
-// markHeld adds delta to the held count of lock content data.
-func markHeld(data []byte, delta int) {
-	heldLocks.Lock()
-	defer heldLocks.Unlock()
-	if heldLocks.n[string(data)] += delta; heldLocks.n[string(data)] <= 0 {
-		delete(heldLocks.n, string(data))
-	}
-}
-
-// heldHere reports whether an acquisition of this process holds a lock with
-// content data.
-func heldHere(data []byte) bool {
-	heldLocks.Lock()
-	defer heldLocks.Unlock()
-	return heldLocks.n[string(data)] > 0
-}
-
 // createLockFile creates path with O_CREATE|O_EXCL and writes this
 // acquisition's LockInfo to it. It returns the bytes written, which unlock
-// compares against later. On success the content is counted in heldLocks
-// until unlock releases it.
+// compares against later.
 func createLockFile(path, command, host string) ([]byte, error) {
 	data, err := json.Marshal(LockInfo{
 		PID:       os.Getpid(),
@@ -294,10 +259,8 @@ func createLockFile(path, command, host string) ([]byte, error) {
 		return nil, err
 	}
 	data = append(data, '\n')
-	markHeld(data, 1)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		markHeld(data, -1)
 		return nil, err
 	}
 	_, err = f.Write(data)
@@ -311,7 +274,6 @@ func createLockFile(path, command, host string) ([]byte, error) {
 		// The file is ours and too young for anyone to judge it stale, so
 		// it is removed without the guard.
 		_ = removeLockFile(path)
-		markHeld(data, -1)
 		return nil, err
 	}
 	return data, nil
@@ -526,7 +488,6 @@ func releaseLock(hub string, ours []byte, guardWait time.Duration) {
 		if held != nil {
 			_, _ = removeLockIfUnchanged(path, ours, nil)
 			releaseLockGuard(guard, held)
-			markHeld(ours, -1)
 			return
 		}
 		if err != nil || !time.Now().Before(deadline) {
@@ -535,7 +496,6 @@ func releaseLock(hub string, ours []byte, guardWait time.Duration) {
 		time.Sleep(lockGuardPoll)
 	}
 	_, _ = removeLockIfUnchanged(path, ours, nil)
-	markHeld(ours, -1)
 }
 
 // removeLockIfUnchanged re-reads path and removes it only if it holds
