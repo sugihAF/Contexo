@@ -228,6 +228,15 @@ func TestPush_ActivityClientIsSanitized(t *testing.T) {
 			t.Errorf("stored client %q contains control character %U", d.Client, r)
 		}
 	}
+
+	// Format characters (bidi overrides, zero-width) would let a member make
+	// the name render as another client in everyone's activity feed.
+	spoof := "ctx‮edocsv-oxetnoc​⁦x⁩"
+	wp02Push(t, rig.router, "team-repo", alice, spoof, wp02PushFile{Path: "wiki/b.md", Content: "b"})
+	_, d = wp02LatestActivity(t, rig)
+	if d.Client != "ctxedocsv-oxetnocx" {
+		t.Errorf("stored client %q, want the format characters dropped (ctxedocsv-oxetnocx)", d.Client)
+	}
 }
 
 func TestPush_NewHeadIsRepoHead(t *testing.T) {
