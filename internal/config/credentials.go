@@ -34,18 +34,34 @@ func (c *Credentials) Bearer() string {
 
 // Kind describes a Bearer's shape — useful for printing in `auth status`.
 func (c *Credentials) Kind() string {
-	tok := c.Bearer()
+	switch tokenKind(c.Bearer()) {
+	case "pat":
+		return "personal access token"
+	case "invite_key":
+		return "invite key (NOT for CLI use)"
+	case "session":
+		return "session token"
+	case "legacy":
+		return "legacy API key"
+	default:
+		return "(none)"
+	}
+}
+
+// tokenKind classifies a bearer as pat|session|legacy|invite_key, or "" when
+// it is empty. It is the one classification behind Kind and Remote.TokenKind.
+func tokenKind(tok string) string {
 	switch {
 	case tok == "":
-		return "(none)"
+		return ""
 	case strings.HasPrefix(tok, "ctxp_"):
-		return "personal access token"
+		return "pat"
 	case strings.HasPrefix(tok, "ctxi_"):
-		return "invite key (NOT for CLI use)"
+		return "invite_key"
 	case strings.Count(tok, ".") == 2:
-		return "session token"
+		return "session"
 	default:
-		return "legacy API key"
+		return "legacy"
 	}
 }
 
@@ -73,19 +89,52 @@ func GlobalCredentialsPath() (string, error) {
 // .contexo/credentials.json and falling back to the global file. Returns
 // (nil, nil) when neither exists.
 func LoadCredentials(root string) (*Credentials, error) {
-	creds, err := loadCredentialsFile(CredentialsPath(root))
+	creds, _, err := LoadCredentialsWithSource(root)
+	return creds, err
+}
+
+// LoadCredentialsWithSource is LoadCredentials plus the file the credentials
+// came from: "project", "global", or "" when neither exists. ResolveRemote
+// needs the source, because a global token is never sent to a URL taken
+// from the workspace config.
+func LoadCredentialsWithSource(root string) (*Credentials, string, error) {
+	projectPath := CredentialsPath(root)
+	globalPath, globalErr := GlobalCredentialsPath()
+	creds, err := loadCredentialsFile(projectPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if creds != nil {
-		return creds, nil
+		// A project path that is the global file (a symlink a cloned repo can
+		// ship, or a project rooted at the home dir) holds the global
+		// credentials, so the global rules apply to them.
+		if globalErr == nil && sameFile(projectPath, globalPath) {
+			return creds, "global", nil
+		}
+		return creds, "project", nil
 	}
-	globalPath, err := GlobalCredentialsPath()
-	if err != nil {
+	if globalErr != nil {
 		// No home dir → just no global fallback; treat as unauthenticated.
-		return nil, nil
+		return nil, "", nil
 	}
-	return loadCredentialsFile(globalPath)
+	creds, err = loadCredentialsFile(globalPath)
+	if err != nil || creds == nil {
+		return nil, "", err
+	}
+	return creds, "global", nil
+}
+
+// sameFile reports whether a and b resolve to the same existing file.
+func sameFile(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 func loadCredentialsFile(path string) (*Credentials, error) {

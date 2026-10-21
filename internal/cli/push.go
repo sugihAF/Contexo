@@ -38,21 +38,9 @@ func newPushCmd() *cobra.Command {
 			root := GetRootDir()
 			hubDir := config.ContexoDirPath(root)
 
-			cfg, err := config.Load(root)
+			rr, client, err := openRemote(root, "push", true)
 			if err != nil {
 				return err
-			}
-			creds, err := config.LoadCredentials(root)
-			if err != nil || creds == nil {
-				return ui.Suggest(errors.New("push: not authenticated"), "ctx auth login")
-			}
-
-			serverURL := chooseServerURL(creds, cfg)
-			if serverURL == "" {
-				return ui.Suggest(errors.New("push: no server URL configured"), "ctx remote set <url>")
-			}
-			if cfg.RepoID == "" {
-				return ui.Suggest(errors.New("push: no repo configured"), "ctx remote set-repo <id>")
 			}
 
 			store, err := pagestore.Open(hubDir)
@@ -90,8 +78,6 @@ func newPushCmd() *cobra.Command {
 				})
 			}
 
-			client := sync.NewClient(serverURL, creds.Bearer())
-
 			if dryRun {
 				if noPreview {
 					fmt.Fprintf(cmd.OutOrStdout(), "Would push %d page(s):\n", len(files))
@@ -100,8 +86,8 @@ func newPushCmd() *cobra.Command {
 					}
 					return nil
 				}
-				previews := computePushPreview(client, cfg.RepoID, files)
-				renderPreview(cmd.OutOrStdout(), cfg.RepoID, previews, showDiff)
+				previews := computePushPreview(client, rr.RepoID, files)
+				renderPreview(cmd.OutOrStdout(), rr.RepoID, previews, showDiff)
 				fmt.Fprintln(cmd.OutOrStdout(), "(dry-run; no changes sent)")
 				return nil
 			}
@@ -111,8 +97,8 @@ func newPushCmd() *cobra.Command {
 			}
 
 			if !noPreview {
-				previews := computePushPreview(client, cfg.RepoID, files)
-				hasEdits := renderPreview(cmd.OutOrStdout(), cfg.RepoID, previews, showDiff)
+				previews := computePushPreview(client, rr.RepoID, files)
+				hasEdits := renderPreview(cmd.OutOrStdout(), rr.RepoID, previews, showDiff)
 				if hasEdits && !yes {
 					if !stdinIsTTY() {
 						return ui.Suggest(errors.New("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm"), "ctx push --yes")
@@ -128,9 +114,9 @@ func newPushCmd() *cobra.Command {
 				}
 			}
 
-			resp, err := client.PushPages(cfg.RepoID, &sync.PushRequest{
-				AuthorName:  creds.UserName,
-				AuthorEmail: creds.UserEmail,
+			resp, err := client.PushPages(rr.RepoID, &sync.PushRequest{
+				AuthorName:  rr.Creds.UserName,
+				AuthorEmail: rr.Creds.UserEmail,
 				Message:     message,
 				Files:       files,
 			})
@@ -202,13 +188,6 @@ func applyFilters(pages []*schema.Page, feature, tag, typ string) []*schema.Page
 		out = append(out, p)
 	}
 	return out
-}
-
-func chooseServerURL(creds *config.Credentials, cfg *config.Config) string {
-	if creds != nil && creds.ServerURL != "" {
-		return creds.ServerURL
-	}
-	return cfg.ServerURL
 }
 
 func shortSHA(sha string) string {

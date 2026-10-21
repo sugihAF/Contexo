@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/diff"
 	syncpkg "github.com/sugihAF/contexo/internal/sync"
 )
@@ -162,6 +164,89 @@ func TestDrift_CachedWithinTTL(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("expected 1 cached HTTP call, got %d", calls)
 	}
+}
+
+// TestDriftNoticeUsesResolvedServer: GLOBAL credentials belong to A while the
+// workspace config names B. The drift check reads the page and its diff
+// from A, with the bearer, and never contacts B.
+func TestDriftNoticeUsesResolvedServer(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/repos/test-repo/pages/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Page-SHA", "def567812345abcdef")
+		_, _ = w.Write([]byte("---\nslug: foo\ntype: concept\n---\n## Decision\nupdated body\n"))
+	})
+	mux.HandleFunc("/v1/repos/test-repo/diff/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"from_sha":"abc1234","to_sha":"def5678",` +
+			`"sections":[{"heading":"## Refund handling","status":"added"}]}`))
+	})
+	tr := wp03TrapServersWith(t, mux)
+	mcpServer, root := setupCaptureServer(t, false, nil)
+	wp03SplitCreds(t, root, tr.B.URL, tr.A.URL)
+	seedSyncState(t, mcpServer.store.Root, "wiki/concepts/foo.md", "abc1234")
+
+	data, _, err := mcpServer.HandleResourceRead(context.Background(), "ctx://wiki/foo")
+	if err != nil {
+		t.Fatalf("HandleResourceRead: %v", err)
+	}
+	s := string(data)
+	if !strings.HasPrefix(s, "<DRIFT_NOTICE>") {
+		t.Errorf("expected DRIFT_NOTICE prefix, got:\n%s", s[:min(200, len(s))])
+	}
+	if !strings.Contains(s, "+ ## Refund handling") {
+		t.Errorf("notice should include the changed sections:\n%s", s)
+	}
+	tr.AssertOnlyA(t, "drift", wp03Token)
+}
+
+// TestDriftSilentWhenRemoteUnusable: an unresolved server sends nothing and
+// is cached like an unconfigured project; a corrupt credentials file is
+// silent too but not cached, so the next read retries.
+func TestDriftSilentWhenRemoteUnusable(t *testing.T) {
+	t.Run("global credentials without server_url", func(t *testing.T) {
+		tr := wp03TrapServers(t)
+		mcpServer, root := setupCaptureServer(t, false, nil)
+		wp03SplitCreds(t, root, tr.B.URL, "")
+		seedSyncState(t, mcpServer.store.Root, "wiki/concepts/foo.md", "abc1234")
+
+		data, _, err := mcpServer.HandleResourceRead(context.Background(), "ctx://wiki/foo")
+		if err != nil {
+			t.Fatalf("HandleResourceRead: %v", err)
+		}
+		if strings.Contains(string(data), "DRIFT_NOTICE") {
+			t.Errorf("should not emit DRIFT_NOTICE while the server is unresolved")
+		}
+		if hits := tr.Hits(); len(hits) != 0 {
+			t.Errorf("nothing may be sent while the server is unresolved; A received %+v", hits)
+		}
+		if _, cached := mcpServer.drift.cache["wiki/concepts/foo.md"]; !cached {
+			t.Errorf("an unresolved remote should be cached like an unconfigured one")
+		}
+	})
+
+	t.Run("corrupt credentials", func(t *testing.T) {
+		tr := wp03TrapServers(t)
+		mcpServer, root := setupCaptureServer(t, false, nil)
+		wp03SplitCreds(t, root, tr.B.URL, tr.A.URL)
+		if err := os.WriteFile(config.CredentialsPath(root), []byte("{"), 0o600); err != nil {
+			t.Fatalf("write corrupt creds: %v", err)
+		}
+		seedSyncState(t, mcpServer.store.Root, "wiki/concepts/foo.md", "abc1234")
+
+		data, _, err := mcpServer.HandleResourceRead(context.Background(), "ctx://wiki/foo")
+		if err != nil {
+			t.Fatalf("HandleResourceRead: %v", err)
+		}
+		if strings.Contains(string(data), "DRIFT_NOTICE") {
+			t.Errorf("should not emit DRIFT_NOTICE with corrupt credentials")
+		}
+		if hits := tr.Hits(); len(hits) != 0 {
+			t.Errorf("nothing may be sent with corrupt credentials; A received %+v", hits)
+		}
+		if _, cached := mcpServer.drift.cache["wiki/concepts/foo.md"]; cached {
+			t.Errorf("a resolution error must not be cached")
+		}
+	})
 }
 
 func TestRenderDriftNotice_CompactSummary(t *testing.T) {

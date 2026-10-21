@@ -74,10 +74,12 @@ func (c *driftChecker) maybeNotice(relPath string) string {
 
 func (c *driftChecker) computeNotice(relPath string) (string, error) {
 	projectRoot := projectRootFromHub(c.hubRoot)
-	cfg, _ := config.Load(projectRoot)
-	creds, _ := config.LoadCredentials(projectRoot)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return "", nil // unconfigured; nothing to check against
+	rr, err := config.ResolveRemote(projectRoot)
+	if err != nil {
+		return "", err // unreadable config or credentials; retry on the next read
+	}
+	if rr.RequireAuth() != nil || rr.RequireRepo() != nil {
+		return "", nil // unauthenticated, unresolved or no repo; nothing to check against
 	}
 	state, err := syncpkg.LoadState(c.hubRoot)
 	if err != nil {
@@ -89,15 +91,15 @@ func (c *driftChecker) computeNotice(relPath string) (string, error) {
 		// (Locally-authored pages that have never been pushed live here.)
 		return "", nil
 	}
-	client := syncpkg.NewClient(cfg.ServerURL, creds.Bearer())
-	_, serverSHA, err := client.ReadPage(cfg.RepoID, relPath)
+	client := syncpkg.NewClient(rr.ServerURL, rr.Token)
+	_, serverSHA, err := client.ReadPage(rr.RepoID, relPath)
 	if err != nil {
 		return "", err
 	}
 	if serverSHA == "" || serverSHA == localSHA {
 		return "", nil
 	}
-	d, err := client.PageDiff(cfg.RepoID, relPath, localSHA, serverSHA, false)
+	d, err := client.PageDiff(rr.RepoID, relPath, localSHA, serverSHA, false)
 	if err != nil {
 		return "", err
 	}

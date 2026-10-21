@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -9,7 +8,6 @@ import (
 
 	"github.com/sugihAF/contexo/internal/ui"
 
-	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
 )
 
@@ -123,21 +121,13 @@ func newInviteRevokeCmd() *cobra.Command {
 	}
 }
 
-// inviteClient is the common preflight for 'ctx invite' subcommands: read
-// config + credentials, complain if the project isn't set up, and return a
-// configured sync client plus the current repo id.
+// inviteClient is the common preflight for 'ctx invite' subcommands: resolve
+// the remote, complain if the project isn't set up, and return a configured
+// sync client plus the current repo id.
 func inviteClient() (*sync.Client, string, error) {
-	root := GetRootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || creds.Bearer() == "" {
-		return nil, "", ui.Suggest(errors.New("invite: not authenticated"), "ctx auth login")
+	rr, client, err := openRemote(GetRootDir(), "invite", true)
+	if err != nil {
+		return nil, "", err
 	}
-	if cfg.ServerURL == "" {
-		return nil, "", fmt.Errorf("invite: server URL not set — run 'ctx remote set <url>' first")
-	}
-	if cfg.RepoID == "" {
-		return nil, "", fmt.Errorf("invite: repo id not set — run 'ctx remote set-repo <id>' first")
-	}
-	return sync.NewClient(cfg.ServerURL, creds.Bearer()), cfg.RepoID, nil
+	return client, rr.RepoID, nil
 }

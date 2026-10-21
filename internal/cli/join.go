@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newJoinCmd() *cobra.Command {
@@ -24,13 +22,15 @@ at the joined repo, so 'ctx push' / 'ctx pull' work immediately.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := GetRootDir()
 			u := ui.From(cmd)
-			cfg, _ := config.Load(root)
-			creds, _ := config.LoadCredentials(root)
-			if creds == nil || creds.Bearer() == "" {
-				return ui.Suggest(errors.New("join: not authenticated"), "ctx auth login")
+			cfg, err := config.Load(root)
+			if err != nil {
+				return err
 			}
-			if cfg.ServerURL == "" {
-				return fmt.Errorf("join: server URL not set — run 'ctx remote set <url>' first")
+			// No repo yet is the point of joining, so only auth and the
+			// server are required.
+			_, client, err := openRemote(root, "join", false)
+			if err != nil {
+				return err
 			}
 
 			var key string
@@ -49,7 +49,6 @@ at the joined repo, so 'ctx push' / 'ctx pull' work immediately.`,
 				return fmt.Errorf("an invite key is required")
 			}
 
-			client := sync.NewClient(cfg.ServerURL, creds.Bearer())
 			repoID, role, err := client.JoinRepo(key)
 			if err != nil {
 				return err

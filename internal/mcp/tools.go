@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -258,18 +259,54 @@ func (s *Server) rootDir() string {
 	return filepath.Dir(s.store.Root)
 }
 
+// remoteClient is the preflight for every tool that talks to the server. The
+// server URL and token come from config.ResolveRemote, so a global token is
+// never sent to a URL taken from the workspace config. On failure the client
+// is nil and the *ToolResult is the error the tool returns.
+func (s *Server) remoteClient(tool string) (*config.Remote, *sync.Client, *ToolResult) {
+	rr, err := config.ResolveRemote(s.rootDir())
+	if err != nil {
+		return nil, nil, errorResult(tool + ": " + err.Error())
+	}
+	if err := rr.RequireAuth(); err != nil {
+		return rr, nil, remoteErrorResult(tool, err)
+	}
+	if err := rr.RequireRepo(); err != nil {
+		return rr, nil, remoteErrorResult(tool, err)
+	}
+	return rr, sync.NewClient(rr.ServerURL, rr.Token), nil
+}
+
+// remoteErrorResult renders a RequireAuth/RequireRepo failure with the
+// commands that fix it, e.g. "ctx_push: not authenticated (run 'ctx auth
+// login')".
+func remoteErrorResult(tool string, err error) *ToolResult {
+	msg := tool + ": " + err.Error()
+	var re *config.RemoteError
+	if errors.As(err, &re) && len(re.ErrorAdvice()) > 0 {
+		msg += " (run '" + strings.Join(re.ErrorAdvice(), "', '") + "')"
+	}
+	return errorResult(msg)
+}
+
 func (s *Server) toolStatus() *ToolResult {
 	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
+	rr, err := config.ResolveRemote(root)
+	if err != nil {
+		return errorResult("ctx_status: " + err.Error())
+	}
 	pages, _ := s.store.List(pagestore.Filter{})
 	state, _ := sync.LoadState(s.store.Root)
 
-	server := cfg.ServerURL
+	server := rr.ServerURL
 	if server == "" {
-		server = "(none)"
+		server = "(unresolved — run 'ctx auth login --server <url>')"
 	}
-	repo := cfg.RepoID
+	if rr.Mismatch { // its own line, right after the Server line
+		server += fmt.Sprintf("\nWarning: config server_url %s differs from your credentials' server; using %s",
+			rr.ConfiguredServerURL, rr.ServerURL)
+	}
+	repo := rr.RepoID
 	if repo == "" {
 		repo = "(none)"
 	}
@@ -288,24 +325,22 @@ func (s *Server) toolStatus() *ToolResult {
 	}
 
 	user := "(anonymous)"
-	if creds != nil && creds.UserName != "" {
-		user = fmt.Sprintf("%s <%s>", creds.UserName, creds.UserEmail)
+	if rr.Creds != nil && rr.Creds.UserName != "" {
+		user = fmt.Sprintf("%s <%s>", rr.Creds.UserName, rr.Creds.UserEmail)
 	}
 
 	pendingBuffers, _ := capture.List(s.store.Root)
 
 	return textResult(fmt.Sprintf(
 		"Server: %s\nRepo: %s\nUser: %s\nAuthenticated: %t\nLocal pages: %d\nLast pull: %s\nNever-pushed pages: %d\nPending capture buffers: %d",
-		server, repo, user, creds != nil && creds.Bearer() != "", len(pages), lastPull, unpushed, len(pendingBuffers),
+		server, repo, user, rr.Token != "", len(pages), lastPull, unpushed, len(pendingBuffers),
 	))
 }
 
 func (s *Server) toolPush(args map[string]interface{}) *ToolResult {
-	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return errorResult("ctx_push: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	rr, client, fail := s.remoteClient("ctx_push")
+	if fail != nil {
+		return fail
 	}
 
 	feature, _ := args["feature"].(string)
@@ -369,10 +404,9 @@ func (s *Server) toolPush(args map[string]interface{}) *ToolResult {
 		message = fmt.Sprintf("agent push (%d pages)", len(files))
 	}
 
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	resp, err := client.PushPages(cfg.RepoID, &sync.PushRequest{
-		AuthorName:  creds.UserName,
-		AuthorEmail: creds.UserEmail,
+	resp, err := client.PushPages(rr.RepoID, &sync.PushRequest{
+		AuthorName:  rr.Creds.UserName,
+		AuthorEmail: rr.Creds.UserEmail,
 		Message:     message,
 		Files:       files,
 	})
@@ -585,11 +619,9 @@ func (s *Server) toolCaptureSession(args map[string]interface{}) *ToolResult {
 }
 
 func (s *Server) toolPull(args map[string]interface{}) *ToolResult {
-	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return errorResult("ctx_pull: server not configured")
+	rr, client, fail := s.remoteClient("ctx_pull")
+	if fail != nil {
+		return fail
 	}
 
 	full, _ := args["full"].(bool)
@@ -599,9 +631,8 @@ func (s *Server) toolPull(args map[string]interface{}) *ToolResult {
 		since = ""
 	}
 
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
 	client.SetClientName(s.clientName)
-	resp, err := client.PullPages(cfg.RepoID, since)
+	resp, err := client.PullPages(rr.RepoID, since)
 	if err != nil {
 		return errorResult(err.Error())
 	}
@@ -859,18 +890,15 @@ func (s *Server) toolHistory(args map[string]interface{}) *ToolResult {
 		limit = v
 	}
 
-	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return errorResult("ctx_history: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	rr, client, fail := s.remoteClient("ctx_history")
+	if fail != nil {
+		return fail
 	}
 	path, err := s.resolveMCPSlug(slug, typ)
 	if err != nil {
 		return errorResult("ctx_history: " + err.Error())
 	}
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	commits, err := client.PageHistory(cfg.RepoID, path, limit)
+	commits, err := client.PageHistory(rr.RepoID, path, limit)
 	if err != nil {
 		return errorResult("ctx_history: " + err.Error())
 	}
@@ -901,18 +929,15 @@ func (s *Server) toolDiff(args map[string]interface{}) *ToolResult {
 	to, _ := args["to"].(string)
 	blame, _ := args["blame"].(bool)
 
-	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return errorResult("ctx_diff: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	rr, client, fail := s.remoteClient("ctx_diff")
+	if fail != nil {
+		return fail
 	}
 	path, err := s.resolveMCPSlug(slug, typ)
 	if err != nil {
 		return errorResult("ctx_diff: " + err.Error())
 	}
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	d, err := client.PageDiff(cfg.RepoID, path, from, to, blame)
+	d, err := client.PageDiff(rr.RepoID, path, from, to, blame)
 	if err != nil {
 		return errorResult("ctx_diff: " + err.Error())
 	}
@@ -942,18 +967,15 @@ func (s *Server) toolEvolution(args map[string]interface{}) *ToolResult {
 		limit = v
 	}
 
-	root := s.rootDir()
-	cfg, _ := config.Load(root)
-	creds, _ := config.LoadCredentials(root)
-	if creds == nil || cfg.ServerURL == "" || cfg.RepoID == "" {
-		return errorResult("ctx_evolution: server not configured (run 'ctx remote set <url>', 'ctx remote set-repo <id>', 'ctx auth login')")
+	rr, client, fail := s.remoteClient("ctx_evolution")
+	if fail != nil {
+		return fail
 	}
 	path, err := s.resolveMCPSlug(slug, typ)
 	if err != nil {
 		return errorResult("ctx_evolution: " + err.Error())
 	}
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-	entries, err := client.PageEvolution(cfg.RepoID, path, limit, blame)
+	entries, err := client.PageEvolution(rr.RepoID, path, limit, blame)
 	if err != nil {
 		return errorResult("ctx_evolution: " + err.Error())
 	}

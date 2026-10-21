@@ -31,35 +31,44 @@ func newStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			cfg, _ := config.Load(root)
-			creds, _ := config.LoadCredentials(root)
+			// remoteErr (not err: pagestore.Open below reuses that name) gates
+			// the drift check; rr is nil only for a corrupt config or
+			// credentials file.
+			rr, client, remoteErr := openRemote(root, "status", true)
+			if rr == nil {
+				return remoteErr
+			}
 
-			authed := creds != nil && creds.Bearer() != ""
+			authed := rr.Token != ""
 			state := "connected"
 			if !authed {
 				state = "not authenticated"
-			} else if cfg.ServerURL == "" {
-				state = "no server configured"
+			} else if rr.ServerURL == "" {
+				state = "server unresolved"
 			}
-			u.Brand(state, authed && cfg.ServerURL != "")
+			u.Brand(state, authed && rr.ServerURL != "")
 			fmt.Fprintln(out)
 
 			u.Eyebrow("REMOTE")
-			if cfg.ServerURL != "" {
-				u.Field("server", cfg.ServerURL)
+			if rr.ServerURL != "" {
+				u.Field("server", rr.ServerURL)
 			} else {
-				u.Field("server", "(none — run 'ctx remote set <url>')")
+				u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
 			}
-			if cfg.RepoID != "" {
-				u.Field("repo", cfg.RepoID)
+			if rr.Mismatch {
+				u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
+					rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
+			}
+			if rr.RepoID != "" {
+				u.Field("repo", rr.RepoID)
 			} else {
 				u.Field("repo", "(none — run 'ctx remote set-repo <id>')")
 			}
 			if authed {
-				if creds.UserName != "" {
-					u.Field("user", fmt.Sprintf("%s <%s>", creds.UserName, creds.UserEmail))
+				if rr.Creds.UserName != "" {
+					u.Field("user", fmt.Sprintf("%s <%s>", rr.Creds.UserName, rr.Creds.UserEmail))
 				}
-				u.Field("auth", fmt.Sprintf("yes (%s)", creds.Kind()))
+				u.Field("auth", fmt.Sprintf("yes (%s)", rr.Creds.Kind()))
 			} else {
 				u.Field("auth", "no")
 			}
@@ -97,9 +106,9 @@ func newStatusCmd() *cobra.Command {
 				u.Field("last pull", "(never)")
 			}
 
-			if !noDrift && authed && cfg.ServerURL != "" && cfg.RepoID != "" {
+			if !noDrift && remoteErr == nil {
 				t := u.Task("Checking server drift")
-				drifted := computeDriftedPages(cfg, creds, pages, syncState)
+				drifted := computeDriftedPages(client, rr.RepoID, pages, syncState)
 				t.Done("Checked %d pages", len(pages))
 
 				if len(drifted) > 0 {
@@ -141,9 +150,7 @@ type driftedPage struct {
 // so a 40-page repo waited on 40 sequential requests. Each goroutine writes to
 // its own index, so the reported order is the page order and does not shuffle
 // between runs.
-func computeDriftedPages(cfg *config.Config, creds *config.Credentials, pages []*schema.Page, state *sync.State) []driftedPage {
-	client := sync.NewClient(cfg.ServerURL, creds.Bearer())
-
+func computeDriftedPages(client *sync.Client, repoID string, pages []*schema.Page, state *sync.State) []driftedPage {
 	found := make([]*driftedPage, len(pages))
 	sem := make(chan struct{}, driftConcurrency)
 	var wg goSync.WaitGroup
@@ -160,7 +167,7 @@ func computeDriftedPages(cfg *config.Config, creds *config.Credentials, pages []
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			_, serverSHA, err := client.ReadPage(cfg.RepoID, path)
+			_, serverSHA, err := client.ReadPage(repoID, path)
 			if err != nil || serverSHA == "" || serverSHA == localSHA {
 				return
 			}

@@ -1,14 +1,11 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-
-	"github.com/sugihAF/contexo/internal/ui"
 
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/indexer"
@@ -25,20 +22,9 @@ func newPullCmd() *cobra.Command {
 			root := GetRootDir()
 			hubDir := config.ContexoDirPath(root)
 
-			cfg, err := config.Load(root)
+			rr, client, err := openRemote(root, "pull", true)
 			if err != nil {
 				return err
-			}
-			creds, err := config.LoadCredentials(root)
-			if err != nil || creds == nil {
-				return ui.Suggest(errors.New("pull: not authenticated"), "ctx auth login")
-			}
-			serverURL := chooseServerURL(creds, cfg)
-			if serverURL == "" {
-				return ui.Suggest(errors.New("pull: no server URL configured"), "ctx remote set <url>")
-			}
-			if cfg.RepoID == "" {
-				return fmt.Errorf("pull: no repo_id configured in .contexo/config.json")
 			}
 
 			store, err := pagestore.Open(hubDir)
@@ -57,9 +43,8 @@ func newPullCmd() *cobra.Command {
 				since = ""
 			}
 
-			client := sync.NewClient(serverURL, creds.Bearer())
 			client.SetClientName("ctx-cli")
-			resp, err := client.PullPages(cfg.RepoID, since)
+			resp, err := client.PullPages(rr.RepoID, since)
 			if err != nil {
 				return err
 			}

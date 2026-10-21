@@ -1,15 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sugihAF/contexo/internal/ui"
-
 	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/sync"
 )
 
 func newRemoteCmd() *cobra.Command {
@@ -38,7 +35,21 @@ func newRemoteSetCmd() *cobra.Command {
 			if err := config.Save(root, cfg); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\n", cfg.ServerURL)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Server: %s\n", cfg.ServerURL)
+			// Best-effort: credentials never follow a workspace URL, so say
+			// where they will (not) go. A resolution error is ignored here;
+			// the next networked command reports it.
+			if rr, err := config.ResolveRemote(root); err == nil && rr.Token != "" {
+				switch {
+				case rr.Mismatch:
+					fmt.Fprintf(out, "note: your credentials belong to %s; ctx keeps sending them there, not to %s. To use this server, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials).\n",
+						rr.ServerURL, cfg.ServerURL, cfg.ServerURL)
+				case rr.ServerURL == "":
+					fmt.Fprintf(out, "note: your %s credentials have no server URL, so ctx will not send them to %s. To use this server, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials).\n",
+						rr.CredsSource, cfg.ServerURL, cfg.ServerURL)
+				}
+			}
 			return nil
 		},
 	}
@@ -65,16 +76,7 @@ func newRemoteSetRepoCmd() *cobra.Command {
 			case !stdinIsTTY():
 				return fmt.Errorf("set-repo requires a <repo_id> when stdin is not a terminal")
 			default:
-				creds, err := config.LoadCredentials(root)
-				if err != nil || creds == nil || creds.Bearer() == "" {
-					return ui.Suggest(errors.New("set-repo: not authenticated (or pass a <repo_id> directly)"), "ctx auth login")
-				}
-				serverURL := chooseServerURL(creds, cfg)
-				if serverURL == "" {
-					return fmt.Errorf("set-repo: no server URL configured — run 'ctx remote set <url>' first, or pass a <repo_id> directly")
-				}
-				client := sync.NewClient(serverURL, creds.Bearer())
-				chosen, err = selectRepoInteractive(client, cmd.InOrStdin(), cmd.OutOrStdout())
+				chosen, err = pickRepo(root, "set-repo", cmd.InOrStdin(), cmd.OutOrStdout())
 				if err != nil {
 					return err
 				}
@@ -88,6 +90,17 @@ func newRemoteSetRepoCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// pickRepo fetches the repos the user belongs to from the resolved server and
+// presents the interactive picker. Shared by 'ctx remote set-repo' and the
+// login flow; name prefixes the resolution errors.
+func pickRepo(root, name string, in io.Reader, out io.Writer) (string, error) {
+	_, client, err := openRemote(root, name, false)
+	if err != nil {
+		return "", err
+	}
+	return selectRepoInteractive(client, in, out)
 }
 
 func newRemoteGetCmd() *cobra.Command {
