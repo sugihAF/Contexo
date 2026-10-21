@@ -98,14 +98,16 @@ func pushDetail(changed []string, client string) string {
 const maxClientLen = 128
 
 // activityClient returns the request's X-Contexo-Client header, trimmed, with
-// control and format characters dropped and capped at maxClientLen bytes on a
-// rune boundary. Format characters (Cf: bidi overrides, zero-width) would let
-// a member make the stored name render as another client in the feed.
+// every non-graphic rune dropped and capped at maxClientLen bytes on a rune
+// boundary. Only letters, marks, numbers, punctuation, symbols and plain
+// spaces survive: control and format characters (bidi overrides, zero-width),
+// line/paragraph separators and private-use runes would let a member make the
+// stored name render as another client, or as several lines, in the feed.
 func activityClient(c *gin.Context) string {
 	raw := strings.TrimSpace(c.GetHeader("X-Contexo-Client"))
 	var b strings.Builder
 	for _, r := range raw {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError {
+		if !unicode.IsGraphic(r) || r == utf8.RuneError {
 			continue
 		}
 		if b.Len()+utf8.RuneLen(r) > maxClientLen {

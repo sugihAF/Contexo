@@ -239,6 +239,14 @@ func TestPush_ActivityClientIsSanitized(t *testing.T) {
 	if d.Client != "ctxedocsv-oxetnocx" {
 		t.Errorf("stored client %q, want the format characters dropped (ctxedocsv-oxetnocx)", d.Client)
 	}
+
+	// Line/paragraph separators and private-use runes are not graphic either:
+	// U+2028 would render the name as two lines in the feed.
+	wp02Push(t, rig.router, "team-repo", alice, "ctx-mcp contexo-vscode/0.2.0 ", wp02PushFile{Path: "wiki/c.md", Content: "c"})
+	_, d = wp02LatestActivity(t, rig)
+	if d.Client != "ctx-mcpcontexo-vscode/0.2.0" {
+		t.Errorf("stored client %q, want only graphic runes kept (ctx-mcpcontexo-vscode/0.2.0)", d.Client)
+	}
 }
 
 func TestPush_NewHeadIsRepoHead(t *testing.T) {
