@@ -921,6 +921,146 @@ func TestWP04RemoveRetry(t *testing.T) {
 	}
 }
 
+// wp04lockStaleGuard plants a guard last modified a minute ago, as a
+// reclaimer that died inside the critical section leaves it.
+func wp04lockStaleGuard(t *testing.T, hub string) string {
+	t.Helper()
+	if err := EnsureSyncDir(hub); err != nil {
+		t.Fatal(err)
+	}
+	guard := lockGuardPath(hub)
+	if err := os.WriteFile(guard, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(guard, old, old); err != nil {
+		t.Fatal(err)
+	}
+	return guard
+}
+
+// Clearing a stale guard is a compare-and-delete: a reclaimer acting on an
+// old judgement never removes the fresh guard another process took since.
+func TestWP04LockStaleGuardClearIsCompareAndDelete(t *testing.T) {
+	t.Run("replaced_by_a_fresh_guard", func(t *testing.T) {
+		hub := wp04lockHub(t)
+		planted := wp04lockWrite(t, hub, LockInfo{PID: wp04lockDeadPID(t), Host: wp04lockHost(), Command: "push", StartedAt: wp04lockNow()})
+		guard := wp04lockStaleGuard(t, hub)
+
+		// C judges the guard stale...
+		judged, err := statGuard(guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Since(judged.ModTime()) <= lockGuardStaleAge {
+			t.Fatalf("planted guard is not stale: mtime %v", judged.ModTime())
+		}
+		// ...then B clears it and takes its own guard.
+		heldB, err := takeLockGuard(guard)
+		if err != nil || heldB == nil {
+			t.Fatalf("B takeLockGuard past the stale guard: held=%v err=%v", heldB != nil, err)
+		}
+		// C acts on its old judgement.
+		if clearStaleGuard(guard, judged) {
+			t.Errorf("C cleared the guard on a stale judgement after B took it")
+		}
+		cur, err := statGuard(guard)
+		if err != nil {
+			t.Fatalf("B's guard is gone after C's clear: %v", err)
+		}
+		if !os.SameFile(cur, heldB) {
+			t.Errorf("the guard path no longer names B's guard")
+		}
+		if heldC, err := takeLockGuard(guard); heldC != nil || err != nil {
+			t.Errorf("C took the guard while B holds it: held=%v err=%v", heldC != nil, err)
+		}
+		if got := strings.Join(wp04lockSyncNames(t, hub), ","); got != ".gitignore,lock,lock.guard" {
+			t.Errorf(".sync holds %s, want .gitignore,lock,lock.guard", got)
+		}
+		releaseLockGuard(guard, heldB)
+		if _, err := os.Lstat(guard); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("B's release left its guard (lstat err %v)", err)
+		}
+		if got := wp04lockReadFile(t, hub); !bytes.Equal(got, planted) {
+			t.Errorf("lock changed: %q -> %q", planted, got)
+		}
+	})
+	t.Run("same_file_touched_since", func(t *testing.T) {
+		// The judged inode now holds a fresh guard (inode reuse): its mtime
+		// moved, so it is not the guard that was judged stale.
+		hub := wp04lockHub(t)
+		guard := wp04lockStaleGuard(t, hub)
+		judged, err := statGuard(guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := os.Chtimes(guard, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if clearStaleGuard(guard, judged) {
+			t.Errorf("cleared a guard whose mtime changed since it was judged")
+		}
+		if _, err := os.Lstat(guard); err != nil {
+			t.Errorf("guard gone after a refused clear: %v", err)
+		}
+		if got := strings.Join(wp04lockSyncNames(t, hub), ","); got != ".gitignore,lock.guard" {
+			t.Errorf(".sync holds %s, want .gitignore,lock.guard", got)
+		}
+	})
+	t.Run("still_the_judged_guard", func(t *testing.T) {
+		hub := wp04lockHub(t)
+		guard := wp04lockStaleGuard(t, hub)
+		judged, err := statGuard(guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !clearStaleGuard(guard, judged) {
+			t.Fatalf("clearStaleGuard of the judged stale guard = false")
+		}
+		if got := strings.Join(wp04lockSyncNames(t, hub), ","); got != ".gitignore" {
+			t.Errorf(".sync holds %s after the clear, want only .gitignore", got)
+		}
+	})
+}
+
+// A guard holder paused past lockGuardStaleAge may find its guard cleared
+// and replaced by another process; its release must leave that one alone.
+func TestWP04GuardReleaseKeepsForeignGuard(t *testing.T) {
+	hub := wp04lockHub(t)
+	if err := EnsureSyncDir(hub); err != nil {
+		t.Fatal(err)
+	}
+	guard := lockGuardPath(hub)
+	held, err := takeLockGuard(guard)
+	if err != nil || held == nil {
+		t.Fatalf("takeLockGuard: held=%v err=%v", held != nil, err)
+	}
+	if err := os.Remove(guard); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guard, []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	releaseLockGuard(guard, held)
+	if got, err := os.ReadFile(guard); err != nil || string(got) != "other" {
+		t.Fatalf("release removed another process's guard: %q, %v", got, err)
+	}
+
+	// Its own guard, untouched, is removed.
+	if err := os.Remove(guard); err != nil {
+		t.Fatal(err)
+	}
+	held, err = takeLockGuard(guard)
+	if err != nil || held == nil {
+		t.Fatalf("takeLockGuard: held=%v err=%v", held != nil, err)
+	}
+	releaseLockGuard(guard, held)
+	if _, err := os.Lstat(guard); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("release left its own guard (lstat err %v)", err)
+	}
+}
+
 // WSL2 inherits the Windows computer name, but its pids live in another
 // namespace than ctx.exe's on the same machine. lockHost marks WSL so a
 // lock from the other side falls under the cross-host rule instead of a

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"strings"
@@ -75,7 +76,9 @@ const (
 // both win, and an unlock never deletes a lock another acquisition wrote.
 // A guard is held for well under a second; one older than lockGuardStaleAge
 // belongs to a process that died inside the critical section and is
-// cleared.
+// cleared. Clearing is itself a compare-and-delete (clearStaleGuard), and a
+// holder releases its guard only while the path still names the file it
+// created (releaseLockGuard), so no process deletes another's fresh guard.
 const (
 	lockGuardStaleAge = 5 * time.Second
 	lockGuardPoll     = 10 * time.Millisecond
@@ -335,14 +338,14 @@ func judgeLock(data []byte, mtime time.Time, host string, now time.Time) (LockIn
 // process holds the guard.
 func reclaimLock(hub string, judged []byte) (reclaimed bool, err error) {
 	guard := lockGuardPath(hub)
-	took, err := takeLockGuard(guard)
+	held, err := takeLockGuard(guard)
 	if err != nil {
 		return false, lockIOError(err)
 	}
-	if !took {
+	if held == nil {
 		return false, nil
 	}
-	defer func() { _ = removeLockFile(guard) }()
+	defer releaseLockGuard(guard, held)
 	if _, err := removeLockIfUnchanged(LockPath(hub), judged); err != nil {
 		return false, lockIOError(err)
 	}
@@ -350,39 +353,113 @@ func reclaimLock(hub string, judged []byte) (reclaimed bool, err error) {
 }
 
 // takeLockGuard tries once to create the removal guard, first clearing a
-// guard older than lockGuardStaleAge. took is false when another process
+// guard older than lockGuardStaleAge. held identifies the guard file this
+// process created, for releaseLockGuard; it is nil when another process
 // holds a fresh guard (or a transient error got in the way).
-func takeLockGuard(guard string) (took bool, err error) {
+func takeLockGuard(guard string) (held os.FileInfo, err error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		f, err := os.OpenFile(guard, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
-			// Only the file's existence matters; a failed close leaves it.
+			// Only the file's existence and identity matter; a failed close
+			// leaves it.
+			held, err := f.Stat()
 			_ = f.Close()
-			return true, nil
+			if err != nil {
+				// Unidentifiable, so it could never be released safely. It
+				// is too young for anyone else to clear.
+				_ = removeLockFile(guard)
+				return nil, err
+			}
+			return held, nil
 		}
 		if isTransientLockErr(err) {
-			return false, nil
+			return nil, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return false, err
+			return nil, err
 		}
-		fi, err := os.Lstat(guard)
+		fi, err := statGuard(guard)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			if isTransientLockErr(err) {
-				return false, nil
+				return nil, nil
 			}
-			return false, err
+			return nil, err
 		}
 		if time.Since(fi.ModTime()) <= lockGuardStaleAge {
-			return false, nil
+			return nil, nil
 		}
 		// Its holder died inside the critical section.
-		_ = removeLockFile(guard)
+		if !clearStaleGuard(guard, fi) {
+			return nil, nil
+		}
 	}
-	return false, nil
+	return nil, nil
+}
+
+// statGuard returns the identity and mtime of the file at guard, both from
+// one open handle. (os.Lstat would not do: on Windows its result loads the
+// file id lazily, from whatever the path names when os.SameFile runs.)
+func statGuard(guard string) (os.FileInfo, error) {
+	f, err := os.Open(guard)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.Stat()
+}
+
+// sameGuard reports whether a and b are the same guard file, unchanged: the
+// same file (a reused inode number shows up as a moved mtime) with the same
+// mtime.
+func sameGuard(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.ModTime().Equal(b.ModTime())
+}
+
+// clearStaleGuard removes the guard judged stale, as a compare-and-delete:
+// it renames whatever is at guard to a unique name next to it and checks
+// that this is still the judged file. If it is not (another process cleared
+// the stale guard and took a fresh one since the judgement), the file is
+// put back with a hard link and the clear fails. It reports whether the
+// caller should retry creating the guard: the judged guard is gone, by this
+// call or another process.
+func clearStaleGuard(guard string, judged os.FileInfo) bool {
+	if !judged.Mode().IsRegular() {
+		return false // not a guard this package wrote; never moved
+	}
+	aside := guard + ".stale-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatUint(rand.Uint64(), 36)
+	if err := os.Rename(guard, aside); err != nil {
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	moved, err := statGuard(aside)
+	if err == nil && sameGuard(moved, judged) {
+		_ = removeLockFile(aside)
+		return true
+	}
+	// Someone else's guard: put it back. A guard created at the path in
+	// the meantime wins (os.Link fails with ErrExist). Without hard links
+	// (FAT, some network shares) rename it back instead.
+	if err := os.Link(aside, guard); err != nil && !errors.Is(err, fs.ErrExist) {
+		if os.Rename(aside, guard) == nil {
+			return false
+		}
+	}
+	_ = removeLockFile(aside)
+	return false
+}
+
+// releaseLockGuard removes the guard this process created (held), only
+// while the guard path still names that file: a holder paused past
+// lockGuardStaleAge may have had it cleared and replaced by another
+// process's guard, which must stay.
+func releaseLockGuard(guard string, held os.FileInfo) {
+	cur, err := statGuard(guard)
+	if err != nil || !sameGuard(cur, held) {
+		return
+	}
+	_ = removeLockFile(guard)
 }
 
 // newUnlock returns the idempotent unlock for an acquisition that wrote
@@ -404,10 +481,10 @@ func releaseLock(hub string, ours []byte, guardWait time.Duration) {
 	path, guard := LockPath(hub), lockGuardPath(hub)
 	deadline := time.Now().Add(guardWait)
 	for {
-		took, err := takeLockGuard(guard)
-		if took {
+		held, err := takeLockGuard(guard)
+		if held != nil {
 			_, _ = removeLockIfUnchanged(path, ours)
-			_ = removeLockFile(guard)
+			releaseLockGuard(guard, held)
 			return
 		}
 		if err != nil || !time.Now().Before(deadline) {
