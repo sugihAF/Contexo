@@ -33,10 +33,12 @@ The scratch prototype (`contract-probe`) is informational only (E40).
 |---|---|---|
 | `internal/syncops/contract` (import path `github.com/sugihAF/contexo/internal/syncops/contract`) | wire types, error/exit table, `Classify`, `ClassifySides`, `SCMGroup`, `WriteDoc`/`WriteEnvelope`, `TimeOf`/`TimePtr`, canonical fixtures in `testdata/v1/` | standard library only |
 | `internal/syncops` | `Env`, `Author`, `Remote`, `NewEnv`, `(Env).Online`, `RequireHub`, `NotImplemented`/`New`/`Wrap`, `SidecarFact`/`ApplySidecar`, one file per engine | never internal/config, internal/syncstate, internal/ui or internal/cli |
-| `internal/syncops/syncopstest` | `FakeRemote`, `NewFakeRemote(FakeOptions)` | syncops, sync, contract |
+| `internal/syncops/syncopstest` | `FakeRemote`, `NewFakeRemote(FakeOptions)` | sync, contract (never syncops) |
 
-`syncopstest` imports `syncops`, so a test in this directory that uses
-`FakeRemote` must be in package `syncops_test`.
+`syncopstest` never imports `syncops`: the `var _ syncops.Remote =
+(*FakeRemote)(nil)` check lives in its test file. A package-`syncops` test
+can therefore drive an engine on `FakeRemote` while it overrides the
+engine's unexported seams (`ensurebase_test.go` is the in-package example).
 
 ## Additive-only rule
 
@@ -163,8 +165,8 @@ text (byte-stable), `Unwrap()` the legacy sentinel, and `Is()` also matches
 | 404, JSON without such a code | repo_not_found if error == "repo not found"; else sha_not_found on an `?at` read; else page_not_found |
 | 404, non-JSON | server_unsupported (details missing `[pages.at]` on an `?at` read) |
 | 429 | rate_limited |
-| 5xx, garbled 2xx body | server_error |
-| 409 and any other status | never conflict; see the deviations table |
+| 5xx; a body that does not decode on a status the method accepts (2xx, push 409) | server_error |
+| 409 other than a decodable push answer, 1xx, 3xx and any other unlisted status | internal (never conflict; deviation 1) |
 
 `ReadPageAt` requires the `X-Contexo-At` echo to equal the requested sha;
 otherwise the error is server_unsupported (`errors.Is ErrServerUnsupported`,
@@ -212,7 +214,8 @@ removes a frozen identifier.
 - Frozen tests (never weakened): `env_test.go`, `overlay_test.go`. The shared
   stub helpers (`wp01StubEnv`, `wp01AssertNotImplemented`) live in
   `env_test.go`, so rewriting one stub test never breaks another.
-  `ensurebase_test.go` is package `syncops_test` because it uses `FakeRemote`.
+  `ensurebase_test.go` is package `syncops` and uses `FakeRemote`: it stops
+  compiling (import cycle) if `syncopstest` ever imports `syncops`.
 - `TestRepairResultJSONKeyOrder` pins the E18 shape of `ctx repair --json`
   (`schema, dry_run, server_capabilities, backfilled{path,sha},
   repaired{path,old_sha,new_sha,reason}, skipped{path,reason}, unverified,
@@ -228,9 +231,18 @@ removes a frozen identifier.
   time `2026-01-01T00:00:00Z + n s`; parent check only when parent and
   current are both set (ancestor_content when the parent holds the path);
   expect_absent conflicts unless `NoExpectAbsent`; a no-op returns the path's
-  last commit (HEAD under `LegacyNoopHeadSHA`); errors are the same
-  `*sync.HTTPError` values a real client returns (a test pins this against
-  `sync.Client` on httptest).
+  last commit (HEAD under `LegacyNoopHeadSHA`); push `new_head` is always
+  repo HEAD after the batch, never a trailing no-op file's older sha.
+  `ReadPageAt` applies gitstore.ValidSHA (4-64 hex, either case; otherwise
+  400 invalid_sha, client code usage) and resolves a unique case-insensitive
+  prefix like git (unknown or ambiguous: 404 "sha not found"; path absent at
+  the commit: 404 "page not found at sha"; both sha_not_found), returning the
+  full last-touch sha. `PullPages` lists the paths whose content differs
+  between since and HEAD (git diff), and a since the repo cannot resolve is a
+  500 (server_error), as gitstore.ChangedSince answers; it never means
+  "everything". Error bodies are byte-equal to gin's (sorted keys), and
+  errors are the same `*sync.HTTPError` values a real client returns (a test
+  pins this against `sync.Client` on httptest).
 
 ## Fixtures (E31, E32, E33)
 
@@ -262,7 +274,7 @@ WP-0.I.
 
 | # | Decision | Why | Cost if wrong |
 |---|---|---|---|
-| 1 | HTTP statuses outside E14's list: an unexpected 409 and other 4xx map to internal; 1xx, 3xx and a garbled 2xx map to server_error. | E14 names 400/401/402/403/404/429/5xx and forbids mapping 409 to conflict, but is silent on the rest. An unlisted 4xx means client and server disagree on the protocol (a bug, not transient). An informational, redirect or unreadable success answer is a server or proxy fault like E14's garbled body. | The extension shows an internal error (exit 1, no retry) where a retry might have helped, or retries (exit 7) a status that will never succeed. |
+| 1 | HTTP statuses outside E14's list: an unexpected 409 (any 409 but a decodable push answer), any other unlisted 4xx, and 1xx/3xx map to internal; a garbled body (one that does not decode on a status the method accepts: 2xx, or a push 409) maps to server_error. | E14 names 400/401/402/403/404/429/5xx and forbids mapping 409 to conflict, but is silent on the rest. An unlisted status, an informational answer or a redirect net/http did not follow (304, a 3xx without Location) means client and server disagree on the protocol: a bug, not transient, so it is not retried. A garbled body on an expected status is a server or proxy fault, like a 5xx (contract section 5). | The extension shows an internal error (exit 1, no retry) where a retry might have helped (a proxy answering 3xx), or retries (exit 7) a garbled answer that will never decode. |
 | 2 | Codeless JSON 404s on non-page routes (members, invite keys, history, diff) follow E14's fallback: page_not_found (exit 8). Legacy sentinels and texts are kept. | One mapping function for every route; E14 does not limit the fallback to page routes. Existing callers keep working through the legacy sentinels and byte-stable `Error()` text. | A `--json` failure of those commands reports page_not_found instead of a more specific code. The extension never calls them. |
 | 3 | `ReadPage` keeps sentinel `ErrPageNotFound` for every 404 (legacy behaviour) while Code follows E14, and `HTTPError.Is` also matches the code sentinels by Code. | diff.go and push_preview.go treat `errors.Is(err, ErrPageNotFound)` as "new page"; the envelope still gets the precise code (repo_not_found, server_unsupported). New code can test any code sentinel uniformly. | A missing repo satisfies both `errors.Is(ErrPageNotFound)` and `errors.Is(ErrRepoNotFound)`, so legacy callers keep treating it as a new page, as today. |
 | 4 | `sync.NewHTTPError(status, body, msg, sentinel, at)` is exported (additive). | `syncopstest.FakeRemote` must build errors identical to the real client's, and the sentinel field is unexported. | One more frozen exported name on the sync surface; a later mapping change must keep its signature. |

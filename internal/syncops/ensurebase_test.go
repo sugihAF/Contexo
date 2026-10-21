@@ -1,9 +1,13 @@
-// External test package: syncopstest imports syncops, so a package-syncops
-// test cannot import it (import cycle).
-package syncops_test
+package syncops
 
 // Owner: WP-1.5. This file holds the wave-0 stub assertion for EnsureBase;
 // the owner replaces it when base repair is implemented.
+//
+// It is in package syncops (not syncops_test) on purpose: wave-1 tests drive
+// an engine on syncopstest.FakeRemote while overriding unexported seams
+// (ensureBaseStatusBudget, pushEnsureBase, pullEnsureBase, ...). syncopstest
+// therefore must never import syncops; this file stops compiling (import
+// cycle) if it does.
 
 import (
 	"context"
@@ -13,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sugihAF/contexo/internal/sync"
-	"github.com/sugihAF/contexo/internal/syncops"
 	"github.com/sugihAF/contexo/internal/syncops/syncopstest"
 )
 
@@ -25,8 +28,8 @@ func TestEnsureBaseStubNoop(t *testing.T) {
 	}
 	fake := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
 	sha := fake.Seed("wiki/concepts/a.md", []byte("---\ntitle: A\n---\nbody\n"))
-	env := syncops.NewEnv(root, "acme-kb", "https://kb.acme.dev",
-		syncops.Author{Name: "Ana", Email: "ana@acme.dev"}, fake)
+	env := NewEnv(root, "acme-kb", "https://kb.acme.dev",
+		Author{Name: "Ana", Email: "ana@acme.dev"}, fake)
 
 	listing := []sync.PageMeta{{
 		Path: "wiki/concepts/a.md", SHA: sha, Author: "Seed", Email: "seed@acme.dev",
@@ -34,17 +37,17 @@ func TestEnsureBaseStubNoop(t *testing.T) {
 	}}
 	cases := []struct {
 		name string
-		o    syncops.EnsureBaseOptions
+		o    EnsureBaseOptions
 	}{
-		{"offline", syncops.EnsureBaseOptions{}},
-		{"online unlocked", syncops.EnsureBaseOptions{Listing: listing}},
-		{"online locked with paths", syncops.EnsureBaseOptions{
+		{"offline", EnsureBaseOptions{}},
+		{"online unlocked", EnsureBaseOptions{Listing: listing}},
+		{"online locked with paths", EnsureBaseOptions{
 			Listing: listing, Paths: []string{"wiki/concepts/a.md"}, Locked: true,
 		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res, err := syncops.EnsureBase(context.Background(), env, c.o)
+			res, err := EnsureBase(context.Background(), env, c.o)
 			if err != nil {
 				t.Fatalf("EnsureBase: %v", err)
 			}

@@ -3,13 +3,17 @@ package syncopstest
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	stdsync "sync"
 	"testing"
 	"time"
@@ -18,6 +22,11 @@ import (
 	"github.com/sugihAF/contexo/internal/syncops"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
+
+// FakeRemote implements syncops.Remote. The assertion lives here, not in
+// fake_remote.go, so syncopstest itself never imports syncops and a
+// package-syncops test may import syncopstest without an import cycle.
+var _ syncops.Remote = (*FakeRemote)(nil)
 
 const (
 	wp01Repo    = "acme-kb"
@@ -200,9 +209,10 @@ func TestFakeRemoteNoopReturnsPathSHA(t *testing.T) {
 		if !reflect.DeepEqual(resp.Pushed, want) || len(resp.Conflicts) != 0 {
 			t.Fatalf("parent %q: resp = %+v, want pushed %+v", parent, resp, want)
 		}
-		// new_head is the last pushed sha (handler.Push), here the path's own.
-		if resp.NewHead != a {
-			t.Fatalf("parent %q: new_head = %s, want %s", parent, resp.NewHead, a)
+		// new_head is repo HEAD after the batch (WP-0.2 handler.Push:
+		// store.HeadSHA), never the no-op file's own older sha.
+		if resp.NewHead != b {
+			t.Fatalf("parent %q: new_head = %s, want HEAD %s (not the no-op path sha %s)", parent, resp.NewHead, b, a)
 		}
 		if f.Head() != b {
 			t.Fatalf("no-op write committed: Head() = %s, want %s", f.Head(), b)
@@ -214,6 +224,32 @@ func TestFakeRemoteNoopReturnsPathSHA(t *testing.T) {
 	}
 	if len(pages) != 2 || pages[0].SHA != a {
 		t.Fatalf("listing after no-op = %+v", pages)
+	}
+
+	// A mixed batch whose last file is a no-op: new_head is still HEAD (b's
+	// new commit), not a's older last-touch sha.
+	for _, legacy := range []bool{false, true} {
+		g := NewFakeRemote(FakeOptions{LegacyNoopHeadSHA: legacy})
+		a := g.Seed(wp01PathA, []byte("same\n"))
+		b := g.Seed(wp01PathB, []byte("b1\n"))
+		resp := wp01Push(t, g,
+			sync.PushFile{Path: wp01PathB, Content: "b2\n", ParentSHA: b},
+			sync.PushFile{Path: wp01PathA, Content: "same\n", ParentSHA: a},
+		)
+		head := g.Head()
+		if head == b || len(resp.Pushed) != 2 || resp.Pushed[0].SHA != head {
+			t.Fatalf("legacy %v: resp = %+v, head %s", legacy, resp, head)
+		}
+		wantNoop := a
+		if legacy {
+			wantNoop = head
+		}
+		if resp.Pushed[1].SHA != wantNoop {
+			t.Fatalf("legacy %v: no-op pushed sha = %s, want %s", legacy, resp.Pushed[1].SHA, wantNoop)
+		}
+		if resp.NewHead != head {
+			t.Fatalf("legacy %v: new_head = %s, want HEAD %s", legacy, resp.NewHead, head)
+		}
 	}
 }
 
@@ -294,6 +330,12 @@ func TestFakeRemoteReadPageAt(t *testing.T) {
 		{wp01PathA, s2, "a1\n", s1}, // latest touch at or before s2
 		{wp01PathA, s3, "a2\n", s3},
 		{wp01PathB, s3, "b1\n", s2},
+		// Like git (WP-0.2 gitstore.ValidSHA + rev-parse): an abbreviated
+		// or uppercase id resolves, and X-Page-SHA is the full sha.
+		{wp01PathA, s2[:7], "a1\n", s1},
+		{wp01PathA, s1[:4], "a1\n", s1},
+		{wp01PathA, strings.ToUpper(s3), "a2\n", s3},
+		{wp01PathB, strings.ToUpper(s3[:12]), "b1\n", s2},
 	}
 	for _, c := range cases {
 		b, sha, err := f.ReadPageAt(wp01Repo, c.path, c.at)
@@ -302,14 +344,65 @@ func TestFakeRemoteReadPageAt(t *testing.T) {
 		}
 	}
 
-	// Path absent at that sha, or an unknown sha: 404 sha_not_found.
-	for _, c := range []struct{ path, at string }{{wp01PathB, s1}, {wp01PathA, wp01UnknownSHA}, {wp01Missing, s3}, {wp01PathA, ""}} {
+	// The WP-0.2 handler's error answers (gin bodies, keys sorted).
+	const (
+		bodyInvalid  = `{"code":"invalid_sha","error":"invalid sha"}`
+		bodyUnknown  = `{"code":"sha_not_found","error":"sha not found"}`
+		bodyNotAtSHA = `{"code":"sha_not_found","error":"page not found at sha"}`
+	)
+	errCases := []struct {
+		name, path, at string
+		status         int
+		code           contract.ErrorCode
+		body           string
+	}{
+		{"path absent at sha", wp01PathB, s1, 404, contract.CodeSHANotFound, bodyNotAtSHA},
+		{"path never written", wp01Missing, s3, 404, contract.CodeSHANotFound, bodyNotAtSHA},
+		{"unknown sha", wp01PathA, wp01UnknownSHA, 404, contract.CodeSHANotFound, bodyUnknown},
+		{"unknown abbreviation", wp01PathA, wp01UnknownSHA[:7], 404, contract.CodeSHANotFound, bodyUnknown},
+		{"empty sha is invalid, not HEAD", wp01PathA, "", 400, contract.CodeUsage, bodyInvalid},
+		{"3 hex is too short", wp01PathA, s1[:3], 400, contract.CodeUsage, bodyInvalid},
+		{"65 hex is too long", wp01PathA, strings.Repeat("a", 65), 400, contract.CodeUsage, bodyInvalid},
+		{"not hex", wp01PathA, "HEAD", 400, contract.CodeUsage, bodyInvalid},
+		{"rev syntax", wp01PathA, s1[:8] + "^", 400, contract.CodeUsage, bodyInvalid},
+	}
+	for _, c := range errCases {
 		b, sha, err := f.ReadPageAt(wp01Repo, c.path, c.at)
 		if b != nil || sha != "" {
-			t.Fatalf("ReadPageAt(%s, %q) returned data with an error", c.path, c.at)
+			t.Fatalf("%s: ReadPageAt(%s, %q) returned data with an error", c.name, c.path, c.at)
 		}
-		wp01AssertCode(t, err, 404, contract.CodeSHANotFound, sync.ErrSHANotFound)
+		he := wp01HTTPError(t, err)
+		if he.HTTPStatus() != c.status || he.ErrorCode() != string(c.code) || he.Body != c.body {
+			t.Fatalf("%s: ReadPageAt(%s, %q) = %d/%s %s; want %d/%s %s",
+				c.name, c.path, c.at, he.HTTPStatus(), he.ErrorCode(), he.Body, c.status, c.code, c.body)
+		}
+		if want := fmt.Sprintf("sync: read page at (%d): %s", c.status, c.body); he.Error() != want {
+			t.Fatalf("%s: Error() = %q, want %q", c.name, he.Error(), want)
+		}
+		if errors.Is(err, sync.ErrSHANotFound) != (c.code == contract.CodeSHANotFound) {
+			t.Fatalf("%s: errors.Is(ErrSHANotFound) = %v", c.name, errors.Is(err, sync.ErrSHANotFound))
+		}
 	}
+
+	t.Run("ambiguous abbreviation is sha_not_found", func(t *testing.T) {
+		// git rev-parse fails on an ambiguous short id ("Needed a single
+		// revision"), which the server maps to sha_not_found.
+		g := NewFakeRemote(FakeOptions{})
+		seen := map[string]int{}
+		var prefix string
+		for n := 1; prefix == ""; n++ {
+			s := g.Seed(fmt.Sprintf("wiki/concepts/p%d.md", n), []byte("x\n"))
+			if _, dup := seen[s[:4]]; dup {
+				prefix = s[:4]
+			}
+			seen[s[:4]] = n
+		}
+		_, _, err := g.ReadPageAt(wp01Repo, "wiki/concepts/p1.md", prefix)
+		he := wp01HTTPError(t, err)
+		if he.HTTPStatus() != 404 || he.ErrorCode() != string(contract.CodeSHANotFound) || he.Body != bodyUnknown {
+			t.Fatalf("ambiguous %s: %d/%s %s", prefix, he.HTTPStatus(), he.ErrorCode(), he.Body)
+		}
+	})
 
 	// ReadPage: HEAD content plus last-touch sha; absent -> page_not_found.
 	b, sha, err := f.ReadPage(wp01Repo, wp01PathA)
@@ -318,6 +411,9 @@ func TestFakeRemoteReadPageAt(t *testing.T) {
 	}
 	_, _, err = f.ReadPage(wp01Repo, wp01Missing)
 	wp01AssertCode(t, err, 404, contract.CodePageNotFound, sync.ErrPageNotFound)
+	if he := wp01HTTPError(t, err); he.Body != `{"code":"page_not_found","error":"page not found"}` {
+		t.Fatalf("ReadPage 404 body = %s, want the gin (sorted keys) body", he.Body)
+	}
 
 	// Returned bytes are copies.
 	b[0] = 'X'
@@ -427,6 +523,151 @@ func TestFakeRemoteServerInfo(t *testing.T) {
 	})
 }
 
+// TestContractMDHTTPMappingMatchesClient keeps CONTRACT.md's HTTP mapping
+// summary (the table [HUMAN] reviews before WP-0.I, deviation 1 included)
+// in step with what the client and therefore FakeRemote actually do for
+// the statuses E14 does not list.
+func TestContractMDHTTPMappingMatchesClient(t *testing.T) {
+	// Code: sync.NewHTTPError, the one mapping every client method uses.
+	probes := []struct {
+		status int
+		body   string
+		want   contract.ErrorCode
+	}{
+		{100, "", contract.CodeInternal},
+		{101, "", contract.CodeInternal},
+		{103, "", contract.CodeInternal},
+		{300, "", contract.CodeInternal},
+		{301, "", contract.CodeInternal},
+		{302, "", contract.CodeInternal},
+		{304, "", contract.CodeInternal},
+		{307, "", contract.CodeInternal},
+		{308, "", contract.CodeInternal},
+		{405, `{"error":"method not allowed"}`, contract.CodeInternal},
+		{409, `{"error":"conflict"}`, contract.CodeInternal},
+		{410, "", contract.CodeInternal},
+		{413, `{"error":"request body too large"}`, contract.CodeInternal},
+		{422, "", contract.CodeInternal},
+		{200, "<html>garbled</html>", contract.CodeServerError},
+		{204, "", contract.CodeServerError},
+		{500, `{"error":"boom"}`, contract.CodeServerError},
+		{503, "unavailable", contract.CodeServerError},
+	}
+	for _, p := range probes {
+		if got := sync.NewHTTPError(p.status, []byte(p.body), "m", nil, false).Code; got != p.want {
+			t.Errorf("NewHTTPError(%d, %q).Code = %s, want %s", p.status, p.body, got, p.want)
+		}
+	}
+	// A push 409 whose body does not decode is server_error: neither
+	// conflict data nor internal.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte("<html>proxy error</html>"))
+	}))
+	defer srv.Close()
+	_, err := sync.NewClient(srv.URL, "test-token").PushPages(wp01Repo, &sync.PushRequest{})
+	if he := wp01HTTPError(t, err); he.ErrorCode() != string(contract.CodeServerError) {
+		t.Errorf("garbled push 409: code = %s, want server_error", he.ErrorCode())
+	}
+
+	// Doc: the mapping table and deviation 1 say the same.
+	raw, err := os.ReadFile(filepath.Join("..", "CONTRACT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(raw)
+	statusFor := func(rows [][]string, codePrefix string) string {
+		for _, r := range rows {
+			if len(r) >= 2 && strings.HasPrefix(r[1], codePrefix) {
+				return r[0]
+			}
+		}
+		t.Fatalf("CONTRACT.md HTTP mapping table has no row whose code is %s", codePrefix)
+		return ""
+	}
+	rows := wp01MDTable(t, md, "## HTTP error mapping")
+	internalRow := statusFor(rows, string(contract.CodeInternal))
+	for _, tok := range []string{"1xx", "3xx", "409"} {
+		if !strings.Contains(internalRow, tok) {
+			t.Errorf("mapping table: internal row %q does not name %s", internalRow, tok)
+		}
+	}
+	serverRow := statusFor(rows, string(contract.CodeServerError))
+	for _, tok := range []string{"5xx", "2xx", "push 409"} {
+		if !strings.Contains(serverRow, tok) {
+			t.Errorf("mapping table: server_error row %q does not name %s", serverRow, tok)
+		}
+	}
+	for _, r := range rows {
+		if (strings.Contains(r[0], "1xx") || strings.Contains(r[0], "3xx")) && !strings.HasPrefix(r[1], "internal") {
+			t.Errorf("mapping table row %q maps 1xx/3xx to %q, the client gives internal", r[0], r[1])
+		}
+	}
+
+	var decision string
+	for _, r := range wp01MDTable(t, md, "## Deviations pending review") {
+		if len(r) >= 2 && r[0] == "1" {
+			decision = r[1]
+		}
+	}
+	if decision == "" {
+		t.Fatal("CONTRACT.md has no deviation 1")
+	}
+	sawGarbled := false
+	for _, clause := range strings.Split(decision, ";") {
+		if strings.Contains(clause, "1xx") || strings.Contains(clause, "3xx") {
+			if !strings.Contains(clause, "internal") || strings.Contains(clause, "server_error") {
+				t.Errorf("deviation 1 clause %q: the client maps 1xx and 3xx to internal", clause)
+			}
+		}
+		if strings.Contains(clause, "garbled") {
+			sawGarbled = true
+			if !strings.Contains(clause, "server_error") || strings.Contains(clause, "internal") {
+				t.Errorf("deviation 1 clause %q: the client maps a garbled body to server_error", clause)
+			}
+		}
+	}
+	if !sawGarbled {
+		t.Errorf("deviation 1 %q does not rule on a garbled body", decision)
+	}
+}
+
+// wp01MDTable returns the body rows (cells trimmed) of the first Markdown
+// table in the section whose "## " heading starts with heading.
+func wp01MDTable(t *testing.T, md, heading string) [][]string {
+	t.Helper()
+	var rows [][]string
+	in, seenTable := false, false
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			if in {
+				break
+			}
+			in = strings.HasPrefix(line, heading)
+			continue
+		}
+		if !in {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			if seenTable {
+				break
+			}
+			continue
+		}
+		seenTable = true
+		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		rows = append(rows, cells)
+	}
+	if len(rows) < 3 {
+		t.Fatalf("CONTRACT.md: no table under %q", heading)
+	}
+	return rows[2:] // drop the header and the |---| separator
+}
+
 func wp01HasCap(caps []contract.ServerCapability, c contract.ServerCapability) bool {
 	for _, x := range caps {
 		if x == c {
@@ -492,11 +733,14 @@ func TestFakeRemotePullAllAtHead(t *testing.T) {
 		want  []sync.PullFile
 	}{
 		{"", all},
-		{wp01UnknownSHA, all},
-		{s1, []sync.PullFile{all[0], all[2]}}, // a (twice) and c touched after s1
+		{s1, []sync.PullFile{all[0], all[2]}}, // a (twice) and c changed after s1
 		{s2, []sync.PullFile{all[0], all[2]}},
 		{s3, []sync.PullFile{all[2]}},
 		{s4, []sync.PullFile{}},
+		// git resolves an abbreviated or uppercase since.
+		{s1[:7], []sync.PullFile{all[0], all[2]}},
+		{strings.ToUpper(s3), []sync.PullFile{all[2]}},
+		{s4[:7], []sync.PullFile{}},
 	}
 	for _, c := range cases {
 		got, err := f.PullPages(wp01Repo, c.since)
@@ -507,6 +751,63 @@ func TestFakeRemotePullAllAtHead(t *testing.T) {
 			t.Fatalf("since %q: PullPages = %+v, want new_head %s files %+v", c.since, got, s4, c.want)
 		}
 	}
+
+	// A since the repo does not know fails like the real server: handler.Pull
+	// turns gitstore.ChangedSince's error (ErrUnknownSHA for a non-hex since,
+	// git diff's failure for unknown hex) into a 500, which the client maps to
+	// server_error. It never silently means "everything".
+	errCases := []struct {
+		name, since, serverErr string
+	}{
+		{"unknown full sha", wp01UnknownSHA,
+			"gitstore: diff: exit status 128: fatal: bad object " + wp01UnknownSHA + "\n"},
+		{"unknown abbreviation", wp01UnknownSHA[:7],
+			"gitstore: diff: exit status 128: fatal: bad revision '" + wp01UnknownSHA[:7] + "'\n"},
+		{"3 hex is not an abbreviation", s1[:3],
+			"gitstore: diff: exit status 128: fatal: bad revision '" + s1[:3] + "'\n"},
+		{"not hex", "main", "gitstore: unknown sha"},
+	}
+	for _, c := range errCases {
+		got, err := f.PullPages(wp01Repo, c.since)
+		if got != nil {
+			t.Fatalf("%s: PullPages(%q) = %+v with an error", c.name, c.since, got)
+		}
+		he := wp01HTTPError(t, err)
+		body, _ := json.Marshal(map[string]string{"error": c.serverErr})
+		if he.HTTPStatus() != 500 || he.ErrorCode() != string(contract.CodeServerError) || he.Body != string(body) {
+			t.Fatalf("%s: PullPages(%q) = %d/%s %s; want 500/server_error %s",
+				c.name, c.since, he.HTTPStatus(), he.ErrorCode(), he.Body, body)
+		}
+		if want := "sync: pull failed (500): " + string(body); he.Error() != want {
+			t.Fatalf("%s: Error() = %q, want %q", c.name, he.Error(), want)
+		}
+	}
+
+	t.Run("empty repo answers any since with nothing", func(t *testing.T) {
+		// gitstore.ChangedSince returns (nil, "", nil) before looking at
+		// since when the repo has no commits.
+		g := NewFakeRemote(FakeOptions{})
+		for _, since := range []string{"", wp01UnknownSHA, "main"} {
+			got, err := g.PullPages(wp01Repo, since)
+			if err != nil || got.NewHead != "" || got.Files == nil || len(got.Files) != 0 {
+				t.Fatalf("since %q: PullPages = %+v, %v", since, got, err)
+			}
+		}
+	})
+
+	t.Run("a page changed back to its since content is not listed", func(t *testing.T) {
+		// git diff <since> HEAD compares trees, not the commits between.
+		g := NewFakeRemote(FakeOptions{})
+		a1 := g.Seed(wp01PathA, []byte("a1\n"))
+		g.Seed(wp01PathA, []byte("a2\n"))
+		g.Seed(wp01PathA, []byte("a1\n"))
+		c := g.Seed(wp01PathC, []byte("c1\n"))
+		got, err := g.PullPages(wp01Repo, a1)
+		want := []sync.PullFile{{Path: wp01PathC, Content: "c1\n", SHA: c}}
+		if err != nil || !reflect.DeepEqual(got.Files, want) {
+			t.Fatalf("PullPages(a1) = %+v, %v; want files %+v", got, err, want)
+		}
+	})
 }
 
 func TestFakeRemoteCountsRequests(t *testing.T) {
@@ -589,15 +890,12 @@ func TestFakeRemoteCountsRequests(t *testing.T) {
 }
 
 // TestFakeRemoteErrorsMatchRealClient drives a real sync.Client against an
-// httptest server speaking the WP-0.2 (and the old) wire, and requires the
-// fake's errors to be the identical *sync.HTTPError values.
+// httptest script of the WP-0.2 handlers (and of an old server) and requires
+// the fake to give the identical *sync.HTTPError values and success results.
+// The script writes error bodies as gin's c.JSON does: encoding/json over a
+// map, so the keys are sorted.
 func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
-	const (
-		contentA    = "---\ntitle: A\n---\nhead content\n"
-		body404Page = `{"error":"page not found","code":"page_not_found"}`
-		body404SHA  = `{"error":"sha not found","code":"sha_not_found"}`
-		body404Old  = `{"error":"page not found"}`
-	)
+	const contentA = "---\ntitle: A\n---\nhead content\n"
 	// The fake and the server hold the same repo: a.md (commit 1), b.md (2).
 	newFake := func(o FakeOptions) (*FakeRemote, string) {
 		f := NewFakeRemote(o)
@@ -607,6 +905,26 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 	}
 	_, s1 := newFake(FakeOptions{})
 	s2 := wp01SHA(2)
+	commits := []string{s1, s2}
+	type page struct{ content, sha string }
+	// tree[i] is the repo at commits[i].
+	tree := []map[string]page{
+		{wp01PathA: {contentA, s1}},
+		{wp01PathA: {contentA, s1}, wp01PathB: {"b\n", s2}},
+	}
+	// resolve is git's resolution of a unique, case-insensitive prefix.
+	resolve := func(s string) int {
+		found := -1
+		for i, c := range commits {
+			if len(s) >= 4 && strings.HasPrefix(c, strings.ToLower(s)) {
+				if found >= 0 {
+					return -1
+				}
+				found = i
+			}
+		}
+		return found
+	}
 
 	server := func(old bool) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -614,41 +932,92 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 				w.Header().Set("X-Contexo-Server-Version", "0.7.0-fake")
 				w.Header().Set("X-Contexo-Capabilities", "pages.at,push.expect_absent,write.path_sha")
 			}
-			path := r.URL.Path[len("/v1/repos/"+wp01Repo+"/pages/"):]
-			at, hasAt := r.URL.Query()["at"]
-			jsonErr := func(body string) {
+			ginJSON := func(status int, h map[string]string) {
+				b, err := json.Marshal(h)
+				if err != nil {
+					t.Error(err)
+				}
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(body))
+				w.WriteHeader(status)
+				_, _ = w.Write(b)
 			}
-			if old || !hasAt { // HEAD read (an old server ignores ?at)
-				var content, sha string
-				switch path {
-				case wp01PathA:
-					content, sha = contentA, s1
-				case wp01PathB:
-					content, sha = "b\n", s2
+			head := len(commits) - 1
+
+			if r.URL.Path == "/v1/repos/"+wp01Repo+"/sync/pull" {
+				// handler.Pull over gitstore.ChangedSince.
+				since := r.URL.Query().Get("since")
+				from := -1
+				switch {
+				case since == "":
+				case since == commits[head]:
+					from = head
+				case !wp01IsHexRef(since):
+					ginJSON(500, map[string]string{"error": "gitstore: unknown sha"})
+					return
 				default:
+					if from = resolve(since); from < 0 {
+						msg := "fatal: bad revision '" + since + "'"
+						if len(since) == 40 {
+							msg = "fatal: bad object " + since
+						}
+						ginJSON(500, map[string]string{"error": "gitstore: diff: exit status 128: " + msg + "\n"})
+						return
+					}
+				}
+				resp := sync.PullResponse{NewHead: commits[head], Files: []sync.PullFile{}}
+				for _, p := range []string{wp01PathA, wp01PathB} {
+					cur, ok := tree[head][p]
+					if !ok {
+						continue
+					}
+					if from >= 0 { // git diff <since> HEAD: tree content differs
+						if prev, ok := tree[from][p]; ok && prev.content == cur.content {
+							continue
+						}
+					}
+					resp.Files = append(resp.Files, sync.PullFile{Path: p, Content: cur.content, SHA: cur.sha})
+				}
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			path := strings.TrimPrefix(r.URL.Path, "/v1/repos/"+wp01Repo+"/pages/")
+			at, hasAt := r.URL.Query()["at"]
+			if old || !hasAt { // HEAD read (an old server ignores ?at)
+				pg, ok := tree[head][path]
+				if !ok {
 					if old {
-						jsonErr(body404Old)
+						ginJSON(404, map[string]string{"error": "page not found"})
 					} else {
-						jsonErr(body404Page)
+						ginJSON(404, map[string]string{"error": "page not found", "code": "page_not_found"})
 					}
 					return
 				}
-				w.Header().Set("X-Page-SHA", sha)
+				w.Header().Set("X-Page-SHA", pg.sha)
 				w.Header().Set("Content-Type", "text/markdown")
-				_, _ = w.Write([]byte(content))
+				_, _ = w.Write([]byte(pg.content))
 				return
 			}
-			// WP-0.2 ?at: only a.md at s1 or s2 exists in this script.
-			if path == wp01PathA && (at[0] == s1 || at[0] == s2) {
-				w.Header().Set("X-Contexo-At", at[0])
-				w.Header().Set("X-Page-SHA", s1)
-				_, _ = w.Write([]byte(contentA))
+			// WP-0.2 handler.ReadPage ?at: ValidSHA before any git call, then
+			// the commit, then the path at it.
+			if !wp01ValidSHA(at[0]) {
+				ginJSON(400, map[string]string{"error": "invalid sha", "code": "invalid_sha"})
 				return
 			}
-			jsonErr(body404SHA)
+			i := resolve(at[0])
+			if i < 0 {
+				ginJSON(404, map[string]string{"error": "sha not found", "code": "sha_not_found"})
+				return
+			}
+			pg, ok := tree[i][path]
+			if !ok {
+				ginJSON(404, map[string]string{"error": "page not found at sha", "code": "sha_not_found"})
+				return
+			}
+			w.Header().Set("X-Contexo-At", at[0])
+			w.Header().Set("X-Page-SHA", pg.sha)
+			_, _ = w.Write([]byte(pg.content))
 		}))
 	}
 
@@ -665,6 +1034,12 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 			return err
 		}
 	}
+	pull := func(since string) call {
+		return func(r syncops.Remote) error {
+			_, err := r.PullPages(wp01Repo, since)
+			return err
+		}
+	}
 
 	cases := []struct {
 		name string
@@ -674,7 +1049,14 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 	}{
 		{"ReadPage 404 page_not_found", false, readPage(wp01Missing), contract.CodePageNotFound},
 		{"ReadPageAt unknown sha", false, readAt(wp01PathA, wp01UnknownSHA), contract.CodeSHANotFound},
+		{"ReadPageAt unknown abbreviation", false, readAt(wp01PathA, wp01UnknownSHA[:7]), contract.CodeSHANotFound},
 		{"ReadPageAt path absent at sha", false, readAt(wp01PathB, s1), contract.CodeSHANotFound},
+		{"ReadPageAt path never written", false, readAt(wp01Missing, s2[:7]), contract.CodeSHANotFound},
+		{"ReadPageAt empty sha is usage", false, readAt(wp01PathA, ""), contract.CodeUsage},
+		{"ReadPageAt non-hex sha is usage", false, readAt(wp01PathA, "HEAD"), contract.CodeUsage},
+		{"PullPages unknown since", false, pull(wp01UnknownSHA), contract.CodeServerError},
+		{"PullPages unknown abbreviated since", false, pull(wp01UnknownSHA[:7]), contract.CodeServerError},
+		{"PullPages non-hex since", false, pull("main"), contract.CodeServerError},
 		{"old server ReadPageAt without X-Contexo-At", true, readAt(wp01PathA, s1), contract.CodeServerUnsupported},
 		{"old server ReadPageAt absent path", true, readAt(wp01Missing, s1), contract.CodeSHANotFound},
 		{"old server ReadPage 404", true, readPage(wp01Missing), contract.CodePageNotFound},
@@ -724,17 +1106,22 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 		})
 	}
 
-	// The success paths agree as well.
+	// The success paths agree as well, abbreviated and uppercase ids included.
 	t.Run("success paths", func(t *testing.T) {
 		srv := server(false)
 		defer srv.Close()
 		client := sync.NewClient(srv.URL, "test-token")
 		fake, _ := newFake(FakeOptions{})
-		for _, sha := range []string{s1, s2} {
-			rb, rs, rerr := client.ReadPageAt(wp01Repo, wp01PathA, sha)
-			fb, fs, ferr := fake.ReadPageAt(wp01Repo, wp01PathA, sha)
-			if rerr != nil || ferr != nil || !bytes.Equal(rb, fb) || rs != fs {
-				t.Fatalf("ReadPageAt(a, %s): real %q %s %v, fake %q %s %v", sha, rb, rs, rerr, fb, fs, ferr)
+		reads := []struct{ path, at string }{
+			{wp01PathA, s1}, {wp01PathA, s2}, {wp01PathB, s2},
+			{wp01PathA, s2[:7]}, {wp01PathA, s1[:4]}, {wp01PathA, strings.ToUpper(s1)},
+			{wp01PathB, strings.ToUpper(s2[:10])},
+		}
+		for _, rd := range reads {
+			rb, rs, rerr := client.ReadPageAt(wp01Repo, rd.path, rd.at)
+			fb, fs, ferr := fake.ReadPageAt(wp01Repo, rd.path, rd.at)
+			if rerr != nil || ferr != nil || !bytes.Equal(rb, fb) || rs != fs || len(fs) != 40 {
+				t.Fatalf("ReadPageAt(%s, %s): real %q %s %v, fake %q %s %v", rd.path, rd.at, rb, rs, rerr, fb, fs, ferr)
 			}
 		}
 		rb, rs, rerr := client.ReadPage(wp01Repo, wp01PathA)
@@ -742,7 +1129,32 @@ func TestFakeRemoteErrorsMatchRealClient(t *testing.T) {
 		if rerr != nil || ferr != nil || !bytes.Equal(rb, fb) || rs != fs {
 			t.Fatalf("ReadPage(a): real %q %s %v, fake %q %s %v", rb, rs, rerr, fb, fs, ferr)
 		}
+		for _, since := range []string{"", s1, s2, s1[:7], strings.ToUpper(s1), s2[:5]} {
+			rp, rerr := client.PullPages(wp01Repo, since)
+			fp, ferr := fake.PullPages(wp01Repo, since)
+			if rerr != nil || ferr != nil || !reflect.DeepEqual(rp, fp) {
+				t.Fatalf("PullPages(%q): real %+v %v, fake %+v %v", since, rp, rerr, fp, ferr)
+			}
+		}
 	})
+}
+
+// wp01ValidSHA is gitstore.ValidSHA (WP-0.2): 4 to 64 hex, either case.
+func wp01ValidSHA(s string) bool {
+	return len(s) >= 4 && wp01IsHexRef(s)
+}
+
+// wp01IsHexRef is gitstore.isHexRef: at most 64 hex characters, either case.
+func wp01IsHexRef(s string) bool {
+	if len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestFakeRemoteConcurrentSafe(t *testing.T) {

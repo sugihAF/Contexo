@@ -2,9 +2,9 @@ package syncops
 
 // Owner: WP-1.5. TestRepairStubNotImplemented is the wave-0 stub assertion
 // (replace it when Repair is implemented). TestRepairResultJSONKeyOrder pins
-// the E18 wire shape of `ctx repair --json` and stays. Tests that need
-// syncopstest.FakeRemote must live in package syncops_test (syncopstest
-// imports syncops).
+// the E18 wire shape of `ctx repair --json` and stays. This file may import
+// syncopstest.FakeRemote: syncopstest never imports syncops, so there is no
+// cycle (see ensurebase_test.go).
 
 import (
 	"bytes"

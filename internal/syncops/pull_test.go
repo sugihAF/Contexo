@@ -1,9 +1,9 @@
 package syncops
 
 // Owner: WP-1.3. This file holds the wave-0 stub assertion for Pull; the
-// owner replaces it when the safe pull is implemented. Tests that need
-// syncopstest.FakeRemote must live in package syncops_test (syncopstest
-// imports syncops).
+// owner replaces it when the safe pull is implemented. Tests here may
+// use syncopstest.FakeRemote together with unexported seams (syncopstest
+// never imports syncops).
 
 import (
 	"context"

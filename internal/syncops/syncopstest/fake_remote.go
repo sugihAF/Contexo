@@ -1,21 +1,24 @@
 // Package syncopstest provides test doubles for the syncops engines.
 //
-// syncopstest imports syncops, so tests that use it from the syncops
-// directory must be in package syncops_test.
+// syncopstest never imports syncops (only sync and syncops/contract), so a
+// package-syncops test can use FakeRemote while overriding the engines'
+// unexported seams. The compile-time check that FakeRemote implements
+// syncops.Remote lives in fake_remote_test.go.
 package syncopstest
 
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	stdsync "sync"
 	"time"
 
 	"github.com/sugihAF/contexo/internal/sync"
-	"github.com/sugihAF/contexo/internal/syncops"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
 
@@ -65,8 +68,6 @@ type fakeCommit struct {
 	time                   time.Time
 }
 
-var _ syncops.Remote = (*FakeRemote)(nil)
-
 // Remote method names, as Requests and FailNext spell them.
 const (
 	methodPushPages  = "PushPages"
@@ -77,11 +78,14 @@ const (
 )
 
 // Wire bodies of the server's error answers (WP-0.2, and pre-WP-0.2 for an
-// OldServer).
+// OldServer), byte for byte as gin's c.JSON(gin.H{...}) writes them:
+// encoding/json over a map, so the keys are sorted.
 const (
-	bodyPageNotFound    = `{"error":"page not found","code":"page_not_found"}`
+	bodyPageNotFound    = `{"code":"page_not_found","error":"page not found"}`
 	bodyPageNotFoundOld = `{"error":"page not found"}`
-	bodySHANotFound     = `{"error":"sha not found","code":"sha_not_found"}`
+	bodySHANotFound     = `{"code":"sha_not_found","error":"sha not found"}`
+	bodyPathNotAtSHA    = `{"code":"sha_not_found","error":"page not found at sha"}`
+	bodyInvalidSHA      = `{"code":"invalid_sha","error":"invalid sha"}`
 )
 
 const defaultServerVersion = "0.7.0-fake"
@@ -105,9 +109,10 @@ func NewFakeRemote(o FakeOptions) *FakeRemote {
 // its parent_sha and the path's last commit are both set and differ; the
 // conflict carries ancestor_content when the parent commit holds the path.
 // Content equal to the HEAD content is a no-op that returns the path's last
-// commit (repo HEAD under LegacyNoopHeadSHA). NewHead is the last pushed
-// sha, else HEAD. Conflicts are data: the error stays nil, as the real
-// client returns the 409 body.
+// commit (repo HEAD under LegacyNoopHeadSHA). NewHead is always repo HEAD
+// after the batch (WP-0.2 handler.Push reads store.HeadSHA; main's handler
+// also ends at HEAD), never the sha of a trailing no-op file. Conflicts are
+// data: the error stays nil, as the real client returns the 409 body.
 func (f *FakeRemote) PushPages(repoID string, req *sync.PushRequest) (*sync.PushResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -131,7 +136,6 @@ func (f *FakeRemote) PushPages(repoID string, req *sync.PushRequest) (*sync.Push
 	}
 
 	resp := &sync.PushResponse{}
-	newHead := ""
 	for _, file := range req.Files {
 		cur, curContent := "", []byte(nil)
 		if i, ok := f.lastTouch(file.Path, len(f.commits)-1); ok {
@@ -171,42 +175,79 @@ func (f *FakeRemote) PushPages(repoID string, req *sync.PushRequest) (*sync.Push
 			sha = f.commit(file.Path, []byte(file.Content), author, email, message)
 		}
 		resp.Pushed = append(resp.Pushed, sync.PushedFile{Path: file.Path, SHA: sha})
-		newHead = sha
 	}
-	if newHead == "" {
-		newHead = f.head()
-	}
-	resp.NewHead = newHead
+	resp.NewHead = f.head()
 	return resp, nil
 }
 
-// PullPages implements syncops.Remote. since "" (or a sha the repo does not
-// know) returns every path at HEAD; otherwise only the paths touched by
-// commits after since. Each file carries its HEAD content and last-touch
-// sha; files are sorted by path and never nil. NewHead is HEAD.
+// PullPages implements syncops.Remote, mirroring handler.Pull over
+// gitstore.ChangedSince (main and WP-0.2 alike):
+//   - a repo without commits answers any since with new_head "" and no files;
+//   - since "" returns every path at HEAD; since == HEAD returns none;
+//   - since resolving to a commit (git: a unique, case-insensitive prefix of
+//     4-40 hex) returns the paths whose content differs between that commit
+//     and HEAD (git diff --name-only <since> HEAD);
+//   - any other since fails as the real server does: HTTP 500 (non-hex:
+//     ErrUnknownSHA; unknown hex: git diff's error, its text modelled on
+//     git's "bad object"/"bad revision"), which the client maps to
+//     server_error. It never silently means "everything".
+//
+// Each file carries its HEAD content and last-touch sha; files are sorted
+// by path and never nil. NewHead is HEAD.
 func (f *FakeRemote) PullPages(repoID, since string) (*sync.PullResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.begin(methodPullPages); err != nil {
 		return nil, err
 	}
-	from := 0
-	if since != "" {
-		if i, ok := f.bySHA[since]; ok {
-			from = i + 1
+	head := f.head()
+	files := []sync.PullFile{}
+	if head == "" {
+		return &sync.PullResponse{NewHead: "", Files: files}, nil
+	}
+	from := -1 // index of the since commit; -1 lists every path
+	switch {
+	case since == "":
+	case since == head:
+		return &sync.PullResponse{NewHead: head, Files: files}, nil
+	case !isHexRef(since):
+		return nil, pullStatusError(500, ginJSON(map[string]string{"error": "gitstore: unknown sha"}))
+	default:
+		i, ok := f.resolve(since)
+		if !ok {
+			return nil, pullStatusError(500, ginJSON(map[string]string{"error": gitDiffError(since)}))
 		}
+		from = i
 	}
 	last := f.lastTouches()
-	touched := map[string]bool{}
-	for _, c := range f.commits[from:] {
-		touched[c.path] = true
-	}
-	files := []sync.PullFile{}
-	for _, p := range sortedKeys(touched) {
+	for _, p := range sortedKeys(last) {
 		c := f.commits[last[p]]
+		if from >= 0 {
+			if i, ok := f.lastTouch(p, from); ok && bytes.Equal(f.commits[i].content, c.content) {
+				continue // same content at since and at HEAD
+			}
+		}
 		files = append(files, sync.PullFile{Path: p, Content: string(c.content), SHA: c.sha})
 	}
-	return &sync.PullResponse{NewHead: f.head(), Files: files}, nil
+	return &sync.PullResponse{NewHead: head, Files: files}, nil
+}
+
+// pullStatusError is sync.Client PullPages' non-200 error.
+func pullStatusError(status int, body []byte) *sync.HTTPError {
+	return sync.NewHTTPError(status, body,
+		fmt.Sprintf("sync: pull failed (%d): %s", status, string(body)), nil, false)
+}
+
+// gitDiffError is gitstore.ChangedSince's error text when `git diff
+// --name-only <since> HEAD --` cannot resolve since (LC_ALL=C git): a full
+// 40-hex id parses as an object name that is then missing; anything shorter
+// or longer is an unresolvable revision.
+func gitDiffError(since string) string {
+	msg := "fatal: bad revision '" + since + "'"
+	if len(since) == 40 {
+		msg = "fatal: bad object " + since
+	}
+	return "gitstore: diff: exit status 128: " + msg + "\n"
 }
 
 // ListPages implements syncops.Remote: every path with its last-touch
@@ -248,10 +289,15 @@ func (f *FakeRemote) ReadPage(repoID, path string) ([]byte, string, error) {
 	return clone(f.commits[i].content), f.commits[i].sha, nil
 }
 
-// ReadPageAt implements syncops.Remote: the content of the path's latest
-// commit at or before sha, and that commit's sha (X-Page-SHA). An unknown
-// sha, or a path absent at it, is the real client's 404 sha_not_found
-// error. An OldServer ignores ?at (see FakeOptions.OldServer).
+// ReadPageAt implements syncops.Remote, mirroring WP-0.2 handler.ReadPage
+// with ?at: a sha that is not gitstore.ValidSHA (4-64 hex, either case; ""
+// included) is 400 invalid_sha (client code usage); otherwise sha resolves
+// like git, as a unique case-insensitive prefix of a commit, and an unknown
+// or ambiguous sha is 404 "sha not found"; a path absent at that commit is
+// 404 "page not found at sha" (both sha_not_found). Success returns the
+// content of the path's latest commit at or before the resolved one and
+// that commit's full sha (X-Page-SHA). An OldServer ignores ?at (see
+// FakeOptions.OldServer).
 func (f *FakeRemote) ReadPageAt(repoID, path, sha string) ([]byte, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -274,15 +320,72 @@ func (f *FakeRemote) ReadPageAt(repoID, path, sha string) ([]byte, string, error
 		}
 		return nil, "", e
 	}
-	at, ok := f.bySHA[sha]
-	i := -1
-	if ok {
-		i, ok = f.lastTouch(path, at)
+	if !validSHA(sha) {
+		return nil, "", readAtStatusError(400, []byte(bodyInvalidSHA))
 	}
+	at, ok := f.resolve(sha)
 	if !ok {
 		return nil, "", readAtStatusError(404, []byte(bodySHANotFound))
 	}
+	i, ok := f.lastTouch(path, at)
+	if !ok {
+		return nil, "", readAtStatusError(404, []byte(bodyPathNotAtSHA))
+	}
 	return clone(f.commits[i].content), f.commits[i].sha, nil
+}
+
+// validSHA is gitstore.ValidSHA (WP-0.2): 4 to 64 hex characters, either
+// case.
+func validSHA(s string) bool {
+	return len(s) >= 4 && isHexRef(s)
+}
+
+// isHexRef is gitstore.isHexRef: at most 64 hex characters, either case
+// ("" included).
+func isHexRef(s string) bool {
+	if len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// resolve returns the index of the commit s names, as git resolves an
+// object id: s is a ValidSHA that is a prefix (case-insensitive) of exactly
+// one commit sha. Unknown and ambiguous both fail. The caller holds f.mu.
+func (f *FakeRemote) resolve(s string) (int, bool) {
+	if !validSHA(s) {
+		return -1, false
+	}
+	if i, ok := f.bySHA[s]; ok {
+		return i, true
+	}
+	p := strings.ToLower(s)
+	found := -1
+	for i, c := range f.commits {
+		if strings.HasPrefix(c.sha, p) {
+			if found >= 0 {
+				return -1, false
+			}
+			found = i
+		}
+	}
+	return found, found >= 0
+}
+
+// ginJSON is the body gin's c.JSON(status, gin.H{...}) writes:
+// encoding/json over a map (keys sorted, HTML-escaped, no newline).
+func ginJSON(h map[string]string) []byte {
+	b, err := json.Marshal(h)
+	if err != nil {
+		panic(err) // a map[string]string always marshals
+	}
+	return b
 }
 
 // readAtStatusError is sync.Client ReadPageAt's non-200 error.
