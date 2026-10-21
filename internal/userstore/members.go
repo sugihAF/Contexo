@@ -29,17 +29,33 @@ type Membership struct {
 // already exists, the role is preserved (call with RoleOwner first when
 // claiming a brand-new repo).
 func (s *Store) AddMember(repoID, userID, role string) error {
+	_, err := s.AddMemberIfAbsent(repoID, userID, role)
+	return err
+}
+
+// AddMemberIfAbsent is AddMember that also reports whether it inserted the
+// row: inserted is false when userID already had a row in repoID, whose role
+// is then left as it was. A repo creator uses it to tell "this request made
+// me owner" from "a row for me was already there", which a plain idempotent
+// insert cannot: only an inserted owner row is an ownership the creation
+// established. A role other than RoleOwner or RoleMember is stored as
+// RoleMember.
+func (s *Store) AddMemberIfAbsent(repoID, userID, role string) (inserted bool, err error) {
 	if role != RoleOwner && role != RoleMember {
 		role = RoleMember
 	}
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`INSERT OR IGNORE INTO repo_members (repo_id, user_id, role, added_at) VALUES (?, ?, ?, ?)`,
 		repoID, userID, role, time.Now().UTC().Unix(),
 	)
 	if err != nil {
-		return fmt.Errorf("userstore: add member: %w", err)
+		return false, fmt.Errorf("userstore: add member: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("userstore: add member: %w", err)
+	}
+	return n == 1, nil
 }
 
 // GetRole returns the role of user in repo, or ErrNotFound.
