@@ -24,13 +24,35 @@ import (
 
 var wp04lockStartedAtRE = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
 
-// wp04lockHost is the host name Lock records for this process.
+// wp04lockHost is the host name Lock records for this process: the
+// hostname, plus a WSL marker inside WSL (pinned separately by
+// TestWP04LockHostDistinguishesWSL).
 func wp04lockHost() string {
+	return lockHost()
+}
+
+// wp04lockHostname is os.Hostname() as lockHost reads it.
+func wp04lockHostname() string {
 	h, err := os.Hostname()
 	if err != nil || h == "" {
 		return "unknown"
 	}
 	return h
+}
+
+// wp04lockFakeOS makes lockHost see osrelease as the kernel release and
+// distro as $WSL_DISTRO_NAME for the rest of the test.
+func wp04lockFakeOS(t *testing.T, osrelease, distro string) {
+	t.Helper()
+	oldRelease, oldGetenv := lockOSRelease, lockGetenv
+	t.Cleanup(func() { lockOSRelease, lockGetenv = oldRelease, oldGetenv })
+	lockOSRelease = func() string { return osrelease }
+	lockGetenv = func(key string) string {
+		if key == "WSL_DISTRO_NAME" {
+			return distro
+		}
+		return ""
+	}
 }
 
 // wp04lockHub returns a hub path under a fresh temp dir. The hub itself does
@@ -896,5 +918,55 @@ func TestWP04RemoveRetry(t *testing.T) {
 	remove, calls = failing(10, fs.ErrNotExist)
 	if err := removeRetry(remove, transient, "p"); err != nil || *calls != 1 {
 		t.Errorf("missing file: err = %v after %d calls, want nil after 1", err, *calls)
+	}
+}
+
+// WSL2 inherits the Windows computer name, but its pids live in another
+// namespace than ctx.exe's on the same machine. lockHost marks WSL so a
+// lock from the other side falls under the cross-host rule instead of a
+// pid probe in the wrong namespace.
+func TestWP04LockHostDistinguishesWSL(t *testing.T) {
+	hostname := wp04lockHostname()
+	if runtime.GOOS != "linux" {
+		if got := lockHost(); got != hostname {
+			t.Errorf("lockHost() on %s = %q, want the hostname %q", runtime.GOOS, got, hostname)
+		}
+	}
+
+	wp04lockFakeOS(t, "6.8.0-45-generic", "Ubuntu")
+	if got := lockHost(); got != hostname {
+		t.Errorf("lockHost() outside WSL = %q, want the hostname %q", got, hostname)
+	}
+	wp04lockFakeOS(t, "4.4.0-19041-Microsoft", "")
+	if got, want := lockHost(), hostname+" (wsl)"; got != want {
+		t.Errorf("lockHost() in WSL1 without WSL_DISTRO_NAME = %q, want %q", got, want)
+	}
+	wp04lockFakeOS(t, "5.15.153.1-microsoft-standard-WSL2", "Ubuntu-22.04")
+	host := lockHost()
+	if want := hostname + " (wsl:Ubuntu-22.04)"; host != want {
+		t.Errorf("lockHost() in WSL2 = %q, want %q", host, want)
+	}
+	if host == hostname || !strings.Contains(host, "(wsl") {
+		t.Fatalf("lockHost() in WSL = %q, want it to differ from the hostname", host)
+	}
+
+	// A lock written by ctx.exe on the Windows side: the bare hostname, a
+	// pid that does not exist in this namespace, started just now.
+	now := wp04lockNow()
+	info := LockInfo{PID: wp04lockDeadPID(t), Host: hostname, Command: "push", StartedAt: now}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, stale := judgeLock(data, now, host, now); stale {
+		t.Errorf("judgeLock of a young lock from the Windows side = stale, want live (other host)")
+	}
+	hub := wp04lockHub(t)
+	planted := wp04lockWrite(t, hub, info)
+	if u, ok, err := TryLock(hub, "pull"); ok || err != nil || u != nil {
+		t.Fatalf("TryLock over the Windows side's young lock: ok=%v err=%v", ok, err)
+	}
+	if got := wp04lockReadFile(t, hub); !bytes.Equal(got, planted) {
+		t.Fatalf("the other side's lock was reclaimed: %q -> %q", planted, got)
 	}
 }

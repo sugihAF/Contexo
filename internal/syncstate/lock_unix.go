@@ -5,6 +5,9 @@ package syncstate
 import (
 	"errors"
 	"math"
+	"os"
+	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -19,6 +22,19 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+}
+
+// osRelease returns the kernel release on linux
+// (/proc/sys/kernel/osrelease), or "" elsewhere or when it cannot be read.
+func osRelease() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	b, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // isTransientLockErr reports whether a lock-file operation failed only

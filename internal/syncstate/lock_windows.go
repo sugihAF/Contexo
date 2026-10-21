@@ -38,6 +38,9 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
+// osRelease returns the linux kernel release, which Windows does not have.
+func osRelease() string { return "" }
+
 // isTransientLockErr reports whether a lock-file operation failed only
 // because another process had the file open, or it is pending deletion:
 // ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION. Such failures are retried.

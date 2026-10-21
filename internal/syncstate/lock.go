@@ -165,13 +165,32 @@ func TryLock(hubDir, command string) (unlock func(), ok bool, err error) {
 	return nil, false, nil
 }
 
+// Seams for lockHost: the kernel release string ("" off linux) and the
+// environment.
+var (
+	lockOSRelease = osRelease
+	lockGetenv    = os.Getenv
+)
+
 // lockHost is the host name recorded in, and compared against, lock files.
+// It names the pid namespace a lock's pid belongs to, not just the machine:
+// WSL inherits the Windows computer name but has its own pids, so inside
+// WSL (a linux kernel release containing "microsoft" or "wsl") the hostname
+// gets " (wsl:<$WSL_DISTRO_NAME>)", or " (wsl)" without a distro name. A
+// lock from the other side then falls under the cross-host rule.
 func lockHost() string {
 	h, err := os.Hostname()
 	if err != nil || h == "" {
-		return "unknown"
+		h = "unknown"
 	}
-	return h
+	rel := strings.ToLower(lockOSRelease())
+	if !strings.Contains(rel, "microsoft") && !strings.Contains(rel, "wsl") {
+		return h
+	}
+	if distro := lockGetenv("WSL_DISTRO_NAME"); distro != "" {
+		return h + " (wsl:" + distro + ")"
+	}
+	return h + " (wsl)"
 }
 
 // acquireOnce makes one acquisition round: create the lock, or inspect the
