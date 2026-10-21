@@ -240,10 +240,16 @@ func (c *Client) captureServerInfo(h http.Header) {
 	c.capsKnown = true
 }
 
-// parseError is the legacy "sync: parse <what>: <err>" failure for a 2xx
-// (or 409) body that does not decode. The decode error stays in the chain.
+// parseError is the legacy "sync: parse <what>: <err>" failure for a body
+// that does not decode on a status the method accepts (2xx, or a push 409).
+// A garbled response is server_error (contract §5) whatever the status: only
+// a well-formed push 409 is conflict data (E14). The decode error stays in
+// the chain.
 func parseError(resp *http.Response, body []byte, what string, err error) *HTTPError {
-	return NewHTTPError(resp.StatusCode, body, fmt.Sprintf("sync: parse %s: %v", what, err), err, false)
+	e := NewHTTPError(resp.StatusCode, body, fmt.Sprintf("sync: parse %s: %v", what, err), err, false)
+	e.Code = contract.CodeServerError
+	e.Details = nil
+	return e
 }
 
 // statusError is the legacy "sync: <label> (<status>): <body>" failure.

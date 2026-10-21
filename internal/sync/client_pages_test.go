@@ -595,6 +595,7 @@ func TestHTTPErrorCodes(t *testing.T) {
 		{"500", 500, `boom`, listPages, contract.CodeServerError, nil, nil},
 		{"502", 502, `<html>bad gateway</html>`, readPage, contract.CodeServerError, nil, nil},
 		{"garbled 200", 200, `garbage{`, listPages, contract.CodeServerError, nil, nil},
+		{"garbled 409 push", 409, `<html>conflict</html>`, push, contract.CodeServerError, nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -918,5 +919,43 @@ func TestPushPagesConflictIsData(t *testing.T) {
 	}
 	if len(pr.Conflicts) != 1 || pr.Conflicts[0].CurrentSHA != wp01SHA2 || string(pr.Conflicts[0].CurrentContent) != "x" {
 		t.Errorf("conflicts = %+v", pr.Conflicts)
+	}
+}
+
+// TestPushPagesGarbled409IsServerError: a push 409 whose body does not
+// decode (a WAF or proxy HTML page) is a garbled response, so server_error
+// (exit 7, retryable) per contract §5, not internal. Only a well-formed 409
+// is conflict data (E14). The legacy parse text and the decode error stay.
+func TestPushPagesGarbled409IsServerError(t *testing.T) {
+	const garbled = `<html><body>409 Conflict</body></html>`
+	var v any
+	jerr := json.Unmarshal([]byte(garbled), &v)
+	srv := wp01Respond(t, 409, garbled, nil)
+	pr, err := NewClient(srv.URL, "tok").PushPages("team-repo", &PushRequest{Files: []PushFile{{Path: "wiki/concepts/a.md", Content: "x", ParentSHA: wp01SHA1}}})
+	if pr != nil {
+		t.Errorf("PushPages returned a response with the error: %+v", pr)
+	}
+	he := wp01AsHTTPError(t, err)
+	if he.Code != contract.CodeServerError || he.ErrorCode() != string(contract.CodeServerError) {
+		t.Errorf("Code = %q, want %q", he.Code, contract.CodeServerError)
+	}
+	if he.Status != 409 || he.HTTPStatus() != 409 {
+		t.Errorf("Status = %d, want 409", he.Status)
+	}
+	if got := contract.ExitCodeFor(he.Code); got != 7 {
+		t.Errorf("exit code = %d, want 7", got)
+	}
+	if !contract.Retryable(he.Code) {
+		t.Error("garbled 409 must be retryable")
+	}
+	if want := "sync: parse push response: " + jerr.Error(); err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+	var se *json.SyntaxError
+	if !errors.As(err, &se) {
+		t.Error("the *json.SyntaxError left the chain")
+	}
+	if he.Details != nil {
+		t.Errorf("Details = %#v, want nil", he.Details)
 	}
 }
