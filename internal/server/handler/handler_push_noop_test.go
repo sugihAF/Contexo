@@ -233,19 +233,27 @@ func TestPush_ActivityClientIsSanitized(t *testing.T) {
 
 	// Format characters (bidi overrides, zero-width) would let a member make
 	// the name render as another client in everyone's activity feed.
-	spoof := "ctx‮edocsv-oxetnoc​⁦x⁩"
+	spoof := "ctx\u202Eedocsv-oxetnoc\u200B\u2066x\u2069"
 	wp02Push(t, rig.router, "team-repo", alice, spoof, wp02PushFile{Path: "wiki/b.md", Content: "b"})
 	_, d = wp02LatestActivity(t, rig)
 	if d.Client != "ctxedocsv-oxetnocx" {
 		t.Errorf("stored client %q, want the format characters dropped (ctxedocsv-oxetnocx)", d.Client)
 	}
 
-	// Line/paragraph separators and private-use runes are not graphic either:
-	// U+2028 would render the name as two lines in the feed.
-	wp02Push(t, rig.router, "team-repo", alice, "ctx-mcp contexo-vscode/0.2.0 ", wp02PushFile{Path: "wiki/c.md", Content: "c"})
+	// A line/paragraph separator would render the name as two lines in the
+	// feed: every space becomes a plain space, and private-use runes go.
+	wp02Push(t, rig.router, "team-repo", alice, "ctx-mcp\u2028contexo-vscode/0.2.0\u2029\uE000", wp02PushFile{Path: "wiki/c.md", Content: "c"})
 	_, d = wp02LatestActivity(t, rig)
-	if d.Client != "ctx-mcpcontexo-vscode/0.2.0" {
-		t.Errorf("stored client %q, want only graphic runes kept (ctx-mcpcontexo-vscode/0.2.0)", d.Client)
+	if d.Client != "ctx-mcp contexo-vscode/0.2.0" {
+		t.Errorf("stored client %q, want separators as a plain space and private-use dropped (ctx-mcp contexo-vscode/0.2.0)", d.Client)
+	}
+
+	// Trimming happens after filtering, any space is a plain space, and the
+	// invisible Hangul filler letters are dropped.
+	wp02Push(t, rig.router, "team-repo", alice, "\u200B ctx\u00A0mcp\u3164", wp02PushFile{Path: "wiki/d.md", Content: "d"})
+	_, d = wp02LatestActivity(t, rig)
+	if d.Client != "ctx mcp" {
+		t.Errorf("stored client %q, want %q", d.Client, "ctx mcp")
 	}
 }
 
@@ -804,7 +812,7 @@ func TestPush_FailedCreateLeavesNoOwnerRow(t *testing.T) {
 // user's commit is credited to their account, not to "unknown".
 func TestPush_JunkAuthorFallsBackToUser(t *testing.T) {
 	rig, alice := wp02UserRig(t)
-	body := []byte(`{"author_name":" . ","author_email":" ","message":"m","files":[{"path":"wiki/a.md","content":"a"}]}`)
+	body := []byte(`{"author_name":" . ","author_email":"\u00A0","message":"m","files":[{"path":"wiki/a.md","content":"a"}]}`)
 	if w, _ := wp02PushRaw(t, rig.router, "team-repo", alice, "", body); w.Code != http.StatusOK {
 		t.Fatalf("push: %d %s", w.Code, w.Body.String())
 	}

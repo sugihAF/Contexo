@@ -104,10 +104,12 @@ const maxClientLen = 128
 // line/paragraph separators and private-use runes would let a member make the
 // stored name render as another client, or as several lines, in the feed.
 func activityClient(c *gin.Context) string {
-	raw := strings.TrimSpace(c.GetHeader("X-Contexo-Client"))
 	var b strings.Builder
-	for _, r := range raw {
-		if !unicode.IsGraphic(r) || r == utf8.RuneError {
+	for _, r := range c.GetHeader("X-Contexo-Client") {
+		switch {
+		case unicode.IsSpace(r):
+			r = ' '
+		case !unicode.IsGraphic(r), r == utf8.RuneError, hangulFiller(r):
 			continue
 		}
 		if b.Len()+utf8.RuneLen(r) > maxClientLen {
@@ -115,7 +117,14 @@ func activityClient(c *gin.Context) string {
 		}
 		b.WriteRune(r)
 	}
-	return b.String()
+	// Trim after filtering, so spaces next to dropped runes do not survive.
+	return strings.TrimSpace(b.String())
+}
+
+// hangulFiller reports the Hangul filler letters: graphic (Lo) but invisible,
+// so they could pad a client name with blank-looking text.
+func hangulFiller(r rune) bool {
+	return r == '\u115F' || r == '\u1160' || r == '\u3164' || r == '\uFFA0'
 }
 
 // pullDetail builds the JSON detail for a pull event from the announced client
