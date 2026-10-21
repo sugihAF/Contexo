@@ -5,6 +5,8 @@ package syncops
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -219,5 +221,36 @@ func TestWrapKeepsErrorsIs(t *testing.T) {
 	n := New(contract.CodeStale, "stale", "ctx status")
 	if n.Code != contract.CodeStale || n.Message != "stale" || !reflect.DeepEqual(n.Advice, []string{"ctx status"}) {
 		t.Fatalf("New = %+v", n)
+	}
+}
+
+// TestPackageDocScopesWave0Imports pins doc.go (frozen with env.go) to E3.
+// The engines sit on internal/syncstate, and WP-1.1's status.go takes a
+// *config.Remote and calls ui.ToContractError, so the package doc may keep
+// syncops off those packages only in wave 0, never as a lasting rule.
+func TestPackageDocScopesWave0Imports(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "doc.go", nil, parser.ParseComments|parser.PackageClauseOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Doc == nil {
+		t.Fatal("doc.go has no package doc")
+	}
+	var sentences []string
+	for _, para := range strings.Split(f.Doc.Text(), "\n\n") {
+		para = strings.Join(strings.Fields(para), " ")
+		sentences = append(sentences, strings.Split(para, ". ")...)
+	}
+	for _, s := range sentences {
+		bans := strings.Contains(s, "import") &&
+			(strings.Contains(s, "never") || strings.Contains(s, "not "))
+		if !bans || strings.Contains(s, "wave 0") {
+			continue
+		}
+		for _, pkg := range []string{"internal/config", "internal/syncstate", "internal/ui"} {
+			if strings.Contains(s, pkg) {
+				t.Errorf("package doc bans %s for good: %q; E3 and WP-1.1 need it in wave 1, so scope that rule to wave 0", pkg, s)
+			}
+		}
 	}
 }

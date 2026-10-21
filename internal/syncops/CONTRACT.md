@@ -4,6 +4,12 @@ This file summarizes the machine contract between `ctx` and programmatic
 callers (the Contexo VS Code extension first). It is a summary, not the
 source of truth. WP-0.1 wrote it in wave 0 and WP-2.2 finalizes it.
 
+No Go test reads this file. The [HUMAN] review, WP-2.2 and WP-4.1 can
+restructure it or delete rows without editing internal/syncops. The package
+tests pin the behaviour it summarizes: for example,
+`TestHTTPMappingUnlistedStatuses` pins the HTTP mapping table and
+deviation 1, and `TestNoSyncopsTestReadsContractMD` keeps the file unread.
+
 ## Sources and precedence
 
 - Contract page: `/Users/sugih/Codes/llm-wiki/wiki/concepts/contexo-vscode-mvp-contract.md`
@@ -32,7 +38,7 @@ The scratch prototype (`contract-probe`) is informational only (E40).
 | Package | Holds | Imports |
 |---|---|---|
 | `internal/syncops/contract` (import path `github.com/sugihAF/contexo/internal/syncops/contract`) | wire types, error/exit table, `Classify`, `ClassifySides`, `SCMGroup`, `WriteDoc`/`WriteEnvelope`, `TimeOf`/`TimePtr`, canonical fixtures in `testdata/v1/` | standard library only |
-| `internal/syncops` | `Env`, `Author`, `Remote`, `NewEnv`, `(Env).Online`, `RequireHub`, `NotImplemented`/`New`/`Wrap`, `SidecarFact`/`ApplySidecar`, one file per engine | never internal/config, internal/syncstate, internal/ui or internal/cli |
+| `internal/syncops` | `Env`, `Author`, `Remote`, `NewEnv`, `(Env).Online`, `RequireHub`, `NotImplemented`/`New`/`Wrap`, `SidecarFact`/`ApplySidecar`, one file per engine | never internal/cli or internal/mcp (both call the engines, so the import would be a cycle). In wave 0 only, also not internal/config, internal/syncstate or internal/ui. The wave-1 engines sit on internal/syncstate (E3), and WP-1.1's status.go may use `*config.Remote` and `ui.ToContractError` |
 | `internal/syncops/syncopstest` | `FakeRemote`, `NewFakeRemote(FakeOptions)` | sync, contract (never syncops) |
 
 `syncopstest` never imports `syncops`: the `var _ syncops.Remote =

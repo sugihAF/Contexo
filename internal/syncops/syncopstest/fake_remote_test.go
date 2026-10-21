@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -523,12 +526,61 @@ func TestFakeRemoteServerInfo(t *testing.T) {
 	})
 }
 
-// TestContractMDHTTPMappingMatchesClient keeps CONTRACT.md's HTTP mapping
-// summary (the table [HUMAN] reviews before WP-0.I, deviation 1 included)
-// in step with what the client and therefore FakeRemote actually do for
-// the statuses E14 does not list.
-func TestContractMDHTTPMappingMatchesClient(t *testing.T) {
-	// Code: sync.NewHTTPError, the one mapping every client method uses.
+// TestNoSyncopsTestReadsContractMD keeps CONTRACT.md free to change after
+// wave 0: [HUMAN] confirms or vetoes its pending deviations before WP-0.I,
+// WP-2.2 rewrites it (Known deviations) and WP-4.1 deletes rows, and none
+// of them may edit internal/syncops. So no test under internal/syncops opens
+// it; the code it summarizes is pinned by the tests themselves.
+func TestNoSyncopsTestReadsContractMD(t *testing.T) {
+	needle := "CONTRACT" + ".md" // two literals, so this file never matches
+	fset := token.NewFileSet()
+	files := 0
+	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		files++
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			s, err := strconv.Unquote(lit.Value)
+			if err == nil && strings.HasSuffix(s, needle) && !strings.ContainsAny(s, " \t\n") {
+				t.Errorf("%s: %s names %s; tests under internal/syncops must not read it (WP-2.2 and [HUMAN] edit it after wave 0)",
+					fset.Position(lit.Pos()), lit.Value, needle)
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files == 0 {
+		t.Fatal("found no test files under internal/syncops")
+	}
+}
+
+// TestHTTPMappingUnlistedStatuses pins what the client, and therefore
+// FakeRemote, does for the statuses E14 does not list: the behaviour that
+// CONTRACT.md's HTTP error mapping table and its deviation 1 describe. It
+// never reads CONTRACT.md (see TestNoSyncopsTestReadsContractMD).
+func TestHTTPMappingUnlistedStatuses(t *testing.T) {
+	// sync.NewHTTPError is the one mapping every client method uses.
 	probes := []struct {
 		status int
 		body   string
@@ -569,103 +621,6 @@ func TestContractMDHTTPMappingMatchesClient(t *testing.T) {
 	if he := wp01HTTPError(t, err); he.ErrorCode() != string(contract.CodeServerError) {
 		t.Errorf("garbled push 409: code = %s, want server_error", he.ErrorCode())
 	}
-
-	// Doc: the mapping table and deviation 1 say the same.
-	raw, err := os.ReadFile(filepath.Join("..", "CONTRACT.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	md := string(raw)
-	statusFor := func(rows [][]string, codePrefix string) string {
-		for _, r := range rows {
-			if len(r) >= 2 && strings.HasPrefix(r[1], codePrefix) {
-				return r[0]
-			}
-		}
-		t.Fatalf("CONTRACT.md HTTP mapping table has no row whose code is %s", codePrefix)
-		return ""
-	}
-	rows := wp01MDTable(t, md, "## HTTP error mapping")
-	internalRow := statusFor(rows, string(contract.CodeInternal))
-	for _, tok := range []string{"1xx", "3xx", "409"} {
-		if !strings.Contains(internalRow, tok) {
-			t.Errorf("mapping table: internal row %q does not name %s", internalRow, tok)
-		}
-	}
-	serverRow := statusFor(rows, string(contract.CodeServerError))
-	for _, tok := range []string{"5xx", "2xx", "push 409"} {
-		if !strings.Contains(serverRow, tok) {
-			t.Errorf("mapping table: server_error row %q does not name %s", serverRow, tok)
-		}
-	}
-	for _, r := range rows {
-		if (strings.Contains(r[0], "1xx") || strings.Contains(r[0], "3xx")) && !strings.HasPrefix(r[1], "internal") {
-			t.Errorf("mapping table row %q maps 1xx/3xx to %q, the client gives internal", r[0], r[1])
-		}
-	}
-
-	var decision string
-	for _, r := range wp01MDTable(t, md, "## Deviations pending review") {
-		if len(r) >= 2 && r[0] == "1" {
-			decision = r[1]
-		}
-	}
-	if decision == "" {
-		t.Fatal("CONTRACT.md has no deviation 1")
-	}
-	sawGarbled := false
-	for _, clause := range strings.Split(decision, ";") {
-		if strings.Contains(clause, "1xx") || strings.Contains(clause, "3xx") {
-			if !strings.Contains(clause, "internal") || strings.Contains(clause, "server_error") {
-				t.Errorf("deviation 1 clause %q: the client maps 1xx and 3xx to internal", clause)
-			}
-		}
-		if strings.Contains(clause, "garbled") {
-			sawGarbled = true
-			if !strings.Contains(clause, "server_error") || strings.Contains(clause, "internal") {
-				t.Errorf("deviation 1 clause %q: the client maps a garbled body to server_error", clause)
-			}
-		}
-	}
-	if !sawGarbled {
-		t.Errorf("deviation 1 %q does not rule on a garbled body", decision)
-	}
-}
-
-// wp01MDTable returns the body rows (cells trimmed) of the first Markdown
-// table in the section whose "## " heading starts with heading.
-func wp01MDTable(t *testing.T, md, heading string) [][]string {
-	t.Helper()
-	var rows [][]string
-	in, seenTable := false, false
-	for _, line := range strings.Split(md, "\n") {
-		if strings.HasPrefix(line, "## ") {
-			if in {
-				break
-			}
-			in = strings.HasPrefix(line, heading)
-			continue
-		}
-		if !in {
-			continue
-		}
-		if !strings.HasPrefix(line, "|") {
-			if seenTable {
-				break
-			}
-			continue
-		}
-		seenTable = true
-		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
-		for i := range cells {
-			cells[i] = strings.TrimSpace(cells[i])
-		}
-		rows = append(rows, cells)
-	}
-	if len(rows) < 3 {
-		t.Fatalf("CONTRACT.md: no table under %q", heading)
-	}
-	return rows[2:] // drop the header and the |---| separator
 }
 
 func wp01HasCap(caps []contract.ServerCapability, c contract.ServerCapability) bool {
