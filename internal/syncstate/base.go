@@ -42,7 +42,9 @@ type Bases struct {
 //
 // The file is corrupt when it is not a JSON object, its "schema" is not
 // SchemaBases, "pages" is missing, null or not an object, a record is null
-// or mistyped, or a key fails ValidateRelPath. Unknown fields are ignored.
+// or mistyped, a key fails ValidateRelPath, or a record is one Put never
+// writes (an empty sha, or a hash without the "sha256:" or "raw-sha256:"
+// prefix). Unknown fields are ignored.
 func OpenBases(hub string) (*Bases, error) {
 	b := &Bases{hub: hub, pages: map[string]BaseRecord{}}
 	data, err := os.ReadFile(BasesPath(hub))
@@ -53,6 +55,13 @@ func OpenBases(hub string) (*Bases, error) {
 		return nil, fmt.Errorf("syncstate: open bases: %w", err)
 	}
 	recs, ok := decodeIndexFile[BaseRecord](data, SchemaBases, "pages")
+	for _, rec := range recs {
+		if !ok {
+			break
+		}
+		ok = rec != nil && rec.SHA != "" &&
+			(strings.HasPrefix(rec.Hash, normHashPrefix) || strings.HasPrefix(rec.Hash, rawHashPrefix))
+	}
 	if !ok {
 		b.corrupt = true
 		return b, nil

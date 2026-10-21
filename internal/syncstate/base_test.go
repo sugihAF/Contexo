@@ -520,6 +520,12 @@ func TestWP04BasesWrongSchemaIsCorrupt(t *testing.T) {
 		"traversal key":    `{"schema":"ctx.bases.v1","pages":{"../../config.json":` + rec + `}}`,
 		"dot-dir key":      `{"schema":"ctx.bases.v1","pages":{".sync/x.md":` + rec + `}}`,
 		"trailing garbage": `{"schema":"ctx.bases.v1","pages":{}} x`,
+		// Records Put never writes: a base without a sha can never be
+		// valid, and one without a hash would compare unequal to every
+		// working file.
+		"record empty sha": `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"","hash":"sha256:00","synced_at":"2026-01-02T03:04:05Z"}}}`,
+		"record no hash":   `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","synced_at":"2026-01-02T03:04:05Z"}}}`,
+		"record odd hash":  `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","hash":"md5:00","synced_at":"2026-01-02T03:04:05Z"}}}`,
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -563,7 +569,7 @@ func TestWP04BasesAcceptsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := `{"schema":"ctx.bases.v1","extra":true,"pages":{"wiki/a.md":` +
-		`{"sha":"s1","hash":"h","synced_at":"2026-01-02T10:04:05.5+07:00","note":"x"}}}`
+		`{"sha":"s1","hash":"sha256:00","synced_at":"2026-01-02T10:04:05.5+07:00","note":"x"}}}`
 	if err := os.WriteFile(BasesPath(hub), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +578,7 @@ func TestWP04BasesAcceptsUnknownFields(t *testing.T) {
 		t.Fatal("unknown fields made bases.json Corrupt")
 	}
 	rec, ok := b.Get("wiki/a.md")
-	if !ok || rec.SHA != "s1" || rec.Hash != "h" {
+	if !ok || rec.SHA != "s1" || rec.Hash != "sha256:00" {
 		t.Fatalf("Get = %+v, %v", rec, ok)
 	}
 	// Loaded times are kept in the on-disk form: UTC, whole seconds.
