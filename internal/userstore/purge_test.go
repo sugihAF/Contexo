@@ -99,19 +99,32 @@ func TestPurgeRepoRemovesMembersAndKeys(t *testing.T) {
 }
 
 // TestPurgeRepoIsAtomic: a purge that fails part way leaves every row in
-// place (one transaction), so a failed create never leaves a half-purged id.
+// place, those of repoID and of every alias alike (one transaction for all
+// the ids), so a failed create never leaves a half-purged id. The deletes of
+// one table are blocked for one id at a time, for each table and for the
+// repo id and its alias in turn, so a purge that commits per id, per table
+// or not at all fails whatever order it deletes in.
 func TestPurgeRepoIsAtomic(t *testing.T) {
-	s := openTestStore(t)
-	ids := wp07Users(t, s, "a@example.com", "b@example.com")
-	keys := wp07Seed(t, s, "x", ids[0], []string{ids[1]}, 1, 1)
-	if _, err := s.DB().Exec(`CREATE TRIGGER wp07_block BEFORE DELETE ON repo_activity
-BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
-		t.Fatalf("install trigger: %v", err)
+	for _, blocked := range []string{"x", "x.y"} {
+		for _, table := range []string{"repo_members", "repo_invite_keys", "repo_activity"} {
+			t.Run(blocked+"/"+table, func(t *testing.T) {
+				s := openTestStore(t)
+				ids := wp07Users(t, s, "a@example.com", "b@example.com", "c@example.com")
+				xKeys := wp07Seed(t, s, "x", ids[0], []string{ids[1]}, 1, 1)
+				aliasKeys := wp07Seed(t, s, "x.y", ids[2], []string{ids[0]}, 1, 1)
+				trigger := fmt.Sprintf(`CREATE TRIGGER wp07_block BEFORE DELETE ON %s WHEN OLD.repo_id = '%s'
+BEGIN SELECT RAISE(ABORT, 'blocked'); END`, table, blocked)
+				if _, err := s.DB().Exec(trigger); err != nil {
+					t.Fatalf("install trigger: %v", err)
+				}
+				if err := s.PurgeRepo("x", "x.y"); err == nil {
+					t.Fatalf("purge with the %s deletes of %q blocked: nil error", table, blocked)
+				}
+				wp07WantRepoRows(t, s, "rolled back", "x", 2, 1, 1, xKeys)
+				wp07WantRepoRows(t, s, "rolled back alias", "x.y", 2, 1, 1, aliasKeys)
+			})
+		}
 	}
-	if err := s.PurgeRepo("x"); err == nil {
-		t.Fatalf("purge with activity deletes blocked: nil error")
-	}
-	wp07WantRepoRows(t, s, "rolled back", "x", 2, 1, 1, keys)
 }
 
 // TestKnownRepoIDs: every repo id that has a membership row, an invite key

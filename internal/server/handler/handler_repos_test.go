@@ -20,6 +20,7 @@ import (
 	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/server/gitstore"
 	"github.com/sugihAF/contexo/internal/userstore"
+	"github.com/sugihAF/contexo/quota"
 )
 
 // wp07User is a signed-in test user: bearer token and userstore id.
@@ -198,17 +199,19 @@ func wp07HideTable(t *testing.T, rig *testRig, table string) (restore func()) {
 	return restore
 }
 
-// wp07QuotaHook is a quota.Policy that allows everything and calls hook from
-// AllowRepoCreate. A create checks the quota under createRepoMu, after its
-// existence checks and before gitstore.Create, so hook runs at that point
-// of the critical section, on the request's goroutine.
+// wp07QuotaHook is a quota.Policy that calls hook from AllowRepoCreate and
+// answers err (nil allows every create). A create checks the quota under
+// createRepoMu, after its existence checks and before gitstore.Create, so
+// hook runs at that point of the critical section, on the request's
+// goroutine.
 type wp07QuotaHook struct {
 	hook func()
+	err  error
 }
 
 func (q wp07QuotaHook) AllowRepoCreate(string, int) error {
 	q.hook()
-	return nil
+	return q.err
 }
 
 func (wp07QuotaHook) AllowMemberAdd(string, []string, int) error { return nil }
@@ -734,34 +737,54 @@ BEGIN INSERT OR IGNORE INTO repo_members (repo_id, user_id, role, added_at) VALU
 
 // TestCreateRepoPurgeErrorIs500: when the stale rows cannot be purged, the
 // create fails before any owner row is added, and the purge is all or
-// nothing.
+// nothing across the new id and the aliases of its directory: one PurgeRepo
+// call, so a failure on either id leaves the rows of both.
 func TestCreateRepoPurgeErrorIs500(t *testing.T) {
-	rig := setupRig(t)
-	us := wp07SignIn(t, rig, "carol", "dave")
-	carol, dave := us["carol"], us["dave"]
-	// Stale rows of an operator-deleted "w" (no directory).
-	if err := rig.users.AddMember("w", dave.id, userstore.RoleOwner); err != nil {
-		t.Fatalf("seed w: %v", err)
-	}
-	_, raw, err := rig.users.MintInviteKey("w", dave.id, "k")
-	if err != nil {
-		t.Fatalf("seed w key: %v", err)
-	}
-	if err := rig.users.RecordActivity("w", dave.id, "push", ""); err != nil {
-		t.Fatalf("seed w activity: %v", err)
-	}
-	if _, err := rig.users.DB().Exec(`CREATE TRIGGER wp07_block BEFORE DELETE ON repo_activity WHEN OLD.repo_id = 'w'
-BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
-		t.Fatalf("install trigger: %v", err)
-	}
+	for _, tc := range []struct {
+		create  string
+		stale   []string // ids with stale rows: the new id, then its alias
+		blocked string   // the id whose activity deletes fail
+	}{
+		{create: "w", stale: []string{"w"}, blocked: "w"},
+		{create: "myw", stale: []string{"myw", "my.w"}, blocked: "myw"},
+		{create: "myw", stale: []string{"myw", "my.w"}, blocked: "my.w"},
+	} {
+		t.Run(tc.create+"/blocked="+tc.blocked, func(t *testing.T) {
+			rig := setupRig(t)
+			us := wp07SignIn(t, rig, "carol", "dave")
+			carol, dave := us["carol"], us["dave"]
+			// Stale rows of operator-deleted repos (no directory).
+			raws := map[string]string{}
+			for _, id := range tc.stale {
+				if err := rig.users.AddMember(id, dave.id, userstore.RoleOwner); err != nil {
+					t.Fatalf("seed %s: %v", id, err)
+				}
+				_, raw, err := rig.users.MintInviteKey(id, dave.id, "k")
+				if err != nil {
+					t.Fatalf("seed %s key: %v", id, err)
+				}
+				raws[id] = raw
+				if err := rig.users.RecordActivity(id, dave.id, "push", ""); err != nil {
+					t.Fatalf("seed %s activity: %v", id, err)
+				}
+			}
+			trigger := fmt.Sprintf(`CREATE TRIGGER wp07_block BEFORE DELETE ON repo_activity WHEN OLD.repo_id = '%s'
+BEGIN SELECT RAISE(ABORT, 'blocked'); END`, tc.blocked)
+			if _, err := rig.users.DB().Exec(trigger); err != nil {
+				t.Fatalf("install trigger: %v", err)
+			}
 
-	wp07WantStatus(t, "carol creates w", wp07Create(t, rig, "w", carol.bearer), http.StatusInternalServerError)
-	if r := wp02Role(t, rig, "w", carol.id); r != "" {
-		t.Errorf("carol's role in w = %q, want none", r)
+			wp07WantStatus(t, "carol creates "+tc.create, wp07Create(t, rig, tc.create, carol.bearer), http.StatusInternalServerError)
+			if r := wp02Role(t, rig, tc.create, carol.id); r != "" {
+				t.Errorf("carol's role in %s = %q, want none", tc.create, r)
+			}
+			for _, id := range tc.stale {
+				wp07WantMembers(t, id+" (rolled back)", rig, id, map[string]string{dave.id: userstore.RoleOwner})
+				wp07WantResolves(t, id+" key (rolled back)", rig, raws[id], id)
+				wp07WantActivity(t, id+" (rolled back)", rig, id, 1)
+			}
+		})
 	}
-	wp07WantMembers(t, "w (rolled back)", rig, "w", map[string]string{dave.id: userstore.RoleOwner})
-	wp07WantResolves(t, "w key (rolled back)", rig, raw, "w")
-	wp07WantActivity(t, "w (rolled back)", rig, "w", 1)
 }
 
 // TestCreateRepoListsKnownIDsOutsideCreateRepoMu: createRepoMu serializes
@@ -814,6 +837,87 @@ func TestCreateRepoListsKnownIDsOutsideCreateRepoMu(t *testing.T) {
 	wp07WantMembers(t, "taken", rig, "taken", map[string]string{alice.id: userstore.RoleOwner})
 	if r := wp02Role(t, rig, "fresh", carol.id); r != "" {
 		t.Errorf("carol's role in fresh = %q, want none", r)
+	}
+}
+
+// wp07WaitsForLockIn reports whether some goroutine is blocked in a
+// sync.Mutex Lock called directly from a function whose name contains fn.
+// createRepoAsOwner takes one mutex itself, createRepoMu, so for fn
+// "(*Handler).createRepoAsOwner" it tells a test that holds createRepoMu
+// that a create has passed every step before the lock and is waiting for it.
+func wp07WaitsForLockIn(fn string) bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for n == len(buf) {
+		buf = make([]byte, 2*len(buf))
+		n = runtime.Stack(buf, true)
+	}
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		// Function lines alternate with tab-indented file:line lines.
+		var funcs []string
+		for _, line := range strings.Split(g, "\n")[1:] {
+			if line != "" && !strings.HasPrefix(line, "\t") {
+				funcs = append(funcs, line)
+			}
+		}
+		for i := 0; i+1 < len(funcs); i++ {
+			if strings.HasPrefix(funcs[i], "sync.(*Mutex).Lock(") && strings.Contains(funcs[i+1], fn) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestCreateRepoRechecksExistenceUnderCreateRepoMu: a create checks whether
+// the repo exists without createRepoMu, so refusing an existing id never
+// waits, and must check again once it holds the lock. A repo made while it
+// waited (by the create that held the lock, or by a creator outside it) is
+// a 409 "repo already exists" before the quota is checked. Without the
+// second check gitstore.Create's created=false still keeps the repo
+// unclaimed, but a caller at their repo cap would get 402 quota_repos (the
+// dashboard's upgrade prompt), and a failing owned-repo count a 500, for an
+// id that exists. The test holds createRepoMu until carol's create of a new
+// id waits for it, makes the repo, then lets the create go on, under a quota
+// that refuses every create.
+func TestCreateRepoRechecksExistenceUnderCreateRepoMu(t *testing.T) {
+	rig := setupRig(t)
+	carol := wp07SignIn(t, rig, "carol")["carol"]
+	quotaCalls := 0
+	rig.h.SetQuota(wp07QuotaHook{
+		hook: func() { quotaCalls++ },
+		err:  &quota.LimitError{Kind: "repos", Limit: 0, Message: "repo cap hit", UpgradeURL: "https://contexo.live/#pricing"},
+	})
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	waited := func() bool {
+		createRepoMu.Lock()
+		defer createRepoMu.Unlock()
+		go func() { done <- wp07Create(t, rig, "late", carol.bearer) }()
+		for deadline := time.Now().Add(10 * time.Second); !wp07WaitsForLockIn("(*Handler).createRepoAsOwner"); time.Sleep(time.Millisecond) {
+			if len(done) > 0 || time.Now().After(deadline) {
+				return false
+			}
+		}
+		if err := rig.store.Init("late"); err != nil {
+			t.Errorf("init late: %v", err)
+		}
+		return true
+	}()
+	w := <-done
+	if !waited {
+		t.Fatalf("carol's create of a new id never waited for createRepoMu; it answered %d %s", w.Code, w.Body.String())
+	}
+
+	wp07WantRepoExists(t, "carol creates late, made while she waited", w)
+	if quotaCalls != 0 {
+		t.Errorf("the quota was checked %d times for an id that existed under createRepoMu, want 0", quotaCalls)
+	}
+	if r := wp02Role(t, rig, "late", carol.id); r != "" {
+		t.Errorf("carol's role in late = %q, want none", r)
+	}
+	if owners, err := rig.users.RepoOwners("late"); err != nil || len(owners) != 0 {
+		t.Errorf("late owners %v (err %v), want none", owners, err)
 	}
 }
 
