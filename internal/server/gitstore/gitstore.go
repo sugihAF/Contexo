@@ -830,6 +830,13 @@ func validatePagePath(p string) error {
 		if strings.EqualFold(seg, ".git") {
 			return ErrUnsafePath
 		}
+		// git's in-tree control files are not pages: a pushed .gitattributes
+		// rewrites how every later page's bytes are stored (eol, encoding,
+		// ident) and .gitignore / .gitmodules change what add accepts.
+		if strings.EqualFold(seg, ".gitattributes") || strings.EqualFold(seg, ".gitignore") ||
+			strings.EqualFold(seg, ".gitmodules") {
+			return ErrUnsafePath
+		}
 	}
 	// The cleaned slash path must equal the input (no ".."/"."/double-slash
 	// normalization), and filepath.IsLocal must agree it stays in-tree.

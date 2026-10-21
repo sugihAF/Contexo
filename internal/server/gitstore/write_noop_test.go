@@ -1139,13 +1139,45 @@ func TestWriteToleratesOddCommitMetadata(t *testing.T) {
 // fail with "paths are ignored" (a 500 for every push in the repo).
 func TestWritePushedGitignoreCannotBlockPages(t *testing.T) {
 	s := wp02Store(t)
-	wp02Write(t, s, ".gitignore", "*\n", "")
+	// Pushing one is refused now (TestGitControlFilesAreNotPages); a repo can
+	// still hold one committed before that rule.
+	dir := s.repoDir("r")
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		t.Fatalf("seed .gitignore: %v", err)
+	}
+	if out, err := s.git(dir, "add", "-f", "--", ".gitignore"); err != nil {
+		t.Fatalf("add .gitignore: %v %s", err, out)
+	}
+	if out, err := s.git(dir, "commit", "-m", "old ignore file", "--", ".gitignore"); err != nil {
+		t.Fatalf("commit .gitignore: %v %s", err, out)
+	}
 	res, conflict, err := s.WriteWithOptions("r", "wiki/after.md", []byte("after"), wp02Opts(""))
 	if err != nil || conflict != nil || !res.Changed {
 		t.Fatalf("new page after a pushed .gitignore: res=%+v conflict=%+v err=%v, want a commit", res, conflict, err)
 	}
 	if content, _, err := s.Read("r", "wiki/after.md"); err != nil || string(content) != "after" {
 		t.Errorf("read back: %q, %v", content, err)
+	}
+}
+
+// TestGitControlFilesAreNotPages: .gitattributes, .gitignore and .gitmodules
+// change how git treats every other path (eol/encoding/ident conversion of
+// stored bytes, ignored adds), so a member must not be able to write one.
+func TestGitControlFilesAreNotPages(t *testing.T) {
+	for _, p := range []string{".gitattributes", ".gitignore", ".gitmodules", "wiki/.gitattributes",
+		"wiki/sub/.GitIgnore", ".GITMODULES"} {
+		if err := ValidatePagePath(p); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("ValidatePagePath(%q) = %v, want ErrUnsafePath", p, err)
+		}
+	}
+	for _, p := range []string{"wiki/gitattributes.md", "wiki/.gitattributes.md", "wiki/notes.gitignore"} {
+		if err := ValidatePagePath(p); err != nil {
+			t.Errorf("ValidatePagePath(%q) = %v, want nil", p, err)
+		}
+	}
+	s := wp02Store(t)
+	if _, _, err := s.WriteWithOptions("r", ".gitattributes", []byte("* text eol=crlf\n"), wp02Opts("")); !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("write .gitattributes: %v, want ErrUnsafePath", err)
 	}
 }
 
