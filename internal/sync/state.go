@@ -25,21 +25,35 @@ func StatePath(hubDir string) string {
 
 // LoadState reads the sidecar; returns a zero-value State if the file is absent.
 func LoadState(hubDir string) (*State, error) {
+	s, parseErr, err := readState(hubDir)
+	if err != nil {
+		return nil, err
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("sync: parse state: %w", parseErr)
+	}
+	return s, nil
+}
+
+// readState is the one state.json decoder behind LoadState and
+// LoadStateOrEmpty. A missing file gives an empty State. parseErr is the
+// decode failure of a file that exists; err is any other read error.
+func readState(hubDir string) (s *State, parseErr, err error) {
 	data, err := os.ReadFile(StatePath(hubDir))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &State{PageSHAs: map[string]string{}}, nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return &State{PageSHAs: map[string]string{}}, nil, nil
 		}
-		return nil, fmt.Errorf("sync: load state: %w", err)
+		return nil, nil, fmt.Errorf("sync: load state: %w", err)
 	}
-	var s State
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("sync: parse state: %w", err)
+	var st State
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, err, nil
 	}
-	if s.PageSHAs == nil {
-		s.PageSHAs = map[string]string{}
+	if st.PageSHAs == nil {
+		st.PageSHAs = map[string]string{}
 	}
-	return &s, nil
+	return &st, nil, nil
 }
 
 // SaveState writes the sidecar atomically, so a concurrent reader never sees
@@ -61,19 +75,12 @@ func SaveState(hubDir string, s *State) error {
 // file: a parse failure gives an empty State with corrupt=true and a nil
 // error. err reports only other I/O errors.
 func LoadStateOrEmpty(hubDir string) (s *State, corrupt bool, err error) {
-	data, err := os.ReadFile(StatePath(hubDir))
+	s, parseErr, err := readState(hubDir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return &State{PageSHAs: map[string]string{}}, false, nil
-		}
-		return nil, false, fmt.Errorf("sync: load state: %w", err)
+		return nil, false, err
 	}
-	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
+	if parseErr != nil {
 		return &State{PageSHAs: map[string]string{}}, true, nil
 	}
-	if st.PageSHAs == nil {
-		st.PageSHAs = map[string]string{}
-	}
-	return &st, false, nil
+	return s, false, nil
 }

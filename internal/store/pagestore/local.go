@@ -65,7 +65,8 @@ func (s *Store) Read(relPath string) (*schema.Page, error) {
 		}
 		return nil, fmt.Errorf("pagestore: read %s: %w", relPath, err)
 	}
-	return schema.ParsePage(data)
+	// Strip a BOM like WalkAll does, so a page Walk lists can be read.
+	return schema.ParsePage(stripBOM(data))
 }
 
 // FindBySlug searches all known type directories for a page with the given slug.

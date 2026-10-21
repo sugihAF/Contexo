@@ -42,6 +42,23 @@ func wp04cmpWithBOM(b []byte) []byte {
 	return append(append([]byte{}, wp04cmpBOM...), b...)
 }
 
+// Walk and List now return BOM pages, so Read and FindBySlug must read them
+// too, or a listed page could not be opened.
+func TestWP04ReadStripsBOM(t *testing.T) {
+	root := wp04cmpTree(t, map[string][]byte{
+		"wiki/concepts/bom.md": wp04cmpWithBOM(wp04cmpPageBytes("bom")),
+	})
+	s := &Store{Root: root}
+	p, err := s.Read("wiki/concepts/bom.md")
+	if err != nil || p.Frontmatter.Slug != "bom" {
+		t.Fatalf("Read = %+v, %v; want the bom page", p, err)
+	}
+	p, err = s.FindBySlug("bom")
+	if err != nil || p.Frontmatter.Slug != "bom" {
+		t.Fatalf("FindBySlug = %+v, %v; want the bom page", p, err)
+	}
+}
+
 func TestWalkAllReportsInvalid(t *testing.T) {
 	broken := []byte("no frontmatter here\n")
 	bom := wp04cmpWithBOM(wp04cmpPageBytes("bom"))
