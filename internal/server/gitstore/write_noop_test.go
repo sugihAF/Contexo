@@ -593,6 +593,130 @@ func TestUnquoteGitPath(t *testing.T) {
 	}
 }
 
+// wp02NoAmbientGitIdentity leaves the repo's own user.name/user.email (set by
+// Init) as the only committer identity git can use, so a commit that runs
+// before Init has configured the repo fails instead of borrowing the host's
+// global identity.
+func wp02NoAmbientGitIdentity(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "EMAIL"} {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Setenv(k, v) // restores the value after the test
+			os.Unsetenv(k)
+		}
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+}
+
+// TestInitConcurrentThenWrite: concurrent first pushes to a new repo each run
+// Init then a write. Unserialized, they race `git init` and `git config`
+// (config.lock), and a write can commit before user.name/user.email are set.
+func TestInitConcurrentThenWrite(t *testing.T) {
+	wp02NoAmbientGitIdentity(t)
+	s, err := Open(filepath.Join(t.TempDir(), "repos"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	const n = 8
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg gosync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if err := s.Init("fresh"); err != nil {
+				errs[i] = fmt.Errorf("init: %w", err)
+				return
+			}
+			p := fmt.Sprintf("wiki/page-%d.md", i)
+			res, conflict, err := s.WriteWithOptions("fresh", p, []byte(p), wp02Opts(""))
+			if err != nil || conflict != nil || !res.Changed {
+				errs[i] = fmt.Errorf("write %s: res=%+v conflict=%+v err=%v", p, res, conflict, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+	if commits, err := s.Log("fresh", 100); err != nil || len(commits) != n {
+		t.Errorf("Log = %d commits err=%v, want %d (one per write)", len(commits), err, n)
+	}
+}
+
+// TestWriteSamePathConcurrentCAS pins the repo lock's lost-update guarantee:
+// of several writers that all hold the same parent, exactly one commits and
+// every other one gets a conflict naming the winner's commit.
+func TestWriteSamePathConcurrentCAS(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "v0", "")
+
+	const n = 8
+	type result struct {
+		res      WriteResult
+		conflict *Conflict
+		err      error
+	}
+	results := make([]result, n)
+	start := make(chan struct{})
+	var wg gosync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			res, conflict, err := s.WriteWithOptions("r", "wiki/a.md", []byte(fmt.Sprintf("v%d", i+1)), wp02Opts(c1))
+			results[i] = result{res, conflict, err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	winner := -1
+	for i, r := range results {
+		if r.err == nil && r.conflict == nil && r.res.Changed {
+			if winner >= 0 {
+				t.Fatalf("writers %d and %d both committed with parent %s: %+v", winner, i, c1, results)
+			}
+			winner = i
+		}
+	}
+	if winner < 0 {
+		t.Fatalf("no writer committed: %+v", results)
+	}
+	won := results[winner].res.SHA
+	wonContent := fmt.Sprintf("v%d", winner+1)
+	for i, r := range results {
+		if i == winner {
+			continue
+		}
+		if !errors.Is(r.err, ErrConflict) || r.conflict == nil {
+			t.Errorf("writer %d: res=%+v conflict=%+v err=%v, want ErrConflict", i, r.res, r.conflict, r.err)
+			continue
+		}
+		if r.conflict.CurrentSHA != won || string(r.conflict.CurrentContent) != wonContent || r.conflict.ExpectedParentSHA != c1 {
+			t.Errorf("writer %d: conflict = %+v, want current %s (%q), expected parent %s", i, r.conflict, won, wonContent, c1)
+		}
+	}
+	if content, sha, err := s.Read("r", "wiki/a.md"); err != nil || string(content) != wonContent || sha != won {
+		t.Errorf("Read = %q@%s err=%v, want %q@%s", content, sha, err, wonContent, won)
+	}
+	if commits, err := s.Log("r", 100); err != nil || len(commits) != 2 {
+		t.Errorf("Log = %d commits err=%v, want 2", len(commits), err)
+	}
+}
+
 // wp02CaseInsensitiveFS reports whether dir's filesystem folds case.
 func wp02CaseInsensitiveFS(t *testing.T, dir string) bool {
 	t.Helper()

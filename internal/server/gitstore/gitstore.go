@@ -67,7 +67,18 @@ func (s *Store) Init(repoID string) error {
 	if dir == "" {
 		return fmt.Errorf("gitstore: invalid repoID %q", repoID)
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+	gitDir := filepath.Join(dir, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		return nil
+	}
+	// Concurrent first pushes to a new repo each call Init. Under the repo
+	// lock only one of them runs git init and git config (which otherwise
+	// collide on template files and config.lock), and a write, which takes
+	// the same lock, cannot commit before user.name/user.email are set: .git
+	// only exists without them while its creator holds the lock.
+	unlock := lockRepo(dir)
+	defer unlock()
+	if _, err := os.Stat(gitDir); err == nil {
 		return nil
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
