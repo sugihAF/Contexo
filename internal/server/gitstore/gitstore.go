@@ -166,6 +166,8 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 	}
 
 	abs := filepath.Join(dir, filepath.FromSlash(filePath))
+	_, statErr := os.Lstat(abs)
+	created := errors.Is(statErr, os.ErrNotExist)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return WriteResult{}, nil, fmt.Errorf("gitstore: mkdir: %w", err)
 	}
@@ -174,6 +176,9 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 	}
 	if out, err := s.git(dir, "add", "--", filePath); err != nil {
 		return WriteResult{}, nil, fmt.Errorf("gitstore: add: %w: %s", err, out)
+	}
+	if err := s.requireIndexed(dir, filePath, abs, created); err != nil {
+		return WriteResult{}, nil, err
 	}
 
 	// No-op detection by exit status, not by matching git's "nothing to
@@ -203,6 +208,37 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 		return WriteResult{}, nil, err
 	}
 	return WriteResult{SHA: sha, Changed: true}, nil, nil
+}
+
+// requireIndexed checks, right after `git add -- filePath`, that the index
+// holds exactly filePath. On a case-insensitive filesystem (core.ignorecase) a
+// case variant of a tracked page ("Wiki/A.md" while wiki/a.md is tracked)
+// opens and overwrites the tracked file, while git add stages nothing under
+// the new name; unchecked, the write would be reported as an unchanged no-op
+// and leave the tracked page modified on disk. ls-files pathspecs are literal
+// (gitCmd) and case-sensitive, so its -z output must be filePath + NUL.
+//
+// On a mismatch the write is undone, best effort, and the path is refused with
+// ErrUnsafePath. The caller holds the repo lock, so no other write is in
+// flight and the index otherwise equals HEAD: a file this write created
+// (abs, when created) is deleted, `reset -q` unstages what git add staged
+// under the on-disk name (a new page under a case variant of a tracked
+// directory, e.g. "Wiki/c.md" staged as wiki/c.md), and `checkout -- .` puts
+// back the tracked file the write overwrote.
+func (s *Store) requireIndexed(dir, filePath, abs string, created bool) error {
+	out, err := gitCmd(dir, "ls-files", "-z", "--", filePath).Output()
+	if err != nil {
+		return fmt.Errorf("gitstore: ls-files: %w", err)
+	}
+	if string(out) == filePath+"\x00" {
+		return nil
+	}
+	if created {
+		_ = os.Remove(abs)
+	}
+	_, _ = s.git(dir, "reset", "-q")
+	_, _ = s.git(dir, "checkout", "--", ".")
+	return fmt.Errorf("%w: %q differs only in case from an existing path", ErrUnsafePath, filePath)
 }
 
 // repoLocks serializes writes per repo directory (in-process; the server is a

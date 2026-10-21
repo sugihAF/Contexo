@@ -472,3 +472,66 @@ func TestWriteGlobPathIsLiteral(t *testing.T) {
 		t.Errorf("Read(wiki/ab.md) = %q@%s err=%v, want ab@%s (the dirty file must not be committed)", content, sha, err, c2)
 	}
 }
+
+// wp02CaseInsensitiveFS reports whether dir's filesystem folds case.
+func wp02CaseInsensitiveFS(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, "probe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	defer os.Remove(probe)
+	_, err := os.Stat(filepath.Join(dir, "PROBE"))
+	return err == nil
+}
+
+// TestWriteCaseVariantOnCaseInsensitiveFS: on a case-insensitive filesystem
+// (git sets core.ignorecase), writing "Wiki/A.md" while wiki/a.md is tracked
+// opens and overwrites wiki/a.md on disk, but the index never holds
+// "Wiki/A.md". The write must be refused as an unsafe path and leave the repo
+// as it was, not be reported as an unchanged no-op.
+func TestWriteCaseVariantOnCaseInsensitiveFS(t *testing.T) {
+	s := wp02Store(t)
+	if !wp02CaseInsensitiveFS(t, s.Root) {
+		t.Skip("filesystem is case-sensitive")
+	}
+	c1 := wp02Write(t, s, "wiki/a.md", "lower", "")
+	c2 := wp02Write(t, s, "wiki/b.md", "b", "")
+	onDisk := filepath.Join(s.repoDir("r"), "wiki", "a.md")
+
+	for _, expectAbsent := range []bool{false, true} {
+		o := wp02Opts("")
+		o.ExpectAbsent = expectAbsent
+		res, conflict, err := s.WriteWithOptions("r", "Wiki/A.md", []byte("UPPER"), o)
+		if !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("ExpectAbsent=%v: got res=%+v conflict=%+v err=%v, want ErrUnsafePath", expectAbsent, res, conflict, err)
+		}
+		if content, sha, err := s.Read("r", "wiki/a.md"); err != nil || string(content) != "lower" || sha != c1 {
+			t.Errorf("ExpectAbsent=%v: Read(wiki/a.md) = %q@%s err=%v, want lower@%s", expectAbsent, content, sha, err, c1)
+		}
+		if b, err := os.ReadFile(onDisk); err != nil || string(b) != "lower" {
+			t.Errorf("ExpectAbsent=%v: wiki/a.md on disk = %q err=%v, want lower", expectAbsent, b, err)
+		}
+		if head, err := s.HeadSHA("r"); err != nil || head != c2 {
+			t.Errorf("ExpectAbsent=%v: HEAD = %s err=%v, want %s", expectAbsent, head, err, c2)
+		}
+		if st := wp02Status(t, s); st != "" {
+			t.Errorf("ExpectAbsent=%v: git status --porcelain = %q, want clean", expectAbsent, st)
+		}
+	}
+
+	// A new page under a case variant of a tracked directory lands in that
+	// directory on disk and git stages it under the on-disk name
+	// (wiki/c.md), so the refusal must also unstage and delete it.
+	for _, p := range []string{"Wiki/c.md", "WIKI/new/x.md"} {
+		if res, conflict, err := s.WriteWithOptions("r", p, []byte("new"), wp02Opts("")); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("%s: got res=%+v conflict=%+v err=%v, want ErrUnsafePath", p, res, conflict, err)
+		}
+		if head, err := s.HeadSHA("r"); err != nil || head != c2 {
+			t.Errorf("%s: HEAD = %s err=%v, want %s", p, head, err, c2)
+		}
+		if st := wp02Status(t, s); st != "" {
+			t.Errorf("%s: git status --porcelain = %q, want clean", p, st)
+		}
+	}
+}
