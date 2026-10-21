@@ -526,6 +526,9 @@ func TestWP04BasesWrongSchemaIsCorrupt(t *testing.T) {
 		"record empty sha": `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"","hash":"sha256:00","synced_at":"2026-01-02T03:04:05Z"}}}`,
 		"record no hash":   `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","synced_at":"2026-01-02T03:04:05Z"}}}`,
 		"record odd hash":  `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","hash":"md5:00","synced_at":"2026-01-02T03:04:05Z"}}}`,
+		"record bare hash": `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","hash":"sha256:","synced_at":"2026-01-02T03:04:05Z"}}}`,
+		"record short hex": `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","hash":"raw-sha256:00","synced_at":"2026-01-02T03:04:05Z"}}}`,
+		"record non-hex":   `{"schema":"ctx.bases.v1","pages":{"wiki/a.md":{"sha":"s1","hash":"sha256:` + strings.Repeat("z", 64) + `","synced_at":"2026-01-02T03:04:05Z"}}}`,
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -569,7 +572,7 @@ func TestWP04BasesAcceptsUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := `{"schema":"ctx.bases.v1","extra":true,"pages":{"wiki/a.md":` +
-		`{"sha":"s1","hash":"sha256:00","synced_at":"2026-01-02T10:04:05.5+07:00","note":"x"}}}`
+		`{"sha":"s1","hash":"sha256:` + strings.Repeat("0", 64) + `","synced_at":"2026-01-02T10:04:05.5+07:00","note":"x"}}}`
 	if err := os.WriteFile(BasesPath(hub), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +581,7 @@ func TestWP04BasesAcceptsUnknownFields(t *testing.T) {
 		t.Fatal("unknown fields made bases.json Corrupt")
 	}
 	rec, ok := b.Get("wiki/a.md")
-	if !ok || rec.SHA != "s1" || rec.Hash != "sha256:00" {
+	if !ok || rec.SHA != "s1" || rec.Hash != "sha256:"+strings.Repeat("0", 64) {
 		t.Fatalf("Get = %+v, %v", rec, ok)
 	}
 	// Loaded times are kept in the on-disk form: UTC, whole seconds.

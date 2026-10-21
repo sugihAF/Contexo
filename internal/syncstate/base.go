@@ -43,8 +43,8 @@ type Bases struct {
 // The file is corrupt when it is not a JSON object, its "schema" is not
 // SchemaBases, "pages" is missing, null or not an object, a record is null
 // or mistyped, a key fails ValidateRelPath, or a record is one Put never
-// writes (an empty sha, or a hash without the "sha256:" or "raw-sha256:"
-// prefix). Unknown fields are ignored.
+// writes (an empty sha, or a hash not of the form Hash produces). Unknown
+// fields are ignored.
 func OpenBases(hub string) (*Bases, error) {
 	b := &Bases{hub: hub, pages: map[string]BaseRecord{}}
 	data, err := os.ReadFile(BasesPath(hub))
@@ -59,8 +59,7 @@ func OpenBases(hub string) (*Bases, error) {
 		if !ok {
 			break
 		}
-		ok = rec != nil && rec.SHA != "" &&
-			(strings.HasPrefix(rec.Hash, normHashPrefix) || strings.HasPrefix(rec.Hash, rawHashPrefix))
+		ok = rec.SHA != "" && validHashForm(rec.Hash)
 	}
 	if !ok {
 		b.corrupt = true
@@ -71,6 +70,24 @@ func OpenBases(hub string) (*Bases, error) {
 		b.pages[rel] = *rec
 	}
 	return b, nil
+}
+
+// validHashForm reports whether h has the form Hash produces: "sha256:" or
+// "raw-sha256:" followed by 64 lowercase hex digits.
+func validHashForm(h string) bool {
+	hexPart, ok := strings.CutPrefix(h, normHashPrefix)
+	if !ok {
+		hexPart, ok = strings.CutPrefix(h, rawHashPrefix)
+	}
+	if !ok || len(hexPart) != 64 {
+		return false
+	}
+	for i := 0; i < len(hexPart); i++ {
+		if c := hexPart[i]; !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Corrupt reports whether bases.json existed but could not be parsed.
