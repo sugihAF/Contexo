@@ -25,8 +25,11 @@ func StripBOM(b []byte) []byte {
 }
 
 // normalizeMaxPasses caps the ParsePage/SerializePage passes Normalize makes
-// looking for a fixed point.
-const normalizeMaxPasses = 16
+// looking for a fixed point. A lossy pass drops one trailing newline of a
+// final block scalar (or one CR of a CR run), so this settles a summary
+// ending in a few dozen blank lines while bounding the cost of a hostile
+// page. ScanLocal reports a page that does not settle as invalid.
+const normalizeMaxPasses = 64
 
 // Normalize is the one comparison form of a page (E6): the fixed point of
 // the pass schema.SerializePage(schema.ParsePage(.)), starting from
@@ -60,12 +63,17 @@ func Normalize(b []byte) ([]byte, error) {
 // Hash returns "sha256:<hex>" of Normalize(b), or "raw-sha256:<hex>" of b
 // itself when b does not normalize.
 func Hash(b []byte) string {
-	prefix := rawHashPrefix
 	if n, err := Normalize(b); err == nil {
-		prefix, b = normHashPrefix, n
+		return hashNormalized(n)
 	}
 	sum := sha256.Sum256(b)
-	return prefix + hex.EncodeToString(sum[:])
+	return rawHashPrefix + hex.EncodeToString(sum[:])
+}
+
+// hashNormalized returns "sha256:<hex>" of n, a Normalize result.
+func hashNormalized(n []byte) string {
+	sum := sha256.Sum256(n)
+	return normHashPrefix + hex.EncodeToString(sum[:])
 }
 
 // Equal reports whether a and b are the same page under the comparison rule:

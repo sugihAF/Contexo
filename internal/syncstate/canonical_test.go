@@ -299,16 +299,17 @@ func TestWP04NormalizeStableInputUnchanged(t *testing.T) {
 // A page with no fixed point within the round cap does not normalize, so it
 // hashes raw.
 func TestWP04NormalizeRoundCap(t *testing.T) {
-	in := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 40), "# X\n")
+	in := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 100), "# X\n")
 	if n, err := Normalize(in); err == nil {
-		t.Fatalf("Normalize of a page needing ~40 passes succeeded: %q", n)
+		t.Fatalf("Normalize of a page needing ~100 passes succeeded: %q", n)
 	}
 	if got := Hash(in); !strings.HasPrefix(got, "raw-sha256:") {
 		t.Errorf("Hash = %q, want the raw-sha256 fallback", got)
 	}
-	few := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 4), "# X\n")
+	// A summary ending in a few dozen blank lines still settles.
+	few := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 40), "# X\n")
 	if _, err := Normalize(few); err != nil {
-		t.Errorf("Normalize of a page needing a few passes: %v", err)
+		t.Errorf("Normalize of a page needing ~40 passes: %v", err)
 	}
 }
 

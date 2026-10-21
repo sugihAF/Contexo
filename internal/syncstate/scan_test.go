@@ -11,6 +11,25 @@ import (
 	"testing"
 )
 
+// A page that parses but has no stable normalized form cannot be pushed
+// (push sends Normalize(local)), so it is invalid at the parse stage, never
+// valid with a raw-sha256 hash.
+func TestWP04ScanLocalUnstableIsInvalid(t *testing.T) {
+	hub := t.TempDir()
+	wp04cmpWrite(t, hub, "wiki/concepts/x.md", wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 100), "# X\n"))
+	scan, err := ScanLocal(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := scan.Files["wiki/concepts/x.md"]
+	if f == nil || f.Invalid == nil || f.Invalid.Stage != StageParse || f.Hash != "" {
+		t.Fatalf("file = %+v, want invalid at stage parse with no hash", f)
+	}
+	if f.Page == nil {
+		t.Error("Page = nil, want the parsed page (it parses, it just does not settle)")
+	}
+}
+
 // wp04cmpWrite writes data to hub/rel, creating parent directories.
 func wp04cmpWrite(t *testing.T, hub, rel string, data []byte) {
 	t.Helper()

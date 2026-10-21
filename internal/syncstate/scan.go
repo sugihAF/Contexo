@@ -43,8 +43,9 @@ type LocalScan struct {
 // ScanLocal walks the hub with pagestore.WalkAll (*.md, no dot-dirs, no root
 // index.md/tags.md) and classifies each file: parse when ParsePage of the
 // BOM-stripped bytes fails, validate when Frontmatter.Validate() fails,
-// path_mismatch when Frontmatter.RelPath() differs from the file path,
-// otherwise valid with Hash set.
+// path_mismatch when Frontmatter.RelPath() differs from the file path, parse
+// again when the page has no stable Normalize form, otherwise valid with
+// Hash set.
 func ScanLocal(hub string) (*LocalScan, error) {
 	info, err := os.Stat(hub)
 	if err != nil {
@@ -58,7 +59,14 @@ func ScanLocal(hub string) (*LocalScan, error) {
 		lf := &LocalFile{Path: f.Rel, Data: f.Data, Page: f.Page}
 		lf.Invalid = classifyLocal(f)
 		if lf.Invalid == nil {
-			lf.Hash = Hash(f.Data)
+			// A page with no stable normalized form could never be pushed
+			// (push sends Normalize(local)), so it is invalid, not valid
+			// with a raw-sha256 hash.
+			if n, err := Normalize(f.Data); err != nil {
+				lf.Invalid = &InvalidInfo{Stage: StageParse, Message: err.Error()}
+			} else {
+				lf.Hash = hashNormalized(n) // == Hash(f.Data)
+			}
 		}
 		scan.Files[f.Rel] = lf
 		scan.Paths = append(scan.Paths, f.Rel)
