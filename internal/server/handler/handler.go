@@ -207,14 +207,61 @@ func errorWithCode(c *gin.Context, status int, msg, code string) {
 	c.JSON(status, gin.H{"error": msg, "code": code})
 }
 
+// repoIDRule is the 400 error text for a new repo id outside repoIDPattern,
+// the text POST /v1/repos uses.
+const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+
+// createOwnedRepo creates the NEW repo repoID with uid, a signed-in user, as
+// its owner. The caller has seen h.store.Exists(repoID) report false.
+//
+// Only a new id is held to repoIDPattern. gitstore drops every character
+// outside [A-Za-z0-9_-] from an id, so a non-canonical id such as "my.repo"
+// names the directory of another id ("myrepo") while matching none of that
+// repo's membership rows. Existing repos are never checked against the
+// pattern: a data root may hold repos and membership rows under ids from
+// before it, and their members must keep working.
+//
+// created is true only for the request that ran git init (gitstore.Create),
+// and only that request becomes owner: checking Exists and then creating
+// races, and every racer would otherwise add itself as owner. created is
+// false with ok true when another request created the repo first; the caller
+// then applies its existing-repo rules. ok is false when the response is
+// already written: 400 for a non-canonical id, 402 from the quota, 500 when a
+// store call fails.
+func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
+	if !repoIDPattern.MatchString(repoID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
+		return false, false
+	}
+	if !h.enforceRepoQuota(c, uid) {
+		return false, false
+	}
+	created, err := h.store.Create(repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false, false
+	}
+	if !created {
+		return false, true
+	}
+	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false, false
+	}
+	return true, true
+}
+
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
 // existing CLI's repo-init flow. Kept for back-compat with legacy auth; real
 // users should use POST /v1/repos.
 //
-// For a signed-in user it never grants access to someone else's repo: an
-// existing repo answers 201 (no membership change) only to a member, is
-// claimed like POST /v1/repos only when it has no owner, and is otherwise a
-// 409. Legacy auth (or no user store) keeps the idempotent Init.
+// For a signed-in user it never grants access to an existing repo: an
+// existing repo answers 201 (no membership change) to a member and 409 to
+// anyone else. It never claims an ownerless repo (POST /v1/repos does): with
+// gitstore's id sanitizing, an alias such as "alice.-repo" of someone's
+// "alice-repo" has no owner row of its own. A new repo needs a canonical id
+// and is owned by the one request that creates it (createOwnedRepo). Legacy
+// auth (or no user store) keeps the idempotent Init.
 func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
@@ -227,41 +274,25 @@ func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 		return
 	}
 
-	exists := h.store.Exists(repoID)
-	if exists {
-		member, err := h.users.IsMember(repoID, uid)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if !h.store.Exists(repoID) {
+		created, ok := h.createOwnedRepo(c, repoID, uid)
+		if !ok {
 			return
 		}
-		if member {
+		if created {
 			c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 			return
 		}
-		hasOwner, err := h.users.RepoHasOwner(repoID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if hasOwner {
-			c.JSON(http.StatusConflict, gin.H{"error": "repo already exists"})
-			return
-		}
+		// Another request created it first: it is an existing repo now.
 	}
 
-	// The caller becomes a new owner (of a fresh repo or an orphan claim), so
-	// consult the quota before creating anything.
-	if !h.enforceRepoQuota(c, uid) {
+	member, err := h.users.IsMember(repoID, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if !exists {
-		if err := h.store.Init(repoID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if !member {
+		c.JSON(http.StatusConflict, gin.H{"error": "repo already exists"})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
