@@ -174,6 +174,29 @@ func wp07Get(t *testing.T, rig *testRig, path, bearer string) *httptest.Response
 	return doJSON(t, rig.router, http.MethodGet, path, bearer, nil)
 }
 
+// wp07HideTable renames a userstore table so every query that reads it
+// fails, and renames it back when the test ends (or when the returned func
+// is called).
+func wp07HideTable(t *testing.T, rig *testRig, table string) (restore func()) {
+	t.Helper()
+	hidden := "wp07_hidden_" + table
+	if _, err := rig.users.DB().Exec(`ALTER TABLE ` + table + ` RENAME TO ` + hidden); err != nil {
+		t.Fatalf("hide %s: %v", table, err)
+	}
+	restored := false
+	restore = func() {
+		if restored {
+			return
+		}
+		restored = true
+		if _, err := rig.users.DB().Exec(`ALTER TABLE ` + hidden + ` RENAME TO ` + table); err != nil {
+			t.Errorf("restore %s: %v", table, err)
+		}
+	}
+	t.Cleanup(restore)
+	return restore
+}
+
 // wp07MustPush pushes one page as bearer and fails the test unless it is
 // committed (200).
 func wp07MustPush(t *testing.T, rig *testRig, repo, bearer, page, content string) {
@@ -723,6 +746,59 @@ BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
 	wp07WantMembers(t, "w (rolled back)", rig, "w", map[string]string{dave.id: userstore.RoleOwner})
 	wp07WantResolves(t, "w key (rolled back)", rig, raw, "w")
 	wp07WantActivity(t, "w (rolled back)", rig, "w", 1)
+}
+
+// TestCreateRepoListsKnownIDsOutsideCreateRepoMu: createRepoMu serializes
+// every repo creation in the process (POST /v1/repos, push auto-create, the
+// legacy create) and the re-check of a push by a non-member, so the listing
+// of the known repo ids, a read of three tables, must not run while it is
+// held, and an id that exists must be refused without waiting for it. The
+// test holds createRepoMu: a create of a new id whose listing fails (a table
+// it reads is hidden) and a create of an existing id must both answer.
+func TestCreateRepoListsKnownIDsOutsideCreateRepoMu(t *testing.T) {
+	rig := setupRig(t)
+	us := wp07SignIn(t, rig, "alice", "carol")
+	alice, carol := us["alice"], us["carol"]
+	wp07WantCreated(t, "alice creates taken", wp07Create(t, rig, "taken", alice.bearer), "taken")
+	restore := wp07HideTable(t, rig, "repo_activity")
+
+	fresh := make(chan *httptest.ResponseRecorder, 1)
+	taken := make(chan *httptest.ResponseRecorder, 1)
+	var wFresh, wTaken *httptest.ResponseRecorder
+	func() {
+		createRepoMu.Lock()
+		defer createRepoMu.Unlock()
+		go func() { fresh <- wp07Create(t, rig, "fresh", carol.bearer) }()
+		go func() { taken <- wp07Create(t, rig, "taken", carol.bearer) }()
+		deadline := time.After(10 * time.Second)
+		for wFresh == nil || wTaken == nil {
+			select {
+			case wFresh = <-fresh:
+			case wTaken = <-taken:
+			case <-deadline:
+				return
+			}
+		}
+	}()
+	if wFresh == nil {
+		t.Errorf("a create of a new id waited for createRepoMu before listing the known repo ids")
+		wFresh = <-fresh
+	}
+	if wTaken == nil {
+		t.Errorf("a create of an existing id waited for createRepoMu")
+		wTaken = <-taken
+	}
+	restore()
+
+	wp07WantStatus(t, "carol creates fresh, listing fails", wFresh, http.StatusInternalServerError)
+	if _, err := os.Stat(filepath.Join(rig.store.Root, "fresh")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a create whose listing failed left a directory (stat err %v)", err)
+	}
+	wp07WantRepoExists(t, "carol creates taken", wTaken)
+	wp07WantMembers(t, "taken", rig, "taken", map[string]string{alice.id: userstore.RoleOwner})
+	if r := wp02Role(t, rig, "fresh", carol.id); r != "" {
+		t.Errorf("carol's role in fresh = %q, want none", r)
+	}
 }
 
 // TestRepoDirNameMirrorsGitstore pins repoDirName to gitstore's private

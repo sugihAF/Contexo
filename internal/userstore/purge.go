@@ -11,16 +11,10 @@ import (
 // repo, and a creator needs every id whose rows could name the new repo's
 // directory (see PurgeRepo).
 //
-// It reads all three tables (activity holds up to activityRetentionPerRepo
-// rows per repo), so it costs a scan of their repo_id indexes. Callers run it
-// only when a repo is created, which is rare.
+// It costs one index seek per distinct id and table (see
+// knownRepoIDsQuery), whatever the number of rows per repo.
 func (s *Store) KnownRepoIDs() ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT repo_id FROM repo_members
-		 UNION SELECT repo_id FROM repo_invite_keys
-		 UNION SELECT repo_id FROM repo_activity
-		 ORDER BY repo_id`,
-	)
+	rows, err := s.db.Query(knownRepoIDsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("userstore: known repo ids: %w", err)
 	}
@@ -39,6 +33,32 @@ func (s *Store) KnownRepoIDs() ([]string, error) {
 	return out, nil
 }
 
+// knownRepoIDsQuery walks the distinct repo ids of each table through the
+// index that leads with repo_id: each step seeks the smallest id after the
+// previous one, so the cost is one index seek per distinct id, not a read of
+// every row. repo_activity alone holds up to activityRetentionPerRepo rows
+// per repo, and reading them all made every create scan the whole log.
+const knownRepoIDsQuery = `WITH RECURSIVE
+	m(id) AS (
+		SELECT MIN(repo_id) FROM repo_members
+		UNION ALL
+		SELECT (SELECT MIN(repo_id) FROM repo_members WHERE repo_id > m.id) FROM m WHERE m.id IS NOT NULL
+	),
+	k(id) AS (
+		SELECT MIN(repo_id) FROM repo_invite_keys
+		UNION ALL
+		SELECT (SELECT MIN(repo_id) FROM repo_invite_keys WHERE repo_id > k.id) FROM k WHERE k.id IS NOT NULL
+	),
+	a(id) AS (
+		SELECT MIN(repo_id) FROM repo_activity
+		UNION ALL
+		SELECT (SELECT MIN(repo_id) FROM repo_activity WHERE repo_id > a.id) FROM a WHERE a.id IS NOT NULL
+	)
+	SELECT id FROM m WHERE id IS NOT NULL
+	UNION SELECT id FROM k WHERE id IS NOT NULL
+	UNION SELECT id FROM a WHERE id IS NOT NULL
+	ORDER BY 1`
+
 // PurgeRepo deletes every membership row, invite key and activity row of
 // repoID and of each alias id, in one transaction: all of them or, on error,
 // none. Every id must be non-empty.
@@ -51,11 +71,14 @@ func (s *Store) KnownRepoIDs() ([]string, error) {
 // Never call it for a repo that may exist: a stat error can make a live repo
 // look absent, and this would wipe its members.
 //
-// It removes the rows present when it commits. A row that a concurrent
-// request inserts afterwards (an invite key minted, or a join resolved,
-// against a stale row before the purge) is not covered here; closing that
-// needs the invite routes to check and insert atomically with respect to
-// repo creation.
+// It removes the rows present when it commits, and nothing stops a row
+// that is inserted afterwards. In WAL mode a request that read a stale row
+// (an invite key it joins with, the owner row it mints a key under) while
+// this transaction was open still sees it, and its insert waits for this
+// transaction's write lock and lands right after the commit. So every such
+// request in flight during the purge succeeds. Closing that needs the
+// invite routes to check and insert atomically with respect to repo
+// creation.
 func (s *Store) PurgeRepo(repoID string, aliases ...string) error {
 	ids := append([]string{repoID}, aliases...)
 	for _, id := range ids {

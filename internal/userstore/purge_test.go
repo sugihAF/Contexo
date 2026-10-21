@@ -2,7 +2,10 @@ package userstore
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -131,10 +134,70 @@ func TestKnownRepoIDs(t *testing.T) {
 	}
 	wp07Seed(t, s, "all", a, nil, 2, 2)
 	wp07Seed(t, s, "Z.upper", a, nil, 1, 0)
+	// Several rows per id and several ids per table, so each table's ids
+	// are walked one after another.
+	for _, repo := range []string{"a-only", "a-only", "a-only.2", "b", "a-only.2"} {
+		if err := s.RecordActivity(repo, a, "push", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.MintInviteKey("m-only", a, ""); err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := s.KnownRepoIDs()
-	want := []string{"Z.upper", "a-only", "all", "k-only", "m-only"}
+	want := []string{"Z.upper", "a-only", "a-only.2", "all", "b", "k-only", "m-only"}
 	if err != nil || !slices.Equal(got, want) {
 		t.Errorf("KnownRepoIDs = %q (err %v), want %q", got, err, want)
+	}
+}
+
+// TestKnownRepoIDsSeeksInsteadOfScanning: every POST /v1/repos of a new id
+// lists the known repo ids, and repo_activity keeps up to
+// activityRetentionPerRepo rows per repo, so a listing that reads every row
+// costs each create a scan of the whole activity log (about 150 ms at 2,000
+// repos). It must reach each distinct id through the table's repo_id index,
+// one seek per id, and never scan a table or a whole index.
+func TestKnownRepoIDsSeeksInsteadOfScanning(t *testing.T) {
+	s := openTestStore(t)
+	rows, err := s.DB().Query(`EXPLAIN QUERY PLAN ` + knownRepoIDsQuery)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("explain columns: %v", err)
+	}
+	scan := regexp.MustCompile(`^SCAN (repo_members|repo_invite_keys|repo_activity)\b`)
+	seek := regexp.MustCompile(`^SEARCH (repo_members|repo_invite_keys|repo_activity) `)
+	var plan []string
+	seeks := map[string]bool{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("explain row: %v", err)
+		}
+		detail := fmt.Sprint(vals[len(vals)-1])
+		plan = append(plan, detail)
+		if scan.MatchString(detail) {
+			t.Errorf("the listing scans a whole table: %q", detail)
+		}
+		if m := seek.FindStringSubmatch(detail); m != nil {
+			seeks[m[1]] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain rows: %v", err)
+	}
+	if len(seeks) != 3 {
+		t.Errorf("index seeks on %v, want all three tables", seeks)
+	}
+	if t.Failed() {
+		t.Logf("plan:\n%s", strings.Join(plan, "\n"))
 	}
 }
