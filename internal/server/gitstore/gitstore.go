@@ -422,19 +422,33 @@ func (s *Store) ReadAtSha(repoID, filePath, sha string) ([]byte, error) {
 		return nil, ErrUnknownSHA
 	}
 	dir := s.repoDir(repoID)
-	// First verify the sha resolves so we can return a clean ErrUnknownSHA.
+	commit, err := s.resolveCommit(dir, sha)
+	if err != nil {
+		return nil, err
+	}
+	return s.pageAtCommit(dir, commit, filePath)
+}
+
+// resolveCommit turns a validated hex sha (full or abbreviated) into the full
+// id of the commit it names: ErrUnknownSHA when it does not resolve to a
+// commit (unknown, ambiguous, or a tree/blob id). Callers then use only the
+// full id, so an abbreviation cannot turn ambiguous between git calls.
+func (s *Store) resolveCommit(dir, sha string) (string, error) {
 	out, err := s.git(dir, "rev-parse", "--verify", sha+"^{commit}")
 	if err != nil {
 		if isUnknownRev(out) {
-			return nil, ErrUnknownSHA
+			return "", ErrUnknownSHA
 		}
-		return nil, fmt.Errorf("gitstore: rev-parse %s: %w: %s", sha, err, out)
+		return "", fmt.Errorf("gitstore: rev-parse %s: %w: %s", sha, err, out)
 	}
-	// Read through the resolved full id, so an abbreviation cannot turn
-	// ambiguous between the two git calls. blobAt decides absence by exit
-	// status and object type (a tree such as "wiki" is not a page), never by
-	// git's message text.
-	commit := strings.TrimSpace(out)
+	return strings.TrimSpace(out), nil
+}
+
+// pageAtCommit returns filePath's content at the full commit id commit:
+// ErrPathNotAtSHA when it is not a file there. blobAt decides absence by the
+// object type (a tree such as "wiki" is not a page), never by git's message
+// text. An empty file is empty, non-nil content.
+func (s *Store) pageAtCommit(dir, commit, filePath string) ([]byte, error) {
 	content, ok, err := s.blobAt(dir, commit, filePath)
 	if err != nil {
 		return nil, err
@@ -475,18 +489,20 @@ func (s *Store) ReadPageAt(repoID, filePath, sha string) (content []byte, pathSH
 	if err := validatePagePath(filePath); err != nil {
 		return nil, "", err
 	}
-	content, err = s.ReadAtSha(repoID, filePath, sha)
+	// sha and filePath are both validated above, so neither can be read by
+	// git as an option. After resolveCommit only the full id is used.
+	dir := s.repoDir(repoID)
+	commit, err := s.resolveCommit(dir, sha)
 	if err != nil {
 		return nil, "", err
 	}
-	// sha and filePath are both validated above, so neither can be read by
-	// git as an option.
-	out, err := s.git(s.repoDir(repoID), "log", "-n1", "--format=%H", sha, "--", filePath)
+	content, err = s.pageAtCommit(dir, commit, filePath)
 	if err != nil {
-		if isUnknownRev(out) {
-			return nil, "", ErrUnknownSHA
-		}
-		return nil, "", fmt.Errorf("gitstore: log %s -- %s: %w: %s", sha, filePath, err, out)
+		return nil, "", err
+	}
+	out, err := s.git(dir, "log", "-n1", "--format=%H", commit, "--", filePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("gitstore: log %s -- %s: %w: %s", commit, filePath, err, out)
 	}
 	pathSHA = strings.TrimSpace(out)
 	if pathSHA == "" {

@@ -1027,6 +1027,51 @@ func TestBlobAtIsOneGitProcess(t *testing.T) {
 	}
 }
 
+// TestReadPageAtResolvesShaOnce: ?at=<abbrev> is resolved to a full commit id
+// exactly once; every later git call uses the full id. Passing the
+// abbreviation again would let a commit pushed in between make it ambiguous
+// (a 404 for a page that was just read).
+func TestReadPageAtResolvesShaOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("logs git calls through a /bin/sh wrapper")
+	}
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "alpha", "")
+	wp02Write(t, s, "wiki/b.md", "beta", "")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("look up git: %v", err)
+	}
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls.log")
+	wrapper := "#!/bin/sh\necho \"$*\" >> \"$WP02_GIT_CALLS\"\nexec \"$WP02_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("WP02_GIT_CALLS", calls)
+	t.Setenv("WP02_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	abbrev := c1[:7]
+	content, pathSHA, err := s.ReadPageAt("r", "wiki/a.md", abbrev)
+	if err != nil || string(content) != "alpha" || pathSHA != c1 {
+		t.Fatalf("ReadPageAt(%s) = %q, %s, %v; want alpha, %s", abbrev, content, pathSHA, err, c1)
+	}
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatalf("read git call log: %v", err)
+	}
+	var withAbbrev []string
+	for _, line := range strings.Split(strings.TrimSpace(string(log)), "\n") {
+		if strings.Contains(line, abbrev) && !strings.Contains(line, c1) {
+			withAbbrev = append(withAbbrev, line)
+		}
+	}
+	if len(withAbbrev) != 1 {
+		t.Errorf("git calls passing the abbreviation %s: %q, want exactly one (the rev-parse)\nall calls:\n%s", abbrev, withAbbrev, log)
+	}
+}
+
 // TestWriteExpectAbsentFailsClosed: when the existence check itself fails
 // (cat-file cannot run), a create-only write must fail, not treat the page as
 // absent and overwrite it, which would silently break expect_absent's
