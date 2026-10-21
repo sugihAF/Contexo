@@ -2,16 +2,53 @@
 package server
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/server/handler"
+	"github.com/sugihAF/contexo/internal/version"
 )
 
-// NewRouter wires the git-backed Contexo endpoints. CORS runs first (handles
-// preflight OPTIONS without auth); /v1/auth/google is unauthenticated (it
-// establishes the session). All other /v1/* requires a Bearer token that the
-// resolver can map to a user_id (session JWT, PAT, or legacy API key).
+// APIVersion is the wire protocol version reported by GET /health.
+const APIVersion = 1
+
+// Capabilities are the contract's server capability names. They are
+// advertised on every response (X-Contexo-Capabilities, comma-joined in this
+// order) and listed by GET /health, so a client can tell this server from an
+// older one before relying on a feature. Only names this server implements
+// belong here; reserved names stay out until they ship.
+var Capabilities = []string{"pages.at", "push.expect_absent", "write.path_sha"}
+
+// healthResponse is the GET /health body. A struct, not a map, so the JSON
+// keys keep this order.
+type healthResponse struct {
+	Status       string   `json:"status"`
+	API          int      `json:"api"`
+	Version      string   `json:"version"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// serverHeaders stamps the server version and capability list on every
+// response. NewRouter registers it before every other middleware, so the
+// headers are already set when MaxBody, RateLimit, auth or gin's own 404
+// write their response.
+func serverHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Contexo-Server-Version", version.Version)
+		c.Header("X-Contexo-Capabilities", strings.Join(Capabilities, ","))
+		c.Next()
+	}
+}
+
+// NewRouter wires the git-backed Contexo endpoints. The version/capability
+// header middleware runs first, then the body cap, rate limiting and CORS
+// (which answers preflight OPTIONS without auth). /v1/auth/google is
+// unauthenticated (it establishes the session). All other /v1/* requires a
+// Bearer token that the resolver can map to a user_id (session JWT, PAT, or
+// legacy API key).
 //
 // v1Extras and rootExtras are open-core seam hooks. v1Extras mount cloud-only
 // routes on the authenticated /v1 group (they see the resolved user_id).
@@ -26,6 +63,10 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver, v1Extras []func(v1 *
 	// CONTEXO_TRUSTED_PROXIES (comma-separated) to that proxy's address(es).
 	_ = r.SetTrustedProxies(trustedProxies())
 
+	// First, so every response carries the version and capability headers,
+	// including the 401/404/413/429 that later middleware or gin write.
+	r.Use(serverHeaders())
+
 	// DoS resilience: cap request bodies and rate-limit per client IP. The
 	// origin has no CDN/WAF, so these app-side controls are the only defense.
 	r.Use(MaxBody(envInt64("CONTEXO_MAX_BODY_BYTES", defaultMaxBodyBytes)))
@@ -39,8 +80,15 @@ func NewRouter(h *handler.Handler, resolver *auth.Resolver, v1Extras []func(v1 *
 
 	r.Use(CORS())
 
+	// Unauthenticated. The Docker HEALTHCHECK only needs the 200; clients
+	// read the api version and capabilities.
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
+		c.JSON(http.StatusOK, healthResponse{
+			Status:       "ok",
+			API:          APIVersion,
+			Version:      version.Version,
+			Capabilities: Capabilities,
+		})
 	})
 
 	// Unauthenticated: establishes identity. Rate-limited harder than the rest

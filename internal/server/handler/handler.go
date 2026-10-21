@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	gosync "sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -188,36 +189,180 @@ func (h *Handler) ListPages(c *gin.Context) {
 	pages, err := h.store.ListPages(repoID)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if pages == nil {
+		pages = []gitstore.PageMeta{} // an empty repo lists [], never null
+	}
 	c.JSON(http.StatusOK, gin.H{"pages": pages})
+}
+
+// errorWithCode writes {"error": msg, "code": code}. Clients branch on the
+// code; msg keeps the text older clients match ("repo not found", "page not
+// found"), so adding the code is backward compatible.
+func errorWithCode(c *gin.Context, status int, msg, code string) {
+	c.JSON(status, gin.H{"error": msg, "code": code})
+}
+
+// repoIDRule is the 400 error text for a new repo id outside repoIDPattern,
+// the text POST /v1/repos uses.
+const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+
+// createOwnedRepo creates the NEW repo repoID with uid, a signed-in user, as
+// its owner. The caller has seen h.store.Exists(repoID) report false.
+//
+// Only a new id is held to repoIDPattern. gitstore drops every character
+// outside [A-Za-z0-9_-] from an id, so a non-canonical id such as "my.repo"
+// names the directory of another id ("myrepo") while matching none of that
+// repo's membership rows. Existing repos are never checked against the
+// pattern: a data root may hold repos and membership rows under ids from
+// before it, and their members must keep working.
+//
+// created is true only for the request that created the repo
+// (gitstore.Create), and only that request becomes owner: checking Exists and
+// then creating races, and every racer would otherwise add itself as owner.
+// created is false with ok true when another request created the repo first;
+// the caller then applies its existing-repo rules. ok is false when the
+// response is already written: 400 for a non-canonical id, 402 from the
+// quota, 500 when a store call fails.
+//
+// Creations are serialized process-wide (createRepoMu; they are rare): the
+// Exists check, gitstore.Create and the owner row happen as one step for every
+// request that goes through here. The row is added only after this request
+// created the repo (Create reports created=true only when .git was certainly
+// absent), so no row is ever added for a repo that already exists or was never
+// made. The short window between the repo appearing and its owner row is
+// closed on the reader side: requireMemberAfterCreate waits for an in-flight
+// creation before refusing, so the creator's own parallel request (the
+// extension next to an agent) is not refused its repo. If AddMember fails the
+// new repo is left empty and ownerless, as before.
+func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
+	if !repoIDPattern.MatchString(repoID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
+		return false, false
+	}
+	createRepoMu.Lock()
+	defer createRepoMu.Unlock()
+	if h.store.Exists(repoID) {
+		return false, true
+	}
+	if !h.enforceRepoQuota(c, uid) {
+		return false, false
+	}
+	created, err := h.store.Create(repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false, false
+	}
+	if !created {
+		// Created outside createRepoMu (POST /v1/repos, legacy auth or
+		// another process): not ours.
+		return false, true
+	}
+	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false, false
+	}
+	return true, true
+}
+
+// createRepoMu serializes createOwnedRepo across every Handler in the process
+// (tests build several over one store).
+var createRepoMu gosync.Mutex
+
+// isMemberAfterCreate reports whether uid is a member of repoID. When the
+// first check says no, it checks again under createRepoMu, that is after any
+// in-flight createOwnedRepo has added its owner row, so a request that found
+// the repo a moment after its creator made it is not refused its own repo.
+func (h *Handler) isMemberAfterCreate(repoID, uid string) (bool, error) {
+	member, err := h.users.IsMember(repoID, uid)
+	if err != nil || member {
+		return member, err
+	}
+	createRepoMu.Lock()
+	defer createRepoMu.Unlock()
+	return h.users.IsMember(repoID, uid)
+}
+
+// requireMemberAfterCreate is requireMember for the create-adjacent routes
+// (push, legacy create): see isMemberAfterCreate.
+func (h *Handler) requireMemberAfterCreate(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) || h.users == nil {
+		return h.requireMember(c, repoID)
+	}
+	member, err := h.isMemberAfterCreate(repoID, uid)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !member {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+		return false
+	}
+	return true
 }
 
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
 // existing CLI's repo-init flow. Kept for back-compat with legacy auth; real
 // users should use POST /v1/repos.
+//
+// For a signed-in user it never grants access to an existing repo: an
+// existing repo answers 201 (no membership change) to a member and 409 to
+// anyone else. It never claims an ownerless repo (POST /v1/repos does): with
+// gitstore's id sanitizing, an alias such as "alice.-repo" of someone's
+// "alice-repo" has no owner row of its own. A new repo needs a canonical id
+// and is owned by the one request that creates it (createOwnedRepo). Legacy
+// auth (or no user store) keeps the idempotent Init.
 func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
-	// Gate only a genuinely new repo (re-initing an existing one is idempotent).
-	if !h.store.Exists(repoID) && !h.enforceRepoQuota(c, uid) {
+	if auth.IsLegacy(uid) || h.users == nil {
+		if err := h.store.Init(repoID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 		return
 	}
-	if err := h.store.Init(repoID); err != nil {
+
+	if !h.store.Exists(repoID) {
+		created, ok := h.createOwnedRepo(c, repoID, uid)
+		if !ok {
+			return
+		}
+		if created {
+			c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
+			return
+		}
+		// Another request created it first: it is an existing repo now.
+	}
+
+	member, err := h.isMemberAfterCreate(repoID, uid)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if !auth.IsLegacy(uid) && h.users != nil {
-		_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
+	if !member {
+		c.JSON(http.StatusConflict, gin.H{"error": "repo already exists"})
+		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 }
 
-// ReadPage handles GET /v1/repos/:id/pages/*path.
+// ReadPage handles GET /v1/repos/:id/pages/*path: the page at HEAD, or with
+// ?at=<sha> the page as of that commit (capability pages.at).
+//
+// A ?at read answers 200 with X-Contexo-At (the requested sha echoed
+// verbatim, abbreviations included) and X-Page-SHA (the path's own last
+// commit at or before it). Servers that predate ?at ignore the parameter and
+// serve HEAD with a 200, so clients trust a ?at response only when it echoes
+// X-Contexo-At. Every error body carries a code: invalid_path, invalid_sha,
+// repo_not_found, page_not_found (HEAD) or sha_not_found (?at).
 func (h *Handler) ReadPage(c *gin.Context) {
 	repoID := c.Param("id")
 	if !h.requireMember(c, repoID) {
@@ -225,20 +370,51 @@ func (h *Handler) ReadPage(c *gin.Context) {
 	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing page path"})
+		errorWithCode(c, http.StatusBadRequest, "missing page path", "invalid_path")
 		return
 	}
+
+	if at, hasAt := c.GetQuery("at"); hasAt {
+		// Validated before any git call, so a flag (--all, -G.) or a ref name
+		// never reaches git. An empty ?at= is invalid, not "HEAD".
+		if !gitstore.ValidSHA(at) {
+			errorWithCode(c, http.StatusBadRequest, "invalid sha", "invalid_sha")
+			return
+		}
+		content, pathSHA, err := h.store.ReadPageAt(repoID, path, at)
+		if err != nil {
+			switch {
+			case errors.Is(err, gitstore.ErrRepoNotFound):
+				errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
+			case errors.Is(err, gitstore.ErrUnsafePath):
+				errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+			case errors.Is(err, gitstore.ErrUnknownSHA):
+				errorWithCode(c, http.StatusNotFound, "sha not found", "sha_not_found")
+			case errors.Is(err, gitstore.ErrPathNotAtSHA):
+				errorWithCode(c, http.StatusNotFound, "page not found at sha", "sha_not_found")
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			}
+			return
+		}
+		c.Header("X-Contexo-At", at)
+		c.Header("X-Page-SHA", pathSHA)
+		c.Data(http.StatusOK, "text/markdown", content)
+		return
+	}
+
 	content, sha, err := h.store.Read(repoID, path)
 	if err != nil {
-		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-			return
+		switch {
+		case errors.Is(err, gitstore.ErrRepoNotFound):
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
+		case errors.Is(err, os.ErrNotExist):
+			errorWithCode(c, http.StatusNotFound, "page not found", "page_not_found")
+		case errors.Is(err, gitstore.ErrUnsafePath):
+			errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		if errors.Is(err, os.ErrNotExist) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "page not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("X-Page-SHA", sha)
@@ -246,13 +422,21 @@ func (h *Handler) ReadPage(c *gin.Context) {
 }
 
 // Push handles POST /v1/repos/:id/sync/push. For real users, the first push
-// to a new repo auto-creates and assigns ownership.
+// to a new repo auto-creates it and makes the pusher its owner; the new id
+// must match repoIDPattern (400 otherwise, before any write), and of several
+// concurrent first pushes only the one that created the repo is owner, the
+// others being ordinary (non-member) pushes. Legacy auth creates any id.
 func (h *Handler) Push(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
 		return
 	}
@@ -260,6 +444,25 @@ func (h *Handler) Push(c *gin.Context) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
 		return
+	}
+	// expect_absent is read from the same bytes through a handler-local shadow
+	// type: sync.PushFile is the client's wire type and gains the field
+	// separately. Both decodes agree once it has.
+	var flags pushFileFlags
+	if err := json.Unmarshal(body, &flags); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
+		return
+	}
+	// Every path is checked before anything is written, a new repo included:
+	// a bad path in the middle of a batch used to come back as a 400 after
+	// the files before it were committed, and the client never learned their
+	// shas. The check is pure, so running it before the membership check
+	// tells a non-member nothing about the repo.
+	for _, file := range req.Files {
+		if err := gitstore.ValidatePagePath(file.Path); err != nil {
+			errorWithCode(c, http.StatusBadRequest, "invalid file path: "+file.Path, "invalid_path")
+			return
+		}
 	}
 	// Author attribution fallback chain:
 	//   1. Use what the client sent (browser-login CLI rounds these through).
@@ -269,6 +472,9 @@ func (h *Handler) Push(c *gin.Context) {
 	//      proper attribution instead of "unknown".
 	//   3. Only fall through to the "unknown" sentinel if both the request
 	//      and the user lookup are empty (legacy auth without user identity).
+	// A value git would reject (only spaces or punctuation) counts as empty.
+	req.AuthorName = gitstore.CleanIdent(req.AuthorName)
+	req.AuthorEmail = gitstore.CleanIdent(req.AuthorEmail)
 	if (req.AuthorName == "" || req.AuthorEmail == "") && !auth.IsLegacy(uid) && h.users != nil {
 		if u, lerr := h.users.GetUserByID(uid); lerr == nil {
 			if req.AuthorName == "" {
@@ -289,33 +495,47 @@ func (h *Handler) Push(c *gin.Context) {
 		req.Message = "ctx push"
 	}
 
-	repoExists := h.store.Exists(repoID)
-	if !repoExists {
+	// An existing repo goes straight to the membership check, whatever its
+	// raw id (see createOwnedRepo).
+	if !h.store.Exists(repoID) {
 		// First push to a new repo auto-creates it — gate that like any other
 		// repo creation so the cap can't be bypassed via the CLI/agent.
-		if !h.enforceRepoQuota(c, uid) {
-			return
+		if auth.IsLegacy(uid) || h.users == nil {
+			if !h.enforceRepoQuota(c, uid) {
+				return
+			}
+			if err := h.store.Init(repoID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			// A signed-in user needs a canonical id, and only the push that
+			// created the repo becomes its owner. A push that lost the
+			// create race is an ordinary push to an existing repo.
+			created, ok := h.createOwnedRepo(c, repoID, uid)
+			if !ok {
+				return
+			}
+			if !created && !h.requireMemberAfterCreate(c, repoID) {
+				return
+			}
 		}
-		if err := h.store.Init(repoID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if !auth.IsLegacy(uid) && h.users != nil {
-			_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
-		}
-	} else {
-		if !h.requireMember(c, repoID) {
-			return
-		}
+	} else if !h.requireMemberAfterCreate(c, repoID) {
+		return
 	}
 
 	var conflicts []sync.Conflict
 	var pushed []sync.PushedFile
-	var newHead string
+	var changed []string
 
-	for _, file := range req.Files {
-		sha, conflict, err := h.store.Write(repoID, file.Path, []byte(file.Content),
-			req.AuthorName, req.AuthorEmail, req.Message, file.ParentSHA)
+	for i, file := range req.Files {
+		res, conflict, err := h.store.WriteWithOptions(repoID, file.Path, []byte(file.Content), gitstore.WriteOptions{
+			AuthorName:   req.AuthorName,
+			AuthorEmail:  req.AuthorEmail,
+			Message:      req.Message,
+			ParentSHA:    file.ParentSHA,
+			ExpectAbsent: flags.expectAbsent(i),
+		})
 		if err != nil {
 			if errors.Is(err, gitstore.ErrConflict) {
 				// Layer 4 enrichment: read the ancestor content (the version
@@ -338,33 +558,54 @@ func (h *Handler) Push(c *gin.Context) {
 				continue
 			}
 			if errors.Is(err, gitstore.ErrUnsafePath) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path: " + file.Path})
+				// Still reachable after the up-front check: a case variant
+				// of a tracked page on a case-insensitive filesystem is a
+				// valid path that only the write can refuse.
+				errorWithCode(c, http.StatusBadRequest, "invalid file path: "+file.Path, "invalid_path")
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		pushed = append(pushed, sync.PushedFile{Path: file.Path, SHA: sha})
-		newHead = sha
+		// An unchanged page stays in pushed with its own last-touch commit, so
+		// the client records a sha that is in the path's history.
+		pushed = append(pushed, sync.PushedFile{Path: file.Path, SHA: res.SHA})
+		if res.Changed {
+			changed = append(changed, file.Path)
+		}
 	}
 
-	if newHead == "" {
-		newHead, _ = h.store.HeadSHA(repoID)
-	}
+	// new_head is the repo HEAD after the batch, never the sha of whichever
+	// file happened to be last (which, for an unchanged file, is an older
+	// commit).
+	newHead, _ := h.store.HeadSHA(repoID)
 
 	status := http.StatusOK
 	if len(conflicts) > 0 {
 		status = http.StatusConflict
 	}
-	// Record a "push" only when at least one file was actually committed.
-	if len(pushed) > 0 {
-		h.recordActivity(c, repoID, "push", pushDetail(pushed))
+	// Record a "push" only when at least one file was actually committed, and
+	// list only those files, so re-pushing unchanged pages adds no noise.
+	if len(changed) > 0 {
+		h.recordActivity(c, repoID, "push", pushDetail(changed, activityClient(c)))
 	}
 	c.JSON(status, sync.PushResponse{
 		NewHead:   newHead,
 		Pushed:    pushed,
 		Conflicts: conflicts,
 	})
+}
+
+// pushFileFlags is a shadow decode of the push body for per-file flags that
+// sync.PushFile does not carry.
+type pushFileFlags struct {
+	Files []struct {
+		ExpectAbsent bool `json:"expect_absent"`
+	} `json:"files"`
+}
+
+func (f pushFileFlags) expectAbsent(i int) bool {
+	return i < len(f.Files) && f.Files[i].ExpectAbsent
 }
 
 // Pull handles GET /v1/repos/:id/sync/pull?since=<sha>.
@@ -378,7 +619,7 @@ func (h *Handler) Pull(c *gin.Context) {
 	paths, head, err := h.store.ChangedSince(repoID, since)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -397,7 +638,7 @@ func (h *Handler) Pull(c *gin.Context) {
 	// Record a "pull" only when pages were actually received, so no-op
 	// "already up to date" polls don't flood the feed.
 	if len(files) > 0 {
-		h.recordActivity(c, repoID, "pull", pullDetail(c.Request.Header.Get("X-Contexo-Client")))
+		h.recordActivity(c, repoID, "pull", pullDetail(activityClient(c)))
 	}
 	c.JSON(http.StatusOK, sync.PullResponse{NewHead: head, Files: files})
 }
@@ -415,7 +656,7 @@ func (h *Handler) Timeline(c *gin.Context) {
 	commits, err := h.store.Log(repoID, limit)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -432,7 +673,7 @@ func (h *Handler) History(c *gin.Context) {
 	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing path"})
+		errorWithCode(c, http.StatusBadRequest, "missing path", "invalid_path")
 		return
 	}
 	limit := 50
@@ -441,11 +682,14 @@ func (h *Handler) History(c *gin.Context) {
 	}
 	commits, err := h.store.LogPath(repoID, path, limit)
 	if err != nil {
-		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-			return
+		switch {
+		case errors.Is(err, gitstore.ErrRepoNotFound):
+			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
+		case errors.Is(err, gitstore.ErrUnsafePath):
+			errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"commits": commits})
