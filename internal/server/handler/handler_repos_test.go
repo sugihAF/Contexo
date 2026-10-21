@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -196,6 +197,21 @@ func wp07HideTable(t *testing.T, rig *testRig, table string) (restore func()) {
 	t.Cleanup(restore)
 	return restore
 }
+
+// wp07QuotaHook is a quota.Policy that allows everything and calls hook from
+// AllowRepoCreate. A create checks the quota under createRepoMu, after its
+// existence checks and before gitstore.Create, so hook runs at that point
+// of the critical section, on the request's goroutine.
+type wp07QuotaHook struct {
+	hook func()
+}
+
+func (q wp07QuotaHook) AllowRepoCreate(string, int) error {
+	q.hook()
+	return nil
+}
+
+func (wp07QuotaHook) AllowMemberAdd(string, []string, int) error { return nil }
 
 // wp07MustPush pushes one page as bearer and fails the test unless it is
 // committed (200).
@@ -799,6 +815,273 @@ func TestCreateRepoListsKnownIDsOutsideCreateRepoMu(t *testing.T) {
 	if r := wp02Role(t, rig, "fresh", carol.id); r != "" {
 		t.Errorf("carol's role in fresh = %q, want none", r)
 	}
+}
+
+// TestCreateRepoHoldsCreateRepoMu: gitstore.Create's created flag alone
+// gives one owner per id, so the one-owner races pass without createRepoMu.
+// What the lock adds is that the quota count, the creation, the purge and
+// the owner row are one step for every other creation and for a push's
+// re-check (TestCreateRepoConcurrentDistinctIDsQuotaExact,
+// TestCreateRepoCreatorsPushWaitsForOwnerRow). Pinned directly here:
+// createRepoMu is held when the quota is checked. That it is still held
+// through the purge and the owner row is pinned by
+// TestCreateRepoCreatorsPushWaitsForOwnerRow.
+func TestCreateRepoHoldsCreateRepoMu(t *testing.T) {
+	rig := setupRig(t)
+	alice := wp07SignIn(t, rig, "alice")["alice"]
+	calls, held := 0, 0
+	rig.h.SetQuota(wp07QuotaHook{hook: func() {
+		calls++
+		if createRepoMu.TryLock() {
+			createRepoMu.Unlock()
+			return
+		}
+		held++
+	}})
+	wp07WantCreated(t, "alice creates locked", wp07Create(t, rig, "locked", alice.bearer), "locked")
+	if calls != 1 || held != 1 {
+		t.Errorf("quota checked %d times, %d of them under createRepoMu; want 1 and 1", calls, held)
+	}
+}
+
+// TestCreateRepoConcurrentDistinctIDsQuotaExact: one user one repo short of
+// the cap creating several new ids at once gets exactly one 201 and 402 for
+// the rest. Without createRepoMu every create would count "owns 0" before
+// any owner row existed and all of them would pass the quota.
+func TestCreateRepoConcurrentDistinctIDsQuotaExact(t *testing.T) {
+	rig := setupRig(t)
+	alice := wp07SignIn(t, rig, "alice")["alice"]
+	rig.h.SetQuota(fakeQuota{maxRepos: 1, maxMembers: 99})
+	const n = 6
+	ids := make([]string, n)
+	got := make([]*httptest.ResponseRecorder, n)
+	fns := make([]func(), n)
+	for i := range fns {
+		ids[i] = fmt.Sprintf("quota-race-%d", i)
+		fns[i] = func() { got[i] = wp07Create(t, rig, ids[i], alice.bearer) }
+	}
+	wp02Race(fns...)
+
+	created := 0
+	for i, w := range got {
+		if w.Code == http.StatusCreated {
+			created++
+			wp07WantCreated(t, ids[i], w, ids[i])
+			continue
+		}
+		var body struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != http.StatusPaymentRequired || body.Code != "quota_repos" {
+			t.Errorf("%s: %d %s, want 201 or 402 quota_repos", ids[i], w.Code, w.Body.String())
+		}
+		if _, err := os.Stat(filepath.Join(rig.store.Root, ids[i])); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: a refused create left a directory (stat err %v)", ids[i], err)
+		}
+	}
+	if created != 1 {
+		t.Errorf("%d creates answered 201, want exactly 1", created)
+	}
+	if owned, err := rig.users.CountOwnedRepos(alice.id); err != nil || owned != 1 {
+		t.Errorf("alice owns %d repos (err %v), want 1", owned, err)
+	}
+}
+
+// TestCreateRepoCreatorsOwnPushesNotRefused: the dashboard's create and the
+// same user's extension or agent pushing to the new id at once. Whichever
+// request creates the repo, the creator's pushes are all committed: a push
+// that finds the repo before its owner row exists re-checks under
+// createRepoMu, which the create holds until the purge and the owner row
+// are done. This is the realistic race and does not hit the window on every
+// run; TestCreateRepoCreatorsPushWaitsForOwnerRow pins it deterministically.
+func TestCreateRepoCreatorsOwnPushesNotRefused(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := wp07SignIn(t, rig, "alice")["alice"]
+
+	for i := 0; i < 20; i++ {
+		repo := fmt.Sprintf("own-race-%02d", i)
+		const n = 3
+		pushes := make([]*httptest.ResponseRecorder, n)
+		var create *httptest.ResponseRecorder
+		fns := []func(){func() { create = wp07Create(t, rig, repo, alice.bearer) }}
+		for j := 0; j < n; j++ {
+			page := fmt.Sprintf("wiki/p%d.md", j)
+			fns = append(fns, func() {
+				pushes[j], _ = wp02Push(t, rig.router, repo, alice.bearer, "", wp02PushFile{Path: page, Content: page})
+			})
+		}
+		wp02Race(fns...)
+
+		for j, w := range pushes {
+			wp07WantStatus(t, fmt.Sprintf("%s: push %d", repo, j), w, http.StatusOK)
+		}
+		if create.Code != http.StatusCreated {
+			wp07WantRepoExists(t, repo+": create that lost to a push", create)
+		} else {
+			wp07WantCreated(t, repo+": create", create, repo)
+		}
+		wp07WantMembers(t, repo, rig, repo, map[string]string{alice.id: userstore.RoleOwner})
+	}
+}
+
+// TestCreateRepoCreatorsPushWaitsForOwnerRow is the deterministic form of
+// the race above. A write transaction the test holds on the userstore stops
+// the create between gitstore.Create and its purge (PurgeRepo waits for the
+// write lock), so the new repo's .git exists and its owner row does not.
+// The creator's push in that window finds the repo, is not a member yet,
+// and must wait for createRepoMu, which the create holds until its purge
+// and owner row are done, instead of being refused 403 on its own repo.
+// It fails if the create does not take createRepoMu or releases it before
+// the owner row exists.
+func TestCreateRepoCreatorsPushWaitsForOwnerRow(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := wp07SignIn(t, rig, "alice")["alice"]
+	const repo = "held-create"
+
+	ctx := context.Background()
+	conn, err := rig.users.DB().Conn(ctx)
+	if err != nil {
+		t.Fatalf("userstore conn: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("hold the userstore write lock: %v", err)
+	}
+	held := true
+	release := func() {
+		if held {
+			held = false
+			if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+				t.Errorf("release the userstore write lock: %v", err)
+			}
+		}
+	}
+	defer release()
+
+	createDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { createDone <- wp07Create(t, rig, repo, alice.bearer) }()
+	for deadline := time.Now().Add(10 * time.Second); !rig.store.Exists(repo); time.Sleep(time.Millisecond) {
+		if len(createDone) > 0 || time.Now().After(deadline) {
+			release()
+			w := <-createDone
+			t.Fatalf("the create answered %d %s without its repo existing while it was held", w.Code, w.Body.String())
+		}
+	}
+
+	pushDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w, _ := wp02Push(t, rig.router, repo, alice.bearer, "", wp02PushFile{Path: "wiki/a.md", Content: "a"})
+		pushDone <- w
+	}()
+	select {
+	case <-time.After(300 * time.Millisecond):
+	case w := <-pushDone:
+		t.Errorf("the creator's push answered %d %s while the create had no owner row yet; want it to wait for the create", w.Code, w.Body.String())
+		pushDone <- w
+	}
+	release()
+
+	wp07WantCreated(t, "alice creates "+repo, <-createDone, repo)
+	wp07WantStatus(t, "alice's push during the create", <-pushDone, http.StatusOK)
+	wp07WantMembers(t, repo, rig, repo, map[string]string{alice.id: userstore.RoleOwner})
+}
+
+// TestCreateRepoCreatedElsewhereNeverClaimed: a repo that appears between
+// the existence checks and gitstore.Create, made by a creator outside
+// createRepoMu (the legacy key, another server process on the same data
+// root), makes Create report created=false. The create is then a 409 that
+// claims nothing and purges nothing. Here the quota check, which runs in
+// that gap, creates the repo.
+func TestCreateRepoCreatedElsewhereNeverClaimed(t *testing.T) {
+	rig := setupRig(t)
+	us := wp07SignIn(t, rig, "carol", "dave")
+	carol, dave := us["carol"], us["dave"]
+	// Rows of "inwin" from before it had a directory.
+	if err := rig.users.AddMember("inwin", dave.id, userstore.RoleMember); err != nil {
+		t.Fatalf("seed inwin: %v", err)
+	}
+	_, raw, err := rig.users.MintInviteKey("inwin", dave.id, "k")
+	if err != nil {
+		t.Fatalf("seed inwin key: %v", err)
+	}
+	if err := rig.users.RecordActivity("inwin", dave.id, "push", ""); err != nil {
+		t.Fatalf("seed inwin activity: %v", err)
+	}
+	fired := false
+	rig.h.SetQuota(wp07QuotaHook{hook: func() {
+		if fired {
+			return
+		}
+		fired = true
+		if err := rig.store.Init("inwin"); err != nil {
+			t.Errorf("init inwin: %v", err)
+		}
+	}})
+
+	wp07WantRepoExists(t, "carol creates inwin", wp07Create(t, rig, "inwin", carol.bearer))
+	if !fired {
+		t.Fatalf("the quota hook did not run between the existence check and Create")
+	}
+	if r := wp02Role(t, rig, "inwin", carol.id); r != "" {
+		t.Errorf("carol's role in inwin = %q, want none", r)
+	}
+	if owners, err := rig.users.RepoOwners("inwin"); err != nil || len(owners) != 0 {
+		t.Errorf("inwin owners %v (err %v), want none", owners, err)
+	}
+	wp07WantMembers(t, "inwin (not purged)", rig, "inwin", map[string]string{dave.id: userstore.RoleMember})
+	wp07WantResolves(t, "inwin key (not purged)", rig, raw, "inwin")
+	wp07WantActivity(t, "inwin (not purged)", rig, "inwin", 1)
+}
+
+// TestCreateRepoListingErrorCreatesNothing: without the known repo ids the
+// aliases of the new directory cannot be found, and their stale rows would
+// survive the purge and reach the new repo. A failed listing is a 500
+// before anything is created. The table the listing reads is back by the
+// time the create would check its quota (under createRepoMu, before
+// gitstore.Create), so a create that went on after the failed listing
+// would purge and add its owner row normally, and only the alias's rows
+// would survive: "my.repo" would keep alice as owner of carol's directory.
+func TestCreateRepoListingErrorCreatesNothing(t *testing.T) {
+	rig := setupRig(t)
+	us := wp07SignIn(t, rig, "alice", "carol")
+	alice, carol := us["alice"], us["carol"]
+	// Stale rows of "my.repo", whose directory "myrepo" an operator deleted.
+	if err := rig.users.AddMember("my.repo", alice.id, userstore.RoleOwner); err != nil {
+		t.Fatalf("seed my.repo: %v", err)
+	}
+	_, raw, err := rig.users.MintInviteKey("my.repo", alice.id, "k")
+	if err != nil {
+		t.Fatalf("seed my.repo key: %v", err)
+	}
+	if err := rig.users.RecordActivity("my.repo", alice.id, "push", ""); err != nil {
+		t.Fatalf("seed my.repo activity: %v", err)
+	}
+
+	restore := wp07HideTable(t, rig, "repo_invite_keys")
+	quotaChecked := false
+	rig.h.SetQuota(wp07QuotaHook{hook: func() {
+		quotaChecked = true
+		restore()
+	}})
+	w := wp07Create(t, rig, "myrepo", carol.bearer)
+	restore()
+
+	wp07WantStatus(t, "carol creates myrepo, listing fails", w, http.StatusInternalServerError)
+	if quotaChecked {
+		t.Errorf("a create whose listing failed went on to its quota check")
+	}
+	if _, err := os.Stat(filepath.Join(rig.store.Root, "myrepo")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a create whose listing failed made the repo (stat err %v)", err)
+	}
+	if r := wp02Role(t, rig, "myrepo", carol.id); r != "" {
+		t.Errorf("carol's role in myrepo = %q, want none", r)
+	}
+	wp07WantMembers(t, "my.repo", rig, "my.repo", map[string]string{alice.id: userstore.RoleOwner})
+	wp07WantResolves(t, "my.repo key", rig, raw, "my.repo")
+	wp07WantActivity(t, "my.repo", rig, "my.repo", 1)
 }
 
 // TestRepoDirNameMirrorsGitstore pins repoDirName to gitstore's private
