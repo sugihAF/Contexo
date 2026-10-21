@@ -557,7 +557,7 @@ func (h *Handler) History(c *gin.Context) {
 	}
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing path"})
+		errorWithCode(c, http.StatusBadRequest, "missing path", "invalid_path")
 		return
 	}
 	limit := 50
@@ -566,11 +566,14 @@ func (h *Handler) History(c *gin.Context) {
 	}
 	commits, err := h.store.LogPath(repoID, path, limit)
 	if err != nil {
-		if errors.Is(err, gitstore.ErrRepoNotFound) {
+		switch {
+		case errors.Is(err, gitstore.ErrRepoNotFound):
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
-			return
+		case errors.Is(err, gitstore.ErrUnsafePath):
+			errorWithCode(c, http.StatusBadRequest, "invalid page path", "invalid_path")
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"commits": commits})

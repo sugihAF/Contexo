@@ -199,6 +199,33 @@ func TestReadPageUnsafePathIs400(t *testing.T) {
 	wp02WantError(t, "empty path with ?at", w, http.StatusBadRequest, "invalid_path")
 }
 
+// TestHistoryUnsafePathIs400: History answers an unsafe page path with 400
+// invalid_path (it was a 500, LogPath's ErrUnsafePath was unmapped) and a
+// missing path with 400 invalid_path (it had no code), like the page routes.
+func TestHistoryUnsafePathIs400(t *testing.T) {
+	f := wp02AtRig(t)
+	v1 := f.rig.router.Group("/v1")
+	v1.Use(auth.GinMiddleware(f.rig.resolver.Validator()))
+	v1.GET("/repos/:id/history/*path", f.rig.h.History)
+
+	for _, page := range []string{"wiki/-x.md", "-x.md", ".git/config", "wiki/.git/HEAD", "wiki/a%01.md"} {
+		w := wp02Get(t, f.rig, "/v1/repos/at-repo/history/"+page)
+		if msg := wp02WantError(t, "history of "+page, w, http.StatusBadRequest, "invalid_path"); msg != "" && msg != "invalid page path" {
+			t.Errorf("history of %s: error %q, want \"invalid page path\"", page, msg)
+		}
+	}
+	w := wp02Get(t, f.rig, "/v1/repos/at-repo/history/")
+	if msg := wp02WantError(t, "history of an empty path", w, http.StatusBadRequest, "invalid_path"); msg != "" && msg != "missing path" {
+		t.Errorf("empty path: error %q, want \"missing path\" (old clients match it)", msg)
+	}
+
+	// A safe path still lists its own commits.
+	w = wp02Get(t, f.rig, "/v1/repos/at-repo/history/wiki/a.md")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), f.c3) || !strings.Contains(w.Body.String(), f.c1) || strings.Contains(w.Body.String(), f.c2) {
+		t.Errorf("history of wiki/a.md: %d %s, want 200 with c3 and c1 only", w.Code, w.Body.String())
+	}
+}
+
 // TestReadPageDirectoryIs404: "wiki" is a tree, not a page. It used to come
 // back as a 200 with git's tree listing (?at) or an empty body (HEAD).
 func TestReadPageDirectoryIs404(t *testing.T) {
