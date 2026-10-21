@@ -779,3 +779,54 @@ func TestWriteCaseVariantOnCaseInsensitiveFS(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateReportsCreatedOnce: of several callers that create the same new
+// repo at once, only the one that actually ran git init is told it created
+// it, so a handler can grant ownership to exactly one of them.
+func TestCreateReportsCreatedOnce(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "repos"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	const n = 8
+	created := make([]bool, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg gosync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			created[i], errs[i] = s.Create("new")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	winners := 0
+	for i := range created {
+		if errs[i] != nil {
+			t.Errorf("Create %d: %v", i, errs[i])
+		}
+		if created[i] {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Errorf("created=true for %d callers, want exactly 1: %v", winners, created)
+	}
+	if !s.Exists("new") {
+		t.Errorf("repo new does not exist after Create")
+	}
+	if again, err := s.Create("new"); err != nil || again {
+		t.Errorf("later Create = %v err=%v, want false, nil", again, err)
+	}
+	if err := s.Init("new"); err != nil {
+		t.Errorf("Init of an existing repo: %v", err)
+	}
+	if created, err := s.Create("..."); err == nil || created {
+		t.Errorf("Create(\"...\") = %v err=%v, want an invalid repoID error", created, err)
+	}
+}

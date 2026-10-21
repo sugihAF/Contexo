@@ -61,15 +61,25 @@ func Open(root string) (*Store, error) {
 	return &Store{Root: root}, nil
 }
 
-// Init creates a new repo for repoID (idempotent).
+// Init creates a new repo for repoID (idempotent). See Create.
 func (s *Store) Init(repoID string) error {
+	_, err := s.Create(repoID)
+	return err
+}
+
+// Create creates a new repo for repoID if it does not exist yet. created is
+// true only for the caller that actually ran git init: of several concurrent
+// callers for one new repo, exactly one is told it created it, so a caller
+// can grant ownership of a new repo to that one alone (checking Exists and
+// then calling Init races, and every racer would see "did not exist").
+func (s *Store) Create(repoID string) (created bool, err error) {
 	dir := s.repoDir(repoID)
 	if dir == "" {
-		return fmt.Errorf("gitstore: invalid repoID %q", repoID)
+		return false, fmt.Errorf("gitstore: invalid repoID %q", repoID)
 	}
 	gitDir := filepath.Join(dir, ".git")
 	if _, err := os.Stat(gitDir); err == nil {
-		return nil
+		return false, nil
 	}
 	// Concurrent first pushes to a new repo each call Init. Under the repo
 	// lock only one of them runs git init and git config (which otherwise
@@ -79,21 +89,21 @@ func (s *Store) Init(repoID string) error {
 	unlock := lockRepo(dir)
 	defer unlock()
 	if _, err := os.Stat(gitDir); err == nil {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("gitstore: mkdir repo: %w", err)
+		return false, fmt.Errorf("gitstore: mkdir repo: %w", err)
 	}
 	if out, err := s.git(dir, "init", "--initial-branch=main"); err != nil {
-		return fmt.Errorf("gitstore: init: %w: %s", err, out)
+		return false, fmt.Errorf("gitstore: init: %w: %s", err, out)
 	}
 	if out, err := s.git(dir, "config", "user.email", "server@contexo.local"); err != nil {
-		return fmt.Errorf("gitstore: config email: %w: %s", err, out)
+		return false, fmt.Errorf("gitstore: config email: %w: %s", err, out)
 	}
 	if out, err := s.git(dir, "config", "user.name", "contexo-server"); err != nil {
-		return fmt.Errorf("gitstore: config name: %w: %s", err, out)
+		return false, fmt.Errorf("gitstore: config name: %w: %s", err, out)
 	}
-	return nil
+	return true, nil
 }
 
 // Exists reports whether a repo has been initialized.
