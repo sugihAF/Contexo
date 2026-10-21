@@ -214,19 +214,25 @@ func acquireOnce(hub, command, host string) (unlock func(), holder LockInfo, err
 		if !errors.Is(err, fs.ErrExist) {
 			return nil, LockInfo{}, lockIOError(err)
 		}
-		cur, mtime, err := readLockFile(path)
+		cur, curFI, err := readLockFile(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // released since the create failed
 		}
 		if err != nil {
 			return nil, LockInfo{}, lockIOError(err)
 		}
-		info, stale := judgeLock(cur, mtime, host, time.Now())
+		info, stale := judgeLock(cur, curFI.ModTime(), host, time.Now())
+		if !stale && info.Host == host && info.PID == os.Getpid() && !heldHere(cur) {
+			// Our pid, but no acquisition of this process wrote it: a dead
+			// predecessor that had the same pid (a restarted container's
+			// pid 1), which processAlive cannot tell from us.
+			stale = true
+		}
 		holder = info
 		if !stale {
 			return nil, holder, nil
 		}
-		reclaimed, err := reclaimLock(hub, cur)
+		reclaimed, err := reclaimLock(hub, cur, curFI)
 		if err != nil {
 			return nil, holder, err
 		}
@@ -245,9 +251,38 @@ func lockIOError(err error) error {
 	return fmt.Errorf("syncstate: lock: %w", err)
 }
 
+// heldLocks counts the lock contents that acquisitions of this process
+// currently hold (on any hub). A lock file naming this process's pid whose
+// content is not counted here was left by a dead predecessor with the same
+// pid. A content is counted from before its file is created until after
+// unlock removed it, so another goroutine never mistakes a live acquisition
+// of this process for such an orphan.
+var heldLocks = struct {
+	sync.Mutex
+	n map[string]int
+}{n: map[string]int{}}
+
+// markHeld adds delta to the held count of lock content data.
+func markHeld(data []byte, delta int) {
+	heldLocks.Lock()
+	defer heldLocks.Unlock()
+	if heldLocks.n[string(data)] += delta; heldLocks.n[string(data)] <= 0 {
+		delete(heldLocks.n, string(data))
+	}
+}
+
+// heldHere reports whether an acquisition of this process holds a lock with
+// content data.
+func heldHere(data []byte) bool {
+	heldLocks.Lock()
+	defer heldLocks.Unlock()
+	return heldLocks.n[string(data)] > 0
+}
+
 // createLockFile creates path with O_CREATE|O_EXCL and writes this
 // acquisition's LockInfo to it. It returns the bytes written, which unlock
-// compares against later.
+// compares against later. On success the content is counted in heldLocks
+// until unlock releases it.
 func createLockFile(path, command, host string) ([]byte, error) {
 	data, err := json.Marshal(LockInfo{
 		PID:       os.Getpid(),
@@ -259,8 +294,10 @@ func createLockFile(path, command, host string) ([]byte, error) {
 		return nil, err
 	}
 	data = append(data, '\n')
+	markHeld(data, 1)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
+		markHeld(data, -1)
 		return nil, err
 	}
 	_, err = f.Write(data)
@@ -274,32 +311,34 @@ func createLockFile(path, command, host string) ([]byte, error) {
 		// The file is ours and too young for anyone to judge it stale, so
 		// it is removed without the guard.
 		_ = removeLockFile(path)
+		markHeld(data, -1)
 		return nil, err
 	}
 	return data, nil
 }
 
 // readLockFile returns the lock file's content (at most lockMaxFileSize
-// bytes) and its mtime, both from the same open file. Anything but a
-// regular file at the lock path is an error, never a holder.
-func readLockFile(path string) ([]byte, time.Time, error) {
+// bytes) and its identity and mtime, both from the same open file (see
+// statGuard). Anything but a regular file at the lock path is an error,
+// never a holder.
+func readLockFile(path string) ([]byte, os.FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, nil, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, time.Time{}, fmt.Errorf("%s: not a regular file", path)
+		return nil, nil, fmt.Errorf("%s: not a regular file", path)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, lockMaxFileSize))
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, nil, err
 	}
-	return data, fi.ModTime(), nil
+	return data, fi, nil
 }
 
 // judgeLock decides whether lock content data, last modified at mtime, is
@@ -331,12 +370,14 @@ func judgeLock(data []byte, mtime time.Time, host string, now time.Time) (LockIn
 	return info, info.Host == host && !processAlive(info.PID)
 }
 
-// reclaimLock removes the stale lock content judged under the removal
-// guard, only if the file still holds exactly judged. reclaimed is true
-// when the caller should retry creating the lock now (the stale lock is
-// gone, or it changed and must be judged again); false means another
-// process holds the guard.
-func reclaimLock(hub string, judged []byte) (reclaimed bool, err error) {
+// reclaimLock removes the stale lock judged under the removal guard, only
+// while the lock path still names that same file (judgedFI) with exactly
+// the judged content: comparing bytes alone could delete a lock created
+// since the judgement that has the same bytes (an empty one, not written
+// yet). reclaimed is true when the caller should retry creating the lock
+// now (the stale lock is gone, or it changed and must be judged again);
+// false means another process holds the guard.
+func reclaimLock(hub string, judged []byte, judgedFI os.FileInfo) (reclaimed bool, err error) {
 	guard := lockGuardPath(hub)
 	held, err := takeLockGuard(guard)
 	if err != nil {
@@ -346,7 +387,7 @@ func reclaimLock(hub string, judged []byte) (reclaimed bool, err error) {
 		return false, nil
 	}
 	defer releaseLockGuard(guard, held)
-	if _, err := removeLockIfUnchanged(LockPath(hub), judged); err != nil {
+	if _, err := removeLockIfUnchanged(LockPath(hub), judged, judgedFI); err != nil {
 		return false, lockIOError(err)
 	}
 	return true, nil
@@ -411,9 +452,9 @@ func statGuard(guard string) (os.FileInfo, error) {
 	return f.Stat()
 }
 
-// sameGuard reports whether a and b are the same guard file, unchanged: the
-// same file (a reused inode number shows up as a moved mtime) with the same
-// mtime.
+// sameGuard reports whether a and b are the same guard (or lock) file,
+// unchanged: the same file (a reused inode number shows up as a moved
+// mtime) with the same mtime.
 func sameGuard(a, b os.FileInfo) bool {
 	return os.SameFile(a, b) && a.ModTime().Equal(b.ModTime())
 }
@@ -483,8 +524,9 @@ func releaseLock(hub string, ours []byte, guardWait time.Duration) {
 	for {
 		held, err := takeLockGuard(guard)
 		if held != nil {
-			_, _ = removeLockIfUnchanged(path, ours)
+			_, _ = removeLockIfUnchanged(path, ours, nil)
 			releaseLockGuard(guard, held)
+			markHeld(ours, -1)
 			return
 		}
 		if err != nil || !time.Now().Before(deadline) {
@@ -492,20 +534,23 @@ func releaseLock(hub string, ours []byte, guardWait time.Duration) {
 		}
 		time.Sleep(lockGuardPoll)
 	}
-	_, _ = removeLockIfUnchanged(path, ours)
+	_, _ = removeLockIfUnchanged(path, ours, nil)
+	markHeld(ours, -1)
 }
 
 // removeLockIfUnchanged re-reads path and removes it only if it holds
-// exactly want. A missing file is not an error.
-func removeLockIfUnchanged(path string, want []byte) (removed bool, err error) {
-	cur, _, err := readLockFile(path)
+// exactly want and, when wantFI is non-nil, is still that file (see
+// sameGuard). A missing file is not an error. unlock passes no identity:
+// its bytes (pid, host, command and second) are already unique to it.
+func removeLockIfUnchanged(path string, want []byte, wantFI os.FileInfo) (removed bool, err error) {
+	cur, curFI, err := readLockFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if !bytes.Equal(cur, want) {
+	if !bytes.Equal(cur, want) || (wantFI != nil && !sameGuard(curFI, wantFI)) {
 		return false, nil
 	}
 	if err := removeLockFile(path); err != nil {

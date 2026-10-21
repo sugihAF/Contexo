@@ -419,8 +419,16 @@ func TestLock_StaleRecovery(t *testing.T) {
 			wp04lockWriteRaw(t, hub, nil)
 		}, false},
 		{"live_pid_fresh", func(t *testing.T, hub string) {
-			wp04lockWrite(t, hub, LockInfo{PID: os.Getpid(), Host: host, Command: "push", StartedAt: wp04lockNow().Add(-9 * time.Minute)})
+			// The parent (the go command running this test binary) is alive
+			// and is not this process.
+			wp04lockWrite(t, hub, LockInfo{PID: os.Getppid(), Host: host, Command: "push", StartedAt: wp04lockNow().Add(-9 * time.Minute)})
 		}, false},
+		{"own_pid_orphan", func(t *testing.T, hub string) {
+			// This process's pid, but no acquisition of this process wrote
+			// it: a dead predecessor that had the same pid (a restarted
+			// container's pid 1).
+			wp04lockWrite(t, hub, LockInfo{PID: os.Getpid(), Host: host, Command: "push", StartedAt: wp04lockNow()})
+		}, true},
 		{"other_host_dead_pid", func(t *testing.T, hub string) {
 			wp04lockWrite(t, hub, LockInfo{PID: wp04lockDeadPID(t), Host: "wp04-other-host", Command: "push", StartedAt: wp04lockNow()})
 		}, false},
@@ -1108,5 +1116,59 @@ func TestWP04LockHostDistinguishesWSL(t *testing.T) {
 	}
 	if got := wp04lockReadFile(t, hub); !bytes.Equal(got, planted) {
 		t.Fatalf("the other side's lock was reclaimed: %q -> %q", planted, got)
+	}
+}
+
+// A stale reclaim deletes only the exact file it judged: a lock created
+// since then with the same bytes (here empty, its writer not having written
+// yet) is a different file and must survive.
+func TestWP04ReclaimChecksFileIdentity(t *testing.T) {
+	hub := wp04lockHub(t)
+	wp04lockWriteRaw(t, hub, nil)
+	old := time.Now().Add(-31 * time.Second)
+	if err := os.Chtimes(LockPath(hub), old, old); err != nil {
+		t.Fatal(err)
+	}
+	judged, judgedFI, err := readLockFile(LockPath(hub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Meanwhile another process reclaims the stale lock and a third creates
+	// a fresh one that is still empty.
+	if err := os.Remove(LockPath(hub)); err != nil {
+		t.Fatal(err)
+	}
+	wp04lockWriteRaw(t, hub, nil)
+	if _, err := reclaimLock(hub, judged, judgedFI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(LockPath(hub)); err != nil {
+		t.Fatalf("reclaim removed a fresh lock with the judged bytes: %v", err)
+	}
+}
+
+// Two goroutines of one process: the one holding the lock is a live holder
+// for the other, never an orphan of a predecessor with the same pid.
+func TestWP04OwnHeldLockIsNotOrphan(t *testing.T) {
+	hub := wp04lockHub(t)
+	unlock, err := Lock(hub, "push", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	held := wp04lockReadFile(t, hub)
+	done := make(chan error, 1)
+	go func() {
+		_, ok, err := TryLock(hub, "status")
+		if err == nil && ok {
+			err = errors.New("TryLock took a lock this process holds")
+		}
+		done <- err
+	}()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := wp04lockReadFile(t, hub); !bytes.Equal(got, held) {
+		t.Fatalf("held lock changed: %q -> %q", held, got)
 	}
 }
