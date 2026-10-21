@@ -2,8 +2,11 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
@@ -200,7 +203,7 @@ func TestTaskDoesNotReadStdin(t *testing.T) {
 // ^C during a live spinner: with input disabled the terminal stays cooked, so
 // ^C raises a real SIGINT. Exiting there directly would skip bubbletea's
 // shutdown and leave the cursor hidden and bracketed paste on. The spinner
-// must restore the terminal first, then exit with 130 (interruptExit).
+// must restore the terminal first, then end the process (interruptExit).
 func TestTaskInterruptRestoresTerminal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
@@ -281,5 +284,94 @@ func TestTaskInterruptAfterFinishedTask(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Errorf("interruptExit ran %d times, want once (a finished Task was still watching ^C)", calls)
+	}
+}
+
+// A ^C that lands as the spinner finishes -- Run has returned but the watcher
+// has not unregistered yet -- must still interrupt, never be swallowed. With
+// both the signal and done ready the watcher's select picks either branch, so
+// every iteration must end in exactly one interruptExit.
+func TestTaskInterruptWhileFinishingIsHonoured(t *testing.T) {
+	calls := 0
+	prev := interruptExit
+	interruptExit = func() { calls++ }
+	t.Cleanup(func() { interruptExit = prev })
+
+	const rounds = 200
+	for i := 0; i < rounds; i++ {
+		sig := make(chan os.Signal, 1)
+		sig <- os.Interrupt
+		done := make(chan struct{})
+		close(done)
+		watchInterrupt(sig, done, func() {})
+	}
+	if calls != rounds {
+		t.Errorf("interruptExit ran %d times in %d rounds; a ^C racing the end of the spinner was dropped", calls, rounds)
+	}
+}
+
+// wp03InterruptHelperEnv selects TestWp03InterruptHelper's mode: "spin" runs
+// a spinner and ^Cs itself; "ignored" does the same with SIGINT ignored, the
+// way a shell's empty INT trap or a background job of a non-interactive shell
+// starts it.
+const wp03InterruptHelperEnv = "WP03_INTERRUPT_HELPER"
+
+// TestWp03InterruptHelper is not a test on its own: the interrupt tests
+// re-run the test binary with only it selected, so a real ^C can end a real
+// process.
+func TestWp03InterruptHelper(t *testing.T) {
+	mode := os.Getenv(wp03InterruptHelperEnv)
+	if mode == "" {
+		t.Skip("helper process for the interrupt tests")
+	}
+	if mode == "ignored" {
+		signal.Ignore(os.Interrupt)
+	}
+	u := New(os.Stdout, Mode{TTY: true, Dark: true})
+	tk := u.Task("Spinning")
+	if self, err := os.FindProcess(os.Getpid()); err == nil {
+		_ = self.Signal(os.Interrupt)
+	}
+	time.Sleep(500 * time.Millisecond)
+	tk.Done("spun")
+	fmt.Println("HELPER-FINISHED")
+}
+
+func wp03RunInterruptHelper(t *testing.T, mode string) (string, error) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWp03InterruptHelper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), wp03InterruptHelperEnv+"="+mode)
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// ^C during a spinner must end ctx the way SIGINT does by default, after the
+// terminal is restored: a calling shell then sees the signal and stops its
+// script. A plain exit status 130 lets `ctx pull; ctx push` carry on.
+func TestTaskInterruptDiesFromSIGINT(t *testing.T) {
+	out, err := wp03RunInterruptHelper(t, "spin")
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ProcessState.String() != "signal: interrupt" {
+		t.Fatalf("helper ended with %v, want death by SIGINT; stdout %q", err, out)
+	}
+	for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l"} {
+		if !strings.Contains(out, seq) {
+			t.Errorf("terminal not restored before dying: missing %q in %q", seq, out)
+		}
+	}
+	if strings.Contains(out, "HELPER-FINISHED") {
+		t.Errorf("the helper ran on after ^C: %q", out)
+	}
+}
+
+// A ctx started with SIGINT ignored must keep ignoring it while a spinner is
+// up; registering for the signal would un-ignore it.
+func TestTaskInterruptKeepsIgnoredSIGINT(t *testing.T) {
+	out, err := wp03RunInterruptHelper(t, "ignored")
+	if err != nil || !strings.Contains(out, "HELPER-FINISHED") {
+		t.Fatalf("helper with SIGINT ignored ended with %v, want a normal finish; stdout %q", err, out)
 	}
 }

@@ -80,26 +80,54 @@ func (t *Task) start() {
 	// (WithoutSignalHandler). Dying on it directly would skip the program's
 	// shutdown and leave the cursor hidden and bracketed paste on, so while
 	// the spinner is up, ^C kills the program, waits for it to restore the
-	// terminal, and only then exits. finish waits for this watcher, so a
-	// finished Task never handles a later ^C.
+	// terminal, and only then ends the process. finish waits for this
+	// watcher, so a finished Task never handles a later ^C. A process started
+	// with SIGINT ignored is left alone: registering would un-ignore it.
+	if signal.Ignored(os.Interrupt) {
+		close(watched)
+		return
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	go func() {
 		defer close(watched)
-		defer signal.Stop(sig)
-		select {
-		case <-sig:
-			prog.Kill()
-			<-done
-			interruptExit()
-		case <-done:
-		}
+		watchInterrupt(sig, done, prog.Kill)
 	}()
 }
 
-// interruptExit ends the process after ^C during a spinner, with the status a
-// shell reports for SIGINT. Tests replace it to observe the interrupt.
-var interruptExit = func() { os.Exit(130) }
+// watchInterrupt turns a ^C during the spinner into interruptExit once the
+// program has restored the terminal, and returns when the program is done
+// and the signal is unregistered. A ^C that raced the program's end is still
+// buffered in sig after Stop, and is honoured rather than dropped.
+func watchInterrupt(sig chan os.Signal, done <-chan struct{}, kill func()) {
+	select {
+	case <-sig:
+		kill()
+		<-done
+	case <-done:
+		signal.Stop(sig)
+		select {
+		case <-sig:
+		default:
+			return
+		}
+	}
+	signal.Stop(sig)
+	interruptExit()
+}
+
+// interruptExit ends the process after ^C during a spinner the way SIGINT's
+// default action would: it restores that action and re-raises the signal,
+// so a calling shell sees the process die from SIGINT and stops its script.
+// Exit status 130 is only the fallback where a process cannot signal itself
+// (Windows). Tests replace it to observe the interrupt.
+var interruptExit = func() {
+	signal.Reset(os.Interrupt)
+	if self, err := os.FindProcess(os.Getpid()); err == nil && self.Signal(os.Interrupt) == nil {
+		time.Sleep(time.Second) // the default action ends the process first
+	}
+	os.Exit(130)
+}
 
 // Detail updates the trailing context on the live line. No-op off a TTY --
 // the non-TTY contract is exactly two lines, and a third would break the
