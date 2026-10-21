@@ -387,5 +387,13 @@
       }
     ]
   },
-  "warnings": []
+  "warnings": [
+    {
+      "code": "base_repair_skipped",
+      "message": "1 page could not be verified against the server",
+      "paths": [
+        "wiki/concepts/settlement-windows.md"
+      ]
+    }
+  ]
 }

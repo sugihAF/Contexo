@@ -319,7 +319,7 @@
       "command": "status",
       "stream": "stdout",
       "exit_code": 0,
-      "sha256": "18d6e24b26aaf6b5bbc3ebbfbc3b158c6c07257d1067b4785b36be18c42c96ce"
+      "sha256": "9ea38cbea897b6aa4f037c7acc28f10668e294a72e8905cf49aa4ddb28edd877"
     },
     {
       "file": "status.auth-rejected.json",

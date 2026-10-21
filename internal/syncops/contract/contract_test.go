@@ -1299,6 +1299,38 @@ func wp01CheckStatusDoc(t *testing.T, d StatusDoc) {
 			t.Errorf("warning remote_stale is reserved; v1 never emits it (E8)")
 		}
 	}
+	wp01CheckBaseRepairSkipped(t, d)
+}
+
+// wp01CheckBaseRepairSkipped pins the base_repair_skipped warning to the
+// status ONLINE rule: with a live listing, EnsureBase folds a busy lock and
+// every failed or impossible repair into Unverified plus warning
+// base_repair_skipped (contract status ONLINE; E5, E12), so every page an
+// online status leaves unverified is named by that warning. --offline never
+// attempts a repair (EnsureBase is a no-op without a listing, E5), so an
+// offline document never carries it.
+func wp01CheckBaseRepairSkipped(t *testing.T, d StatusDoc) {
+	t.Helper()
+	named := map[string]bool{}
+	for _, w := range d.Warnings {
+		if w.Code != WarnBaseRepairSkipped {
+			continue
+		}
+		if d.Offline {
+			t.Errorf("an offline status attempts no base repair, so it never warns base_repair_skipped (E5)")
+		}
+		for _, p := range w.Paths {
+			named[p] = true
+		}
+	}
+	if d.Offline || d.Remote.Source != RemoteLive {
+		return
+	}
+	for _, p := range d.Pages {
+		if p.State == StateUnverified && !named[p.Path] {
+			t.Errorf("%s: unverified in an online, live status but not named by a base_repair_skipped warning (contract status ONLINE; E5, E12)", p.Path)
+		}
+	}
 }
 
 // TestStatusFixtureScenarios pins what each status fixture exists to show
@@ -1337,6 +1369,19 @@ func TestStatusFixtureScenarios(t *testing.T) {
 		}
 		if d.Captures.Fresh == 0 || d.Captures.BlocksPush || wp01PushableDistillPage(d) {
 			t.Errorf("captures must be fresh but not blocking (no modified/new concept or analysis page)")
+		}
+		// The server advertises every v1 capability and nothing collides or
+		// mismatches, so the only warning a conforming ctx emits is the one
+		// naming the page it left unverified (contract status ONLINE).
+		var unverified []string
+		for _, p := range d.Pages {
+			if p.State == StateUnverified {
+				unverified = append(unverified, p.Path)
+			}
+		}
+		if len(d.Warnings) != 1 || d.Warnings[0].Code != WarnBaseRepairSkipped ||
+			!reflect.DeepEqual(d.Warnings[0].Paths, unverified) {
+			t.Errorf("warnings = %+v, want exactly one base_repair_skipped naming %q", d.Warnings, unverified)
 		}
 	})
 	t.Run("captures-blocking", func(t *testing.T) {
