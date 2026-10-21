@@ -228,8 +228,8 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 
 	// `commit -- <path>` commits only this path, so nothing else left in the
 	// index (e.g. by a crashed earlier write) is swept into this commit.
-	authorArg := fmt.Sprintf("--author=%s <%s>", o.AuthorName, o.AuthorEmail)
-	if out, err := s.git(dir, "commit", authorArg, "-m", o.Message, "--", filePath); err != nil {
+	authorArg, message := commitMeta(o)
+	if out, err := s.git(dir, "commit", authorArg, "-m", message, "--", filePath); err != nil {
 		return WriteResult{}, nil, fmt.Errorf("gitstore: commit: %w: %s", err, out)
 	}
 	sha, err := s.headSHA(dir)
@@ -275,6 +275,38 @@ func (s *Store) requireIndexed(dir, filePath, abs string, created bool) error {
 	_, _ = s.git(dir, "reset", "-q")
 	_, _ = s.git(dir, "checkout", "--", ".")
 	return fmt.Errorf("%w: %q differs only in case from an existing path", ErrUnsafePath, filePath)
+}
+
+// commitMeta returns the --author argument and message for a write's commit.
+// Both come from the client, and git refuses a commit whose message is only
+// whitespace or whose author name or email is empty after git strips its
+// "crud" characters; '<', '>' and control characters would break the
+// "Name <email>" form. Such values fall back to the defaults handler.Push
+// uses for missing ones.
+func commitMeta(o WriteOptions) (authorArg, message string) {
+	message = o.Message
+	if strings.TrimSpace(message) == "" {
+		message = "ctx push"
+	}
+	name := cleanIdent(o.AuthorName, "unknown")
+	email := cleanIdent(o.AuthorEmail, "unknown@contexo.local")
+	return fmt.Sprintf("--author=%s <%s>", name, email), message
+}
+
+// cleanIdent drops '<', '>' and control characters from an identity part and
+// returns def when nothing but git's crud characters (whitespace and
+// . , : ; " ' \) remains.
+func cleanIdent(s, def string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '<' || r == '>' || r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if strings.Trim(s, " .,:;\"'\\") == "" {
+		return def
+	}
+	return strings.TrimSpace(s)
 }
 
 // repoLocks serializes writes per repo directory (in-process; the server is a

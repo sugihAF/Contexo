@@ -1072,6 +1072,29 @@ func TestReadPageAtResolvesShaOnce(t *testing.T) {
 	}
 }
 
+// TestWriteToleratesOddCommitMetadata: the message and author come from the
+// client. git refuses a commit whose message is only whitespace ("Aborting
+// commit due to empty commit message") or whose author name is only
+// punctuation ("empty ident name"), and '<' '>' or a newline break the
+// --author "Name <email>" form; none of that may turn a valid page write into
+// a 500.
+func TestWriteToleratesOddCommitMetadata(t *testing.T) {
+	s := wp02Store(t)
+	cases := []WriteOptions{
+		{AuthorName: "Tester", AuthorEmail: "t@example.com", Message: "  \n\t "},
+		{AuthorName: ".", AuthorEmail: "t@example.com", Message: "m"},
+		{AuthorName: "", AuthorEmail: "", Message: ""},
+		{AuthorName: "Eve <evil>", AuthorEmail: "e@x>\n<y", Message: "m"},
+	}
+	for i, o := range cases {
+		p := fmt.Sprintf("wiki/odd-%d.md", i)
+		res, conflict, err := s.WriteWithOptions("r", p, []byte(p), o)
+		if err != nil || conflict != nil || !res.Changed {
+			t.Errorf("case %d %+v: res=%+v conflict=%+v err=%v, want a commit", i, o, res, conflict, err)
+		}
+	}
+}
+
 // TestWriteExpectAbsentFailsClosed: when the existence check itself fails
 // (cat-file cannot run), a create-only write must fail, not treat the page as
 // absent and overwrite it, which would silently break expect_absent's
