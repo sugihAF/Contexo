@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	gosync "sync"
 	"testing"
@@ -765,6 +767,27 @@ func TestPush_ConcurrentFirstPushOneOwner(t *testing.T) {
 				t.Errorf("%s: the loser has role %q", repo, r)
 			}
 		}
+	}
+}
+
+// TestPush_FailedCreateLeavesNoOwnerRow: an owner row exists only for a repo
+// its owner actually created. A row left for an id nobody created would grant
+// access to whoever creates that id later.
+func TestPush_FailedCreateLeavesNoOwnerRow(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	alice := signIn(t, rig.router, "alice-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+	// A plain file where the repo directory would go makes creation fail.
+	if err := os.WriteFile(filepath.Join(rig.store.Root, "blocked"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("block repo dir: %v", err)
+	}
+	w, _ := wp02Push(t, rig.router, "blocked", alice, "", wp02PushFile{Path: "wiki/a.md", Content: "a"})
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("push into an uncreatable repo: %d %s, want 500", w.Code, w.Body.String())
+	}
+	if r := wp02Role(t, rig, "blocked", aliceID); r != "" {
+		t.Errorf("failed creation left alice with role %q on 'blocked'", r)
 	}
 }
 
