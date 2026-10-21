@@ -741,3 +741,33 @@ func TestWP04LoadViewIOErrors(t *testing.T) {
 		}
 	})
 }
+
+// The E6 push flow on a page that one ParsePage/SerializePage pass does not
+// settle: push stores Normalize(file) as the base and never rewrites the
+// file, so the page must read as unchanged (Local.Hash == Base.Hash), not
+// modified forever.
+func TestWP04PushFlowStaysUnchanged(t *testing.T) {
+	for name, c := range wp04cmpLossyInputs(t) {
+		if !c.valid {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			hub := wp04viewHub(t)
+			wp04viewWrite(t, hub, wp04viewP, c.in)
+			sent, err := Normalize(c.in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			wp04viewBase(t, hub, wp04viewP, sent, wp04viewSB)
+			wp04viewState(t, hub, map[string]string{wp04viewP: wp04viewSB})
+
+			f := wp04viewFacts(t, wp04viewLoad(t, hub, map[string]string{wp04viewP: wp04viewSB}), wp04viewP)
+			if f.Local.Kind != LocalValid || f.Base.Kind != BaseValid {
+				t.Fatalf("Local = %+v, Base = %+v; want a valid file and a valid base", f.Local, f.Base)
+			}
+			if f.Local.Hash != f.Base.Hash {
+				t.Errorf("after push Local.Hash = %s, Base.Hash = %s; want equal (unchanged)", f.Local.Hash, f.Base.Hash)
+			}
+		})
+	}
+}

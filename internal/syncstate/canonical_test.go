@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sugihAF/contexo/internal/schema"
 )
 
 var wp04cmpBOM = []byte{0xEF, 0xBB, 0xBF}
@@ -201,4 +204,138 @@ func TestEqualFlowListEqualsBlockList(t *testing.T) {
 			t.Errorf("%s (swapped): Equal = %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// wp04cmpLossyPage is a valid concept page x whose last frontmatter key,
+// reasoning_summary, is spelled summary (everything after the key's colon),
+// followed by body.
+func wp04cmpLossyPage(summary, body string) []byte {
+	return []byte("---\nschema: ctx.page.v1\nslug: x\ntype: concept\n" +
+		"author: a\ncreated: 2026-01-01T00:00:00Z\n" +
+		"reasoning_summary:" + summary + "---\n" + body)
+}
+
+// wp04cmpLossy is an input on which one ParsePage/SerializePage pass is
+// lossy. valid is true when it is a valid page at wiki/concepts/x.md.
+type wp04cmpLossy struct {
+	in    []byte
+	valid bool
+}
+
+// wp04cmpLossyInputs returns pages one pass does not settle: the pass drops
+// the line break ending the YAML block, so a trailing block scalar loses a
+// newline each pass, and a CR run needs more than one CRLF replacement.
+func wp04cmpLossyInputs(t testing.TB) map[string]wp04cmpLossy {
+	t.Helper()
+	serialized, err := schema.SerializePage(&schema.Page{
+		Frontmatter: schema.PageFrontmatter{
+			Schema:           schema.PageSchemaV1,
+			Slug:             "x",
+			Type:             schema.TypeConcept,
+			Author:           "a",
+			Created:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			ReasoningSummary: "x\n\n",
+		},
+		Body: "# X\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]wp04cmpLossy{
+		"serialized_keep":  {serialized, true},
+		"clip_blank_line":  {wp04cmpLossyPage(" |\n  Some text\n\n", "# X\n"), true},
+		"keep_blank_lines": {wp04cmpLossyPage(" |+\n  Some text\n\n\n", "# X\n"), true},
+		"cr_run_body":      {wp04cmpLossyPage(" plain\n", "# X\r\r\r\nmore\n"), true},
+		"fuzz_leading_nl":  {[]byte("---\nreasoning_summary: |\n\n 00\n---"), false},
+	}
+}
+
+func TestWP04NormalizeIdempotentLossyInputs(t *testing.T) {
+	for name, c := range wp04cmpLossyInputs(t) {
+		t.Run(name, func(t *testing.T) {
+			n1, err := Normalize(c.in)
+			if err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			n2, err := Normalize(n1)
+			if err != nil {
+				t.Fatalf("Normalize(Normalize): %v", err)
+			}
+			if !bytes.Equal(n1, n2) {
+				t.Errorf("not idempotent:\n first: %q\nsecond: %q", n1, n2)
+			}
+			if !Equal(c.in, n1) {
+				t.Errorf("Equal(x, Normalize(x)) = false: %s vs %s", Hash(c.in), Hash(n1))
+			}
+			if bytes.Contains(n1, []byte("\r")) {
+				t.Errorf("Normalize output contains CR: %q", n1)
+			}
+		})
+	}
+}
+
+// A page that one ParsePage/SerializePage pass already settles keeps exactly
+// the bytes (and so the hash) of that single pass.
+func TestWP04NormalizeStableInputUnchanged(t *testing.T) {
+	for _, in := range [][]byte{[]byte(wp04cmpBlock), []byte(wp04cmpFlow), wp04cmpCRLF(wp04cmpFlow)} {
+		p, err := schema.ParsePage(StripBOM(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		one, err := schema.SerializePage(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Normalize(in)
+		if err != nil {
+			t.Fatalf("Normalize: %v", err)
+		}
+		if !bytes.Equal(got, one) {
+			t.Errorf("Normalize(%q) = %q, want the single pass %q", in, got, one)
+		}
+	}
+}
+
+// A page with no fixed point within the round cap does not normalize, so it
+// hashes raw.
+func TestWP04NormalizeRoundCap(t *testing.T) {
+	in := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 40), "# X\n")
+	if n, err := Normalize(in); err == nil {
+		t.Fatalf("Normalize of a page needing ~40 passes succeeded: %q", n)
+	}
+	if got := Hash(in); !strings.HasPrefix(got, "raw-sha256:") {
+		t.Errorf("Hash = %q, want the raw-sha256 fallback", got)
+	}
+	few := wp04cmpLossyPage(" |+\n  x\n"+strings.Repeat("\n", 4), "# X\n")
+	if _, err := Normalize(few); err != nil {
+		t.Errorf("Normalize of a page needing a few passes: %v", err)
+	}
+}
+
+// FuzzNormalizeIdempotent checks Normalize(Normalize(b)) == Normalize(b)
+// and Hash(Normalize(b)) == Hash(b) for every b that normalizes. go test
+// runs only the seeds; run it with -fuzz to search further.
+func FuzzNormalizeIdempotent(f *testing.F) {
+	for _, c := range wp04cmpLossyInputs(f) {
+		f.Add(c.in)
+	}
+	f.Add([]byte(wp04cmpBlock))
+	f.Add([]byte(wp04cmpFlow))
+	f.Add([]byte("---\nreasoning_summary: \"\\n\"\n---"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		n1, err := Normalize(b)
+		if err != nil {
+			return
+		}
+		n2, err := Normalize(n1)
+		if err != nil {
+			t.Fatalf("Normalize(Normalize(%q)): %v", b, err)
+		}
+		if !bytes.Equal(n1, n2) {
+			t.Fatalf("not idempotent for %q:\n first: %q\nsecond: %q", b, n1, n2)
+		}
+		if Hash(n1) != Hash(b) {
+			t.Fatalf("Hash(Normalize(%q)) = %s, Hash = %s", b, Hash(n1), Hash(b))
+		}
+	})
 }

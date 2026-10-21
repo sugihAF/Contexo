@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/sugihAF/contexo/internal/schema"
 )
@@ -23,15 +24,37 @@ func StripBOM(b []byte) []byte {
 	return bytes.TrimPrefix(b, utf8BOM)
 }
 
-// Normalize is the one comparison form of a page (E6):
-// schema.SerializePage(schema.ParsePage(StripBOM(b))). It does NOT sanitize
-// content: push sends exactly these bytes and stores them as the base.
+// normalizeMaxPasses caps the ParsePage/SerializePage passes Normalize makes
+// looking for a fixed point.
+const normalizeMaxPasses = 16
+
+// Normalize is the one comparison form of a page (E6): the fixed point of
+// the pass schema.SerializePage(schema.ParsePage(.)), starting from
+// StripBOM(b). A single pass is not always stable: it drops the line break
+// ending the YAML block, so a trailing block scalar loses a newline each
+// time, and a CR run needs more than one CRLF replacement. Repeating the
+// pass until the bytes stop changing makes Normalize idempotent, so
+// Hash(Normalize(x)) == Hash(x); a page one pass already settles gets
+// exactly that pass's bytes. A pass that fails, or no fixed point within
+// normalizeMaxPasses passes, is an error. It does NOT sanitize content:
+// push sends exactly these bytes and stores them as the base.
 func Normalize(b []byte) ([]byte, error) {
-	p, err := schema.ParsePage(StripBOM(b))
-	if err != nil {
-		return nil, err
+	cur := StripBOM(b)
+	for pass := 0; pass < normalizeMaxPasses; pass++ {
+		p, err := schema.ParsePage(cur)
+		if err != nil {
+			return nil, err
+		}
+		next, err := schema.SerializePage(p)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(next, cur) {
+			return next, nil
+		}
+		cur = next
 	}
-	return schema.SerializePage(p)
+	return nil, fmt.Errorf("syncstate: normalize: no fixed point within %d passes", normalizeMaxPasses)
 }
 
 // Hash returns "sha256:<hex>" of Normalize(b), or "raw-sha256:<hex>" of b
