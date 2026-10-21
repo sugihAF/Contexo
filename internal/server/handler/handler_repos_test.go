@@ -1351,6 +1351,39 @@ func TestRepoAliases(t *testing.T) {
 	}
 }
 
+// TestRepoAliasesNewDirUnstatable: a case variant whose directory exists is
+// compared with repoID's own directory, and when that one cannot be stat'ed
+// the variant is never guessed to be an alias or not: its rows stay and the
+// stat error is returned with the certain aliases, so the create fails
+// closed (500) instead of treating the variant as another repo. In a create
+// repoID's directory was just made, so only a transient error (EIO, EMFILE)
+// gets here. A case-sensitive filesystem builds the state: "MyRepo" exists,
+// "myrepo" does not. A case-folding one cannot (the two names are one
+// directory), so the test skips there.
+func TestRepoAliasesNewDirUnstatable(t *testing.T) {
+	rig := setupRig(t)
+	if wp07FoldsCase(t, filepath.Dir(rig.store.Root)) {
+		t.Skip("a case-folding filesystem cannot hold MyRepo without myrepo")
+	}
+	carol := wp07SignIn(t, rig, "carol")["carol"]
+	if err := rig.store.Init("MyRepo"); err != nil {
+		t.Fatalf("init MyRepo: %v", err)
+	}
+	if err := rig.users.AddMember("MyRepo", carol.id, userstore.RoleOwner); err != nil {
+		t.Fatalf("seed MyRepo: %v", err)
+	}
+	known := []string{"MyRepo", "my.repo"}
+
+	aliases, err := rig.h.repoAliases("myrepo", known)
+	if !errors.Is(err, os.ErrNotExist) || !slices.Equal(aliases, []string{"my.repo"}) {
+		t.Errorf("repoAliases with myrepo's directory missing = %q (err %v), want [my.repo] and an error wrapping fs.ErrNotExist", aliases, err)
+	}
+	if err := rig.h.purgeStaleAccess("myrepo", known); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("purgeStaleAccess: err %v, want one wrapping fs.ErrNotExist", err)
+	}
+	wp07WantMembers(t, "kept MyRepo", rig, "MyRepo", map[string]string{carol.id: userstore.RoleOwner})
+}
+
 // TestPurgeStaleAccessUncertainCaseVariant: a case variant whose directory
 // cannot be stat'ed (EACCES here) is never guessed to be an alias: its rows
 // stay and an error is returned. The new id's own rows and its exact
