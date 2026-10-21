@@ -81,7 +81,11 @@ func wp02Opts(parent string) WriteOptions {
 }
 
 // TestWriteNoopIsLocaleIndependent: no-op detection must not depend on git's
-// (translatable) "nothing to commit" message.
+// (translatable) "nothing to commit" message. gitCmd forces LC_ALL=C, so a
+// German host locale alone cannot catch a regression to text matching; the
+// call log pins the mechanism instead: an unchanged write is decided by
+// `diff --cached --quiet`'s exit status and never runs `git commit`, the step
+// whose message the old code matched.
 func TestWriteNoopIsLocaleIndependent(t *testing.T) {
 	t.Setenv("LANG", "de_DE.UTF-8")
 	t.Setenv("LC_ALL", "de_DE.UTF-8")
@@ -91,12 +95,43 @@ func TestWriteNoopIsLocaleIndependent(t *testing.T) {
 	c1 := wp02Write(t, s, "wiki/a.md", "alpha", "")
 	wp02Write(t, s, "wiki/b.md", "beta", "")
 
+	calls := ""
+	if runtime.GOOS != "windows" {
+		realGit, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatalf("look up git: %v", err)
+		}
+		bin := t.TempDir()
+		calls = filepath.Join(bin, "calls.log")
+		wrapper := "#!/bin/sh\necho \"$*\" >> \"$WP02_GIT_CALLS\"\nexec \"$WP02_REAL_GIT\" \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+			t.Fatalf("write git wrapper: %v", err)
+		}
+		t.Setenv("WP02_GIT_CALLS", calls)
+		t.Setenv("WP02_REAL_GIT", realGit)
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+
 	res, conflict, err := s.WriteWithOptions("r", "wiki/a.md", []byte("alpha"), wp02Opts(c1))
 	if err != nil || conflict != nil {
 		t.Fatalf("write: err=%v conflict=%+v", err, conflict)
 	}
 	if res.Changed || res.SHA != c1 {
 		t.Errorf("got %+v, want {SHA:%s Changed:false}", res, c1)
+	}
+	if calls != "" {
+		log, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatalf("read git call log: %v", err)
+		}
+		for _, line := range strings.Split(string(log), "\n") {
+			if f := strings.Fields(line); len(f) > 2 && f[2] == "commit" {
+				t.Errorf("an unchanged write ran %q; no-op detection must not go through git commit", line)
+			}
+		}
+		if !strings.Contains(string(log), "diff --cached --quiet") {
+			t.Errorf("an unchanged write did not use diff --cached --quiet:\n%s", log)
+		}
 	}
 }
 
