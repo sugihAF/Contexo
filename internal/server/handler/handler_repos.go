@@ -31,14 +31,17 @@ type createRepoResponse struct {
 // becomes its owner (201 {"id","role":"owner"}, the shape the dashboard
 // reads). Legacy auth has no user to own a repo (403).
 //
-// An existing repo is 409 "repo already exists" for everyone, its owner and
-// members included, and is never claimed: not an ownerless one (only the
-// first sign-in bootstrap in GoogleAuth adopts those), and not an alias of
-// another id's directory. gitstore keeps only the [A-Za-z0-9_-] characters of
-// an id and a case-insensitive filesystem folds case, so "myrepo" can name
-// the directory of "my.repo", and "case-repo" that of "Case-Repo", whose
-// membership rows use the other id. A new id must match repoIDPattern (400,
-// before any existence check).
+// Every id must match repoIDPattern, checked before any existence check:
+// any other id is 400 repoIDRule, even one of an existing repo, so a live
+// dotted repo such as "my.repo" (hosted may hold one) is a 400 for everyone,
+// its owner included, never a 409. An existing repo with a canonical id is
+// 409 "repo already exists" for everyone, its owner and members included,
+// and is never claimed: not an ownerless one (only the first sign-in
+// bootstrap in GoogleAuth adopts those), and not an alias of another id's
+// directory. gitstore keeps only the [A-Za-z0-9_-] characters of an id and a
+// case-insensitive filesystem folds case, so "myrepo" can name the directory
+// of "my.repo", and "case-repo" that of "Case-Repo", whose membership rows
+// use the other id.
 //
 // Creation is race-safe under createRepoMu: of concurrent creates of one id
 // on any route, only the request that created the repo becomes its owner.

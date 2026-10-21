@@ -448,7 +448,10 @@ func TestCreateRepoAliasOfExistingRefused(t *testing.T) {
 	wp07WantRepoExists(t, "bob creates myrepo", wp07Create(t, rig, "myrepo", bob.bearer))
 	wp07WantMembers(t, "myrepo", rig, "myrepo", map[string]string{})
 	wp07WantStatus(t, "bob reads my.repo's page via myrepo", wp07Get(t, rig, "/v1/repos/myrepo/pages/wiki/a.md", bob.bearer), http.StatusForbidden)
+	// The id pattern is checked before existence, so the dotted repo itself
+	// is a 400 for everyone, its owner included, never a 409.
 	wp02WantRepoIDRule(t, "bob creates my.repo", wp07Create(t, rig, "my.repo", bob.bearer))
+	wp02WantRepoIDRule(t, "alice, its owner, creates my.repo", wp07Create(t, rig, "my.repo", alice.bearer))
 	wp07WantMembers(t, "my.repo", rig, "my.repo", map[string]string{alice.id: userstore.RoleOwner})
 	wp07WantStatus(t, "alice reads her dotted repo", wp07Get(t, rig, "/v1/repos/my.repo/pages/wiki/a.md", alice.bearer), http.StatusOK)
 
