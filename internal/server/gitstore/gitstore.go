@@ -171,7 +171,13 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 		return WriteResult{}, nil, err
 	}
 	if o.ExpectAbsent {
-		if _, exists, _ := s.blobAt(dir, "HEAD", filePath); exists {
+		// Fail closed: if existence cannot be checked, do not write. Treating
+		// an error as "absent" would overwrite the page this guard protects.
+		_, exists, err := s.blobAt(dir, "HEAD", filePath)
+		if err != nil {
+			return WriteResult{}, nil, fmt.Errorf("gitstore: expect_absent check: %w", err)
+		}
+		if exists {
 			return WriteResult{}, &Conflict{
 				Path:              filePath,
 				CurrentSHA:        currentSHA,

@@ -1026,3 +1026,41 @@ func TestBlobAtIsOneGitProcess(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteExpectAbsentFailsClosed: when the existence check itself fails
+// (cat-file cannot run), a create-only write must fail, not treat the page as
+// absent and overwrite it, which would silently break expect_absent's
+// guarantee against the same-path create race.
+func TestWriteExpectAbsentFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fails cat-file through a /bin/sh wrapper")
+	}
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "teammate", "")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("look up git: %v", err)
+	}
+	bin := t.TempDir()
+	wrapper := "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --batch ] && exit 128; done\nexec \"$WP02_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("WP02_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	o := wp02Opts("")
+	o.ExpectAbsent = true
+	res, conflict, err := s.WriteWithOptions("r", "wiki/a.md", []byte("mine"), o)
+	if err == nil {
+		t.Fatalf("create-only write with a failing existence check: res=%+v conflict=%+v, want an error", res, conflict)
+	}
+	if errors.Is(err, ErrConflict) {
+		t.Logf("got a conflict (acceptable fail-closed outcome): %v", err)
+	}
+	t.Setenv("PATH", strings.TrimPrefix(os.Getenv("PATH"), bin+string(os.PathListSeparator)))
+	content, sha, rerr := s.Read("r", "wiki/a.md")
+	if rerr != nil || string(content) != "teammate" || sha != c1 {
+		t.Errorf("page after the failed create-only write: %q@%s (err %v), want teammate@%s", content, sha, rerr, c1)
+	}
+}
