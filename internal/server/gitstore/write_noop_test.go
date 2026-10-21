@@ -473,6 +473,126 @@ func TestWriteGlobPathIsLiteral(t *testing.T) {
 	}
 }
 
+// wp02PageSHAs maps each listed page path to its last-touch sha.
+func wp02PageSHAs(t *testing.T, s *Store) map[string]string {
+	t.Helper()
+	pages, err := s.ListPages("r")
+	if err != nil {
+		t.Fatalf("ListPages: %v", err)
+	}
+	m := map[string]string{}
+	for _, p := range pages {
+		m[p.Path] = p.SHA
+	}
+	return m
+}
+
+// wp02SameSet reports whether got and want hold the same paths.
+func wp02SameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := map[string]bool{}
+	for _, p := range got {
+		set[p] = true
+	}
+	for _, p := range want {
+		if !set[p] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestListPagesNonASCIIPath: git C-quotes non-ASCII names in its plain-text
+// output under core.quotePath=true ("wiki/caf\303\251.md"), so the listing
+// must come back verbatim, not as git's escaped form.
+func TestListPagesNonASCIIPath(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/café.md", "accent", "")
+	c2 := wp02Write(t, s, "wiki/a.md", "plain", "")
+
+	got := wp02PageSHAs(t, s)
+	want := map[string]string{"wiki/café.md": c1, "wiki/a.md": c2}
+	if len(got) != len(want) || got["wiki/café.md"] != c1 || got["wiki/a.md"] != c2 {
+		t.Errorf("ListPages = %q, want %q", got, want)
+	}
+}
+
+// TestChangedSinceNonASCIIPath: ChangedSince feeds pull, which reads each
+// returned path back, so a C-quoted name would be a page the client can never
+// fetch.
+func TestChangedSinceNonASCIIPath(t *testing.T) {
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a.md", "plain", "")
+	c2 := wp02Write(t, s, "wiki/café.md", "accent", "")
+
+	files, head, err := s.ChangedSince("r", "")
+	if err != nil || head != c2 || !wp02SameSet(files, []string{"wiki/a.md", "wiki/café.md"}) {
+		t.Errorf("ChangedSince(\"\") = %q head=%s err=%v, want [wiki/a.md wiki/café.md] head=%s", files, head, err, c2)
+	}
+	files, head, err = s.ChangedSince("r", c1)
+	if err != nil || head != c2 || !wp02SameSet(files, []string{"wiki/café.md"}) {
+		t.Errorf("ChangedSince(c1) = %q head=%s err=%v, want [wiki/café.md] head=%s", files, head, err, c2)
+	}
+}
+
+// TestListPagesQuotedPath: git quotes a name containing '"' or '\' even with
+// core.quotePath=false ("wiki/quo\"te.md"), keeping any non-ASCII bytes raw
+// inside the quotes. Such names must still be listed verbatim.
+func TestListPagesQuotedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("'\"' is not valid, and '\\' is a separator, in a Windows file name")
+	}
+	paths := []string{`wiki/quo"te.md`, `wiki/back\slash.md`, `wiki/"café".md`}
+	for _, p := range paths {
+		if err := validatePagePath(p); err != nil {
+			t.Skipf("validatePagePath(%q) = %v: such paths never reach git", p, err)
+		}
+	}
+	s := wp02Store(t)
+	c0 := wp02Write(t, s, "wiki/plain.md", "plain", "")
+	shas := map[string]string{}
+	for _, p := range paths {
+		shas[p] = wp02Write(t, s, p, p, "")
+	}
+
+	got := wp02PageSHAs(t, s)
+	for _, p := range paths {
+		if got[p] != shas[p] {
+			t.Errorf("ListPages[%q] = %q, want %s (listing: %q)", p, got[p], shas[p], got)
+		}
+	}
+	if len(got) != len(paths)+1 {
+		t.Errorf("ListPages = %q, want %d pages", got, len(paths)+1)
+	}
+	files, _, err := s.ChangedSince("r", c0)
+	if err != nil || !wp02SameSet(files, paths) {
+		t.Errorf("ChangedSince(c0) = %q err=%v, want %q", files, err, paths)
+	}
+	files, _, err = s.ChangedSince("r", "")
+	if err != nil || !wp02SameSet(files, append([]string{"wiki/plain.md"}, paths...)) {
+		t.Errorf("ChangedSince(\"\") = %q err=%v, want wiki/plain.md and %q", files, err, paths)
+	}
+}
+
+func TestUnquoteGitPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"wiki/a.md", "wiki/a.md"},
+		{"wiki/café.md", "wiki/café.md"},
+		{`"wiki/caf\303\251.md"`, "wiki/café.md"},
+		{`"wiki/quo\"te.md"`, `wiki/quo"te.md`},
+		{`"wiki/back\\slash.md"`, `wiki/back\slash.md`},
+		{`"wiki/"café".md"`, `"wiki/"café".md"`},
+		{`"unterminated`, `"unterminated`},
+	}
+	for _, tc := range cases {
+		if got := unquoteGitPath(tc.in); got != tc.want {
+			t.Errorf("unquoteGitPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // wp02CaseInsensitiveFS reports whether dir's filesystem folds case.
 func wp02CaseInsensitiveFS(t *testing.T, dir string) bool {
 	t.Helper()

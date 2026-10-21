@@ -486,7 +486,7 @@ func (s *Store) ChangedSince(repoID, since string) ([]string, string, error) {
 		if err != nil {
 			return nil, "", fmt.Errorf("gitstore: ls-tree: %w: %s", err, out)
 		}
-		return splitLines(out), head, nil
+		return gitPaths(out), head, nil
 	}
 	if since == head {
 		return nil, head, nil
@@ -498,7 +498,16 @@ func (s *Store) ChangedSince(repoID, since string) ([]string, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("gitstore: diff: %w: %s", err, out)
 	}
-	return splitLines(out), head, nil
+	return gitPaths(out), head, nil
+}
+
+// gitPaths parses one path name per line of git's plain-text output.
+func gitPaths(out string) []string {
+	names := splitLines(out)
+	for i, n := range names {
+		names[i] = unquoteGitPath(n)
+	}
+	return names
 }
 
 // Log returns up to limit recent commits across the whole repo.
@@ -620,12 +629,13 @@ func (s *Store) ListPages(repoID string) ([]PageMeta, error) {
 			hasCommit = true
 			continue
 		}
-		if !hasCommit || seen[line] {
+		name := unquoteGitPath(line)
+		if !hasCommit || seen[name] {
 			continue
 		}
-		seen[line] = true
+		seen[name] = true
 		p := cur
-		p.Path = line
+		p.Path = name
 		pages = append(pages, p)
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i].Path < pages[j].Path })
@@ -756,11 +766,30 @@ func (s *Store) git(dir string, args ...string) (string, error) {
 // (":memo.md" means memo.md) and '*', '?' and '[' are globs ("wiki/a?.md" also
 // matches wiki/ab.md), so a write or read would otherwise check, stage and
 // commit other pages than the one named.
+//
+// core.quotePath=false keeps non-ASCII names verbatim in git's plain-text
+// output (wiki/café.md, not "wiki/caf\303\251.md"); names git still quotes
+// go through unquoteGitPath.
 func gitCmd(dir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "core.quotePath=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1")
 	return cmd
+}
+
+// unquoteGitPath undoes git's C-style quoting of a path name in plain-text
+// output. Even with core.quotePath=false (gitCmd) git quotes a name that
+// contains '"', '\' or a control byte, as "wiki/quo\"te.md" (any non-ASCII
+// bytes stay raw inside the quotes). A name that fails to unquote is kept as
+// is.
+func unquoteGitPath(name string) string {
+	if !strings.HasPrefix(name, `"`) {
+		return name
+	}
+	if u, err := strconv.Unquote(name); err == nil {
+		return u
+	}
+	return name
 }
 
 // blobAt returns the content of filePath at rev when the path is a file
