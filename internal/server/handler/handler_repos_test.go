@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sugihAF/contexo/internal/auth"
+	"github.com/sugihAF/contexo/internal/server/gitstore"
 	"github.com/sugihAF/contexo/internal/userstore"
 )
 
@@ -721,4 +723,152 @@ BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
 	wp07WantMembers(t, "w (rolled back)", rig, "w", map[string]string{dave.id: userstore.RoleOwner})
 	wp07WantResolves(t, "w key (rolled back)", rig, raw, "w")
 	wp07WantActivity(t, "w (rolled back)", rig, "w", 1)
+}
+
+// TestRepoDirNameMirrorsGitstore pins repoDirName to gitstore's private
+// sanitize: the directory gitstore creates for an id is repoDirName(id), and
+// an id that sanitizes to nothing has no directory.
+func TestRepoDirNameMirrorsGitstore(t *testing.T) {
+	canonical := regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	for id, want := range map[string]string{
+		"my.repo":  "myrepo",
+		"a b":      "ab",
+		"x/y":      "xy",
+		"..ab":     "ab",
+		"Ab-1_":    "Ab-1_",
+		"\u00fc-x": "-x",
+		"a.b.c":    "abc",
+	} {
+		got := repoDirName(id)
+		if got != want || !canonical.MatchString(got) {
+			t.Errorf("repoDirName(%q) = %q, want %q", id, got, want)
+		}
+		store, err := gitstore.Open(filepath.Join(t.TempDir(), "repos"))
+		if err != nil {
+			t.Fatalf("gitstore: %v", err)
+		}
+		if err := store.Init(id); err != nil {
+			t.Errorf("init %q: %v", id, err)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(store.Root, got, ".git")); err != nil {
+			t.Errorf("%q: no repo in directory %q: %v", id, got, err)
+		}
+		if repos, err := store.ListRepos(); err != nil || !slices.Equal(repos, []string{got}) {
+			t.Errorf("%q: repos on disk %v (err %v), want [%s]", id, repos, err, got)
+		}
+	}
+	for _, id := range []string{"", "...", "\u00fc"} {
+		if got := repoDirName(id); got != "" {
+			t.Errorf("repoDirName(%q) = %q, want empty", id, got)
+		}
+		store, err := gitstore.Open(filepath.Join(t.TempDir(), "repos"))
+		if err != nil {
+			t.Fatalf("gitstore: %v", err)
+		}
+		if err := store.Init(id); err == nil {
+			t.Errorf("gitstore created a repo for %q", id)
+		}
+	}
+}
+
+// TestRepoAliases: the known ids that name the directory of a new repo id
+// are the ids that sanitize to it exactly ("my.repo" for "myrepo") and, only
+// where the filesystem folds case, its case variants. Near misses ("my-repo"
+// keeps its dash, "myrepo2", "amyrepo") never are.
+func TestRepoAliases(t *testing.T) {
+	rig := setupRig(t)
+	if err := rig.store.Init("myrepo"); err != nil {
+		t.Fatalf("init myrepo: %v", err)
+	}
+	known := []string{"", "...", "MYREPO", "My.Repo", "MyRepo", "amyrepo", "my-repo", "my.repo", "my_repo", "myrepo", "myrepo2", "other", "x"}
+	folds := wp07FoldsCase(t, filepath.Dir(rig.store.Root))
+	want := []string{"my.repo"}
+	if folds {
+		want = []string{"MYREPO", "My.Repo", "MyRepo", "my.repo"}
+	}
+	check := func(label string) {
+		t.Helper()
+		got, err := rig.h.repoAliases("myrepo", known)
+		slices.Sort(got)
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("%s: aliases of myrepo = %q (err %v), want %q", label, got, err, want)
+		}
+	}
+	check("folds=" + fmt.Sprint(folds))
+	if !folds {
+		// A live repo that differs only in case is its own directory here.
+		if err := rig.store.Init("MyRepo"); err != nil {
+			t.Fatalf("init MyRepo: %v", err)
+		}
+		check("with a live MyRepo")
+	}
+}
+
+// TestPurgeStaleAccessUncertainCaseVariant: a case variant whose directory
+// cannot be stat'ed (EACCES here) is never guessed to be an alias: its rows
+// stay and an error is returned. The new id's own rows and its exact
+// aliases, which need no stat, are still purged: the directory was just
+// created, so they are certainly stale.
+func TestPurgeStaleAccessUncertainCaseVariant(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions enforced for the test user")
+	}
+	rig := setupRig(t)
+	us := wp07SignIn(t, rig, "alice", "bob", "carol")
+	seed := func(repo, uid string) string {
+		t.Helper()
+		if err := rig.users.AddMember(repo, uid, userstore.RoleOwner); err != nil {
+			t.Fatalf("seed %s: %v", repo, err)
+		}
+		_, raw, err := rig.users.MintInviteKey(repo, uid, "k")
+		if err != nil {
+			t.Fatalf("seed %s key: %v", repo, err)
+		}
+		if err := rig.users.RecordActivity(repo, uid, "push", ""); err != nil {
+			t.Fatalf("seed %s activity: %v", repo, err)
+		}
+		return raw
+	}
+	kOwn := seed("myrepo", us["alice"].id)
+	kDot := seed("my.repo", us["bob"].id)
+	kCase := seed("MyRepo", us["carol"].id)
+	if err := rig.store.Init("myrepo"); err != nil {
+		t.Fatalf("init myrepo: %v", err)
+	}
+	known, err := rig.users.KnownRepoIDs()
+	if err != nil {
+		t.Fatalf("known ids: %v", err)
+	}
+
+	root := rig.store.Root
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+	if _, err := os.Stat(filepath.Join(root, "MyRepo")); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skipf("stat under a chmod 000 root gives %v on this filesystem", err)
+	}
+	aliases, aliasErr := rig.h.repoAliases("myrepo", known)
+	purgeErr := rig.h.purgeStaleAccess("myrepo", known)
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("chmod back: %v", err)
+	}
+
+	if aliasErr == nil || !slices.Equal(aliases, []string{"my.repo"}) {
+		t.Errorf("repoAliases = %q (err %v), want [my.repo] and an error", aliases, aliasErr)
+	}
+	if purgeErr == nil {
+		t.Errorf("purgeStaleAccess: nil error, want the stat error")
+	}
+	for repo, raw := range map[string]string{"myrepo": kOwn, "my.repo": kDot} {
+		wp07WantMembers(t, "purged "+repo, rig, repo, map[string]string{})
+		wp07WantKeys(t, "purged "+repo, rig, repo, 0)
+		wp07WantResolves(t, "purged "+repo, rig, raw, "")
+		wp07WantActivity(t, "purged "+repo, rig, repo, 0)
+	}
+	wp07WantMembers(t, "kept MyRepo", rig, "MyRepo", map[string]string{us["carol"].id: userstore.RoleOwner})
+	wp07WantKeys(t, "kept MyRepo", rig, "MyRepo", 1)
+	wp07WantResolves(t, "kept MyRepo", rig, kCase, "MyRepo")
+	wp07WantActivity(t, "kept MyRepo", rig, "MyRepo", 1)
 }
