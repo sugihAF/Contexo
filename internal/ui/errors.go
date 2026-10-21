@@ -281,19 +281,24 @@ func Coded(err error, code contract.ErrorCode, advice ...string) error {
 }
 
 // EnvelopeMode reports whether a failure of cmd must be rendered as the
-// ctx.error.v1 envelope with contract exit codes (E21): when cmd's json flag
-// is true (which covers show's hidden default-true flag, E20), or when the
-// raw args hold --json or --json=true before a "--" terminator, so a failure
-// that happens before the flag is parsed (an unknown flag or command) still
-// yields an envelope. cmd may be nil, leaving only the raw-args check.
+// ctx.error.v1 envelope with contract exit codes (E21): when cmd is
+// `ctx show` or its json flag is true (show's hidden flag also always reads
+// true, E20), or when the raw args hold --json or --json=true before a "--"
+// terminator, so a failure that happens before the flag is parsed (an
+// unknown flag or command) still yields an envelope. cmd may be nil, leaving
+// only the raw-args check.
 //
 // The stdio/hook/completion machine surfaces (bare `ctx mcp`,
 // `ctx capture turn`, shell completion) never emit an envelope, whatever
 // their args: their streams belong to another protocol.
 func EnvelopeMode(cmd *cobra.Command, args []string) bool {
 	if cmd != nil {
-		if machineCommand(cmd.CommandPath()) {
+		path := cmd.CommandPath()
+		if machineCommand(path) {
 			return false
+		}
+		if isShowCommand(path) {
+			return true
 		}
 		if f := cmd.Flags().Lookup("json"); f != nil && f.Value.String() == "true" {
 			return true
@@ -308,6 +313,14 @@ func EnvelopeMode(cmd *cobra.Command, args []string) bool {
 		}
 	}
 	return false
+}
+
+// isShowCommand reports whether a resolved command path is the top-level
+// `ctx show` (E21: always an envelope). A nested command that happens to be
+// named show is not.
+func isShowCommand(path string) bool {
+	fields := strings.Fields(path)
+	return len(fields) == 2 && fields[1] == "show"
 }
 
 // RenderEnvelope writes err as exactly one ctx.error.v1 line to the UI's

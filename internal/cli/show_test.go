@@ -4,6 +4,7 @@ package cli
 // WP-1.4, which replaces the stub, unhides the command and rewrites this file.
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
@@ -82,6 +83,66 @@ func TestShowStubHiddenAndFlags(t *testing.T) {
 	}
 	if env := wp01Envelope(t, stderr); env.Error.Code != contract.CodeUsage {
 		t.Errorf("missing --at code = %q", env.Error.Code)
+	}
+}
+
+// show is always machine mode (E20/E21): the hidden --json cannot be turned
+// off. A bare --json or --json=true is a no-op; --json=false is a usage error
+// that is still rendered as an envelope, and the flag keeps reading "true"
+// for ui.DetectMode and ui.EnvelopeMode.
+func TestShowJSONCannotBeTurnedOff(t *testing.T) {
+	show := wp01Command(t, "show")
+	js := show.Flags().Lookup("json")
+	if js == nil {
+		t.Fatal("hidden --json is not defined")
+	}
+	if js.NoOptDefVal != "true" {
+		t.Errorf("bare --json must mean true, NoOptDefVal %q", js.NoOptDefVal)
+	}
+	for _, v := range []string{"false", "0", "no"} {
+		if err := show.Flags().Set("json", v); err == nil {
+			t.Errorf("--json=%s accepted", v)
+		}
+	}
+	if err := show.Flags().Set("json", "true"); err != nil {
+		t.Errorf("--json=true rejected: %v", err)
+	}
+	if got := js.Value.String(); got != "true" {
+		t.Errorf("--json reads %q after a rejected false, want true", got)
+	}
+	if got, err := show.Flags().GetBool("json"); err != nil || !got {
+		t.Errorf("GetBool(json) = %v, %v; want true", got, err)
+	}
+	var buf bytes.Buffer
+	if !ui.DetectMode(show, &buf).Machine {
+		t.Error("show must stay machine mode")
+	}
+
+	uninit := t.TempDir()
+	for _, c := range []struct {
+		flag string
+		exit int
+		code contract.ErrorCode
+	}{
+		{"--json=false", contract.ExitUsage, contract.CodeUsage},
+		{"--json=true", contract.ExitCodeFor(contract.CodeNotInitialized), contract.CodeNotInitialized},
+		{"--json", contract.ExitCodeFor(contract.CodeNotInitialized), contract.CodeNotInitialized},
+	} {
+		t.Run(c.flag, func(t *testing.T) {
+			code, stdout, stderr := wp01Run(t, "show", "wiki/concepts/a.md", "--at", "base", c.flag, "--root", uninit)
+			if code != c.exit {
+				t.Errorf("exit = %d, want %d (stderr %q)", code, c.exit, stderr)
+			}
+			if stdout != "" {
+				t.Errorf("stdout must be empty, got %q", stdout)
+			}
+			if n := len(wp01NonEmptyLines(stderr)); n != 1 {
+				t.Errorf("stderr must be one envelope line, got %q", stderr)
+			}
+			if env := wp01Envelope(t, stderr); env.Error.Code != c.code {
+				t.Errorf("code = %q, want %q (message %q)", env.Error.Code, c.code, env.Error.Message)
+			}
+		})
 	}
 }
 

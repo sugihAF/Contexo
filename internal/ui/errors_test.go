@@ -490,6 +490,32 @@ func wp01Tree() map[string]*cobra.Command {
 	}
 }
 
+// E21: a failure of `ctx show` is always an envelope, whatever its json flag
+// reads (or whether it has one). Only the top-level show counts.
+func TestEnvelopeModeShowAlways(t *testing.T) {
+	tree := wp01Tree()
+	show := tree["show"]
+	if err := show.Flags().Set("json", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if !EnvelopeMode(show, []string{"show", "wiki/a.md", "--at", "base", "--json=false"}) {
+		t.Error("show with --json=false must still be envelope mode")
+	}
+
+	root := &cobra.Command{Use: "ctx"}
+	bare := &cobra.Command{Use: "show", Run: func(*cobra.Command, []string) {}}
+	group := &cobra.Command{Use: "remote"}
+	nested := &cobra.Command{Use: "show", Run: func(*cobra.Command, []string) {}}
+	group.AddCommand(nested)
+	root.AddCommand(bare, group)
+	if !EnvelopeMode(bare, []string{"show", "wiki/a.md"}) {
+		t.Error("ctx show without a json flag must be envelope mode")
+	}
+	if EnvelopeMode(nested, []string{"remote", "show"}) {
+		t.Error("a nested show (ctx remote show) is not ctx show")
+	}
+}
+
 func TestEnvelopeModeRules(t *testing.T) {
 	type tc struct {
 		name string

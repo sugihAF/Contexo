@@ -118,10 +118,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	if args == nil {
 		args = []string{}
 	}
-	root := NewRootCmd()
-	root.SetArgs(args)
-	root.SetOut(stdout)
-	root.SetErr(stderr)
+	root := newExecRoot(args, stdout, stderr)
 
 	// ExecuteC returns the command that actually ran, not the root. That
 	// distinction is load-bearing: mode detection keys off the resolved
@@ -144,6 +141,30 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	ui.ForStderr(executed).RenderError(err)
 	return 1
+}
+
+// newExecRoot builds the root command for one Execute call, with args set
+// and its writers wired to stdout and stderr.
+//
+// A writer is installed only when it is not the process's own stream. cobra's
+// OutOrStderr() (and Print*/Usage, which use it) returns the SetOut writer
+// whenever one is set and falls back to os.Stderr only when none is, so
+// SetOut(os.Stdout) would move every OutOrStderr diagnostic (push's conflict
+// list, pull's reindex warning, cobra's "Unknown help topic" and usage text)
+// onto stdout: a human-output change, and a corrupt document in --json mode.
+// Leaving the real streams unset keeps the binary's routing identical to a
+// bare cobra root. Substitute writers (in-process tests) are installed as
+// before; OutOrStderr text then lands in the stdout writer, as cobra defines.
+func newExecRoot(args []string, stdout, stderr io.Writer) *cobra.Command {
+	root := NewRootCmd()
+	root.SetArgs(args)
+	if stdout != io.Writer(os.Stdout) {
+		root.SetOut(stdout)
+	}
+	if stderr != io.Writer(os.Stderr) {
+		root.SetErr(stderr)
+	}
+	return root
 }
 
 // GetRootDir returns the project root directory.

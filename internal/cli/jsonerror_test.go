@@ -265,10 +265,11 @@ func TestJSONErrorEnvelope(t *testing.T) {
 	}
 }
 
-// TestJSONErrorEnvelopeSubprocess runs the same table against a real ctx
-// binary, so the process exit codes (not just Execute's return value) and the
-// real os.Stdout/os.Stderr wiring of cmd/ctx/main.go are pinned.
-func TestJSONErrorEnvelopeSubprocess(t *testing.T) {
+// wp01BuildCtx builds the real ctx binary into a temp dir, skipping under
+// -short or without a go toolchain. It is built with the caller's
+// environment (warm build cache); only the runs get an isolated HOME.
+func wp01BuildCtx(t *testing.T) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("builds ctx; skipped under -short")
 	}
@@ -280,33 +281,101 @@ func TestJSONErrorEnvelopeSubprocess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	// Built with the caller's environment (warm build cache); only the runs
-	// below get an isolated HOME.
 	build := exec.Command(goBin, "build", "-o", bin, "github.com/sugihAF/contexo/cmd/ctx")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build ctx: %v\n%s", err, out)
 	}
+	return bin
+}
 
+// wp01RunBin runs the built ctx with HOME at home and the update check off,
+// and returns the process exit code and both streams.
+func wp01RunBin(t *testing.T, bin, home string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(),
+		"HOME="+home, "USERPROFILE="+home, "CONTEXO_NO_UPDATE_CHECK=1")
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("run ctx: %v", err)
+		}
+		code = ee.ExitCode()
+	}
+	return code, out.String(), errb.String()
+}
+
+// TestJSONErrorEnvelopeSubprocess runs the same table against a real ctx
+// binary, so the process exit codes (not just Execute's return value) and the
+// real os.Stdout/os.Stderr wiring of cmd/ctx/main.go are pinned.
+func TestJSONErrorEnvelopeSubprocess(t *testing.T) {
+	bin := wp01BuildCtx(t)
 	home := t.TempDir()
 	uninit := t.TempDir()
 	for _, c := range wp01EnvelopeCases(uninit) {
 		t.Run(c.name, func(t *testing.T) {
-			cmd := exec.Command(bin, c.args...)
-			cmd.Dir = t.TempDir()
-			cmd.Env = append(os.Environ(),
-				"HOME="+home, "USERPROFILE="+home, "CONTEXO_NO_UPDATE_CHECK=1")
-			var stdout, stderr bytes.Buffer
-			cmd.Stdout = &stdout
-			cmd.Stderr = &stderr
-			code := 0
-			if err := cmd.Run(); err != nil {
-				var ee *exec.ExitError
-				if !errors.As(err, &ee) {
-					t.Fatalf("run ctx: %v", err)
-				}
-				code = ee.ExitCode()
-			}
-			wp01CheckEnvelopeCase(t, c, code, stdout.String(), stderr.String())
+			code, stdout, stderr := wp01RunBin(t, bin, home, c.args...)
+			wp01CheckEnvelopeCase(t, c, code, stdout, stderr)
 		})
+	}
+
+	// cobra writes its own diagnostics ("Unknown help topic" plus usage)
+	// through OutOrStderr, as push's conflict list and pull's reindex
+	// warning do. In the binary that must stay stderr, as on main.
+	t.Run("OutOrStderr text stays on stderr", func(t *testing.T) {
+		code, stdout, stderr := wp01RunBin(t, bin, home, "help", "nosuchtopic")
+		if code != 0 {
+			t.Errorf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout must be empty, got %q", stdout)
+		}
+		if !strings.Contains(stderr, "Unknown help topic") {
+			t.Errorf("stderr lacks the help-topic message: %q", stderr)
+		}
+	})
+}
+
+// cobra's OutOrStderr() returns the SetOut writer whenever one is set and
+// falls back to os.Stderr only when none is. Execute must therefore leave the
+// real streams unset, so the binary routes every OutOrStderr write (push's
+// conflict list, pull's reindex warning, cobra's usage and help-topic text)
+// to stderr exactly as main did. Substitute writers are still installed, so
+// in-process tests capture output.
+func TestExecuteKeepsCobraStreamRouting(t *testing.T) {
+	sub := func(root *cobra.Command) *cobra.Command {
+		c, _, err := root.Find([]string{"push"})
+		if err != nil || c == root {
+			t.Fatalf("ctx push is not registered: %v", err)
+		}
+		return c
+	}
+
+	std := newExecRoot([]string{}, os.Stdout, os.Stderr)
+	for _, c := range []*cobra.Command{std, sub(std)} {
+		if w := c.OutOrStderr(); w != os.Stderr {
+			t.Errorf("%s: OutOrStderr() = %v, want os.Stderr", c.CommandPath(), w)
+		}
+		if w := c.OutOrStdout(); w != os.Stdout {
+			t.Errorf("%s: OutOrStdout() = %v, want os.Stdout", c.CommandPath(), w)
+		}
+		if w := c.ErrOrStderr(); w != os.Stderr {
+			t.Errorf("%s: ErrOrStderr() = %v, want os.Stderr", c.CommandPath(), w)
+		}
+	}
+
+	var out, errb bytes.Buffer
+	buffered := newExecRoot([]string{}, &out, &errb)
+	for _, c := range []*cobra.Command{buffered, sub(buffered)} {
+		if c.OutOrStdout() != &out {
+			t.Errorf("%s: OutOrStdout() is not the stdout buffer", c.CommandPath())
+		}
+		if c.ErrOrStderr() != &errb {
+			t.Errorf("%s: ErrOrStderr() is not the stderr buffer", c.CommandPath())
+		}
 	}
 }
