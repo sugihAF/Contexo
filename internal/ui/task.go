@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -24,9 +26,10 @@ type Task struct {
 	label   string
 	started time.Time
 
-	mu   sync.Mutex
-	prog *tea.Program
-	done chan struct{}
+	mu      sync.Mutex
+	prog    *tea.Program
+	done    chan struct{}
+	watched chan struct{} // closed once the ^C watcher has stopped
 }
 
 func (u *UI) Task(label string) *Task {
@@ -58,10 +61,12 @@ func (t *Task) start() {
 		tea.WithoutCatchPanics(),
 	)
 	done := make(chan struct{})
+	watched := make(chan struct{})
 
 	t.mu.Lock()
 	t.prog = prog
 	t.done = done
+	t.watched = watched
 	t.mu.Unlock()
 
 	// The goroutine closes over the locals, never the fields: it may first be
@@ -70,7 +75,31 @@ func (t *Task) start() {
 		defer close(done)
 		_, _ = prog.Run()
 	}()
+
+	// With input off, ^C is a real SIGINT, and bubbletea's own handler is off
+	// (WithoutSignalHandler). Dying on it directly would skip the program's
+	// shutdown and leave the cursor hidden and bracketed paste on, so while
+	// the spinner is up, ^C kills the program, waits for it to restore the
+	// terminal, and only then exits. finish waits for this watcher, so a
+	// finished Task never handles a later ^C.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		defer close(watched)
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			prog.Kill()
+			<-done
+			interruptExit()
+		case <-done:
+		}
+	}()
 }
+
+// interruptExit ends the process after ^C during a spinner, with the status a
+// shell reports for SIGINT. Tests replace it to observe the interrupt.
+var interruptExit = func() { os.Exit(130) }
 
 // Detail updates the trailing context on the live line. No-op off a TTY --
 // the non-TTY contract is exactly two lines, and a third would break the
@@ -95,11 +124,13 @@ func (t *Task) finish(emit func(string, ...any), format string, a ...any) {
 	p := t.prog
 	t.prog = nil
 	done := t.done
+	watched := t.watched
 	t.mu.Unlock()
 
 	if p != nil {
 		p.Quit()
 		<-done
+		<-watched
 	}
 	if t.u.mode.Machine {
 		return

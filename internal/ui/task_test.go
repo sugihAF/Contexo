@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -115,16 +116,25 @@ func TestTaskFailBeforeGoroutineRuns(t *testing.T) {
 	}
 }
 
-// Detail before the program runs blocks in Send until the event loop starts;
-// it must neither deadlock nor leave Done with a program it cannot stop.
+// Detail issued before the program runs, racing Done: Detail either blocks in
+// Send until the event loop starts or finds t.prog already cleared. Neither
+// may deadlock, and the spinner goroutine, scheduled only after both, must
+// still run the program it was handed (the old code re-read the cleared
+// field and panicked in Program.Run).
 func TestTaskDetailBeforeRun(t *testing.T) {
 	wp03IsolateHome(t)
 	wp03SingleProc(t)
 	var buf bytes.Buffer
 	u := New(&buf, Mode{TTY: true, Dark: true})
 	tk := u.Task("Pulling")
-	tk.Detail("3 pages")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tk.Detail("3 pages")
+	}()
 	tk.Done("Pulled 3 pages")
+	wg.Wait()
 	if !strings.Contains(buf.String(), "Pulled 3 pages") {
 		t.Errorf("missing completion text: %q", buf.String())
 	}
@@ -149,7 +159,10 @@ func TestTaskQuickSuccession(t *testing.T) {
 // The spinner reads no keys. On bubbletea's default input it would put a
 // terminal stdin into raw mode (^C becomes a dropped KeyMsg, not SIGINT), or
 // open /dev/tty / CONIN$ when stdin is not a terminal, whose close can block
-// behind a pending read. A stdin that never reaches EOF must not hold Done up.
+// behind a pending read. A stdin that never reaches EOF must not hold Done up,
+// and the spinner must still draw: with default input and no openable
+// /dev/tty (CI, sandboxes) Run fails before rendering anything. On a real
+// terminal only a pty-driven test could see the raw-mode half.
 func TestTaskDoesNotReadStdin(t *testing.T) {
 	wp03IsolateHome(t)
 	r, w, err := os.Pipe()
@@ -178,5 +191,95 @@ func TestTaskDoesNotReadStdin(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Waited") {
 		t.Errorf("missing completion text: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Waiting") {
+		t.Errorf("spinner never rendered (bubbletea fell back to default input?): %q", buf.String())
+	}
+}
+
+// ^C during a live spinner: with input disabled the terminal stays cooked, so
+// ^C raises a real SIGINT. Exiting there directly would skip bubbletea's
+// shutdown and leave the cursor hidden and bracketed paste on. The spinner
+// must restore the terminal first, then exit with 130 (interruptExit).
+func TestTaskInterruptRestoresTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+	}
+	wp03IsolateHome(t)
+	exited := make(chan struct{})
+	prev := interruptExit
+	interruptExit = func() { close(exited) }
+	t.Cleanup(func() { interruptExit = prev })
+
+	var buf bytes.Buffer
+	u := New(&buf, Mode{TTY: true, Dark: true})
+	tk := u.Task("Pushing")
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := self.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("^C during the spinner did not reach interruptExit within 5s")
+	}
+	out := buf.String()
+	for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l"} {
+		if !strings.Contains(out, seq) {
+			t.Errorf("terminal not restored before exit: missing %q in %q", seq, out)
+		}
+	}
+	tk.Done("unreachable in production") // must not hang on a killed program
+}
+
+// A finished Task must have stopped watching for ^C before Done returns: a
+// watcher still registered when a later ^C arrives would exit the process
+// itself, without the live spinner restoring the terminal.
+func TestTaskInterruptAfterFinishedTask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+	}
+	wp03IsolateHome(t)
+	wp03SingleProc(t)
+	var mu sync.Mutex
+	calls := 0
+	first := make(chan struct{}, 1)
+	prev := interruptExit
+	interruptExit = func() {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		select {
+		case first <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { interruptExit = prev })
+
+	var buf bytes.Buffer
+	u := New(&buf, Mode{TTY: true, Dark: true})
+	u.Task("First").Done("first done")
+	tk := u.Task("Second")
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := self.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("^C during the second spinner did not reach interruptExit within 5s")
+	}
+	tk.Done("second done")
+	time.Sleep(50 * time.Millisecond) // let any stale watcher run
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("interruptExit ran %d times, want once (a finished Task was still watching ^C)", calls)
 	}
 }
