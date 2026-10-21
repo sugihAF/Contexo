@@ -1,0 +1,39 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "https://api.contexo.live",
+  "repo_id": "acme-payments",
+  "head": "1fc3528d39ebacc4610808cc2475a56c44d2a992",
+  "written": [
+    {
+      "path": "wiki/concepts/idempotency-keys.md",
+      "sha": "f8d742d029e7090b5663924940d48bb74ddbb53f",
+      "kind": "update"
+    }
+  ],
+  "adopted": [],
+  "skipped": [
+    {
+      "path": "wiki/entities/Card-Vault.md",
+      "state": "incoming_new",
+      "reason": "case_collision",
+      "server_sha": "1fc3528d39ebacc4610808cc2475a56c44d2a992"
+    },
+    {
+      "path": "wiki/entities/card-vault.md",
+      "state": "incoming",
+      "reason": "case_collision",
+      "server_sha": "b6ce579f0db4aeb7f25e3d70bc780adbb89da7b5"
+    }
+  ],
+  "reindexed": true,
+  "warnings": [
+    {
+      "code": "case_collision",
+      "message": "2 paths differ only by letter case; pull skipped both: wiki/entities/Card-Vault.md, wiki/entities/card-vault.md",
+      "paths": [
+        "wiki/entities/Card-Vault.md",
+        "wiki/entities/card-vault.md"
+      ]
+    }
+  ]
+}

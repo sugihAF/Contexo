@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":12,"error":{"code":"busy","message":"push: another ctx process holds .contexo/.sync/lock (pid 48213 on alices-mbp.local, running push)","advice":[],"retryable":true,"details":{"pid":48213,"host":"alices-mbp.local","command":"push","started_at":"2026-11-03T09:13:55Z"}}}

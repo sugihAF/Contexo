@@ -1,10 +1,8 @@
 package sync
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 )
 
@@ -28,30 +26,28 @@ type DistillResponse struct {
 // Today this always returns an error because the server stub returns 501.
 // The function exists so the CLI's --fallback-server wiring is real and we
 // can swap in the live implementation in Phase 4 without re-plumbing.
+// Like every Client method it goes through do() (E15), so it sends
+// X-Contexo-Client and maps failures to *HTTPError / *NetworkError.
 func (c *Client) ServerDistill(repoID string, req *DistillRequest) (*DistillResponse, error) {
 	url := fmt.Sprintf("%s/v1/repos/%s/sync/distill", c.baseURL, repoID)
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("sync: distill marshal: %w", err)
 	}
-	httpReq, _ := http.NewRequest("POST", url, bytes.NewReader(body))
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(httpReq)
+	resp, data, err := c.request("POST", url, body, "distill")
 	if err != nil {
-		return nil, fmt.Errorf("sync: distill: %w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotImplemented {
-		return nil, fmt.Errorf("server-side distillation not implemented (planned for Phase 4)")
+		return nil, NewHTTPError(resp.StatusCode, data,
+			"server-side distillation not implemented (planned for Phase 4)", nil, false)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sync: distill failed (%d): %s", resp.StatusCode, string(data))
+		return nil, statusError(resp, data, "sync: distill failed (%d): %s")
 	}
 	var dr DistillResponse
 	if err := json.Unmarshal(data, &dr); err != nil {
-		return nil, fmt.Errorf("sync: parse distill response: %w", err)
+		return nil, parseError(resp, data, "distill response", err)
 	}
 	return &dr, nil
 }

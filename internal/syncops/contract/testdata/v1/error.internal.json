@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":1,"error":{"code":"internal","message":"status: open /Users/alice/code/payments/.contexo/.sync/bases.json: permission denied","advice":[],"retryable":false}}

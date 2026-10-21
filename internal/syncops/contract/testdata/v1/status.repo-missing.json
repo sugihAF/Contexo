@@ -1,0 +1,113 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2026-11-03T09:28:03Z",
+  "offline": false,
+  "root": "/Users/alice/code/payments",
+  "contexo_dir": "/Users/alice/code/payments/.contexo",
+  "project": {
+    "repo_id": "acme-payments",
+    "config_server_url": "https://api.contexo.live",
+    "dashboard_url": "https://app.contexo.live",
+    "dashboard_page_url_template": "https://app.contexo.live/repos/acme-payments/page/{path}"
+  },
+  "server": {
+    "url": "https://api.contexo.live",
+    "url_source": "credentials",
+    "version": "0.7.0",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "global",
+    "token_kind": "pat",
+    "user_name": "Alice Tan",
+    "user_email": "alice@acme.dev"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2026-11-03T09:28:03Z",
+    "repo_exists": false,
+    "page_count": 0
+  },
+  "counts": {
+    "unchanged": 0,
+    "modified": 0,
+    "new": 3,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 3,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "raw/sessions/2026-11-03-refund-retries.md",
+      "state": "new",
+      "type": "source",
+      "slug": "2026-11-03-refund-retries",
+      "title": "Refund retries session",
+      "tags": [
+        "refunds"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-03T08:30:00Z",
+      "local": {
+        "file": "raw/sessions/2026-11-03-refund-retries.md",
+        "hash": "sha256:fe4f2354c169bf58393a4949a54efc116d2e362c47cb2d025bf60cd9542979f5"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "new",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "Retry policy",
+      "tags": [
+        "payments",
+        "retries"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-10-21T10:04:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:584b1c06a07adf0adecf4b18819a85960deb52d3fb308551b17ff22d58b4aa64"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "new",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "Ledger service",
+      "tags": [
+        "ledger"
+      ],
+      "author": "alice",
+      "updated": "2026-10-21T09:40:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:1500c09037cc842d5924c5d8bf7e2ffa55466d359078d362477c75b45ba7cd29"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

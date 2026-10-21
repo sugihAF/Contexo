@@ -1,0 +1,11 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "https://api.contexo.live",
+  "repo_id": "acme-payments",
+  "head": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d",
+  "written": [],
+  "adopted": [],
+  "skipped": [],
+  "reindexed": false,
+  "warnings": []
+}

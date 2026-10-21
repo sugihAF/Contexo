@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":7,"error":{"code":"network","message":"sync: push: Post \"https://api.contexo.live/v1/repos/acme-payments/sync/push\": dial tcp: lookup api.contexo.live: no such host","advice":[],"retryable":true}}

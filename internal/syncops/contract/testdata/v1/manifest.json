@@ -1,0 +1,445 @@
+{
+  "contract_version": 1,
+  "fixtures": [
+    {
+      "file": "classify.cases.json",
+      "schema": null,
+      "command": null,
+      "stream": "data",
+      "exit_code": null,
+      "sha256": "2733cda8cc8fafafdf2a6b75cb10583128e2d6cf6b2c9896db69ac8745847132"
+    },
+    {
+      "file": "error.auth_rejected.json",
+      "schema": "ctx.error.v1",
+      "command": "pull",
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "fa39ed9e8970acdc0136b5ab26072af36ef958e7e7f2087ceb98b94527dc4824"
+    },
+    {
+      "file": "error.base_unavailable.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "cd6130eef03f67c8d7eb86551de74c34263caf482e3bf1dbe1de1e6ef209fb20"
+    },
+    {
+      "file": "error.busy.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 12,
+      "sha256": "f0ef46a57b9ef0791cfe319c4b38b28cee176191bcf1bcb09a568131bbdf60bf"
+    },
+    {
+      "file": "error.conflict.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "845fcbc2068a8c21b8d2f02c35618b3bf1a2c6ff69f3f7948199d1a2495da825"
+    },
+    {
+      "file": "error.distill_required.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 9,
+      "sha256": "f6bd3baf93626c31026d0f7717cad3710e711f78ace19dcd5539ad803fca98e9"
+    },
+    {
+      "file": "error.forbidden.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "7626c3d3368bb9eb8890ad7728109132fdb7e63441050c261c704fca481a0760"
+    },
+    {
+      "file": "error.internal.json",
+      "schema": "ctx.error.v1",
+      "command": "status",
+      "stream": "stderr",
+      "exit_code": 1,
+      "sha256": "2ad0eb87e816ab3cb08e7846ba83534d9abedce4800d37bd31e95fbe0379677f"
+    },
+    {
+      "file": "error.invalid_path.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 3,
+      "sha256": "7bbb448b4404e881c6f25635c7e77100f9710faa660480e41e2598ce6f908913"
+    },
+    {
+      "file": "error.network.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "6a8f4447ac3a7fa9ba0c32202f9e6c43194f6cb3827c1b74983fde1c4db0a47c"
+    },
+    {
+      "file": "error.not_authenticated.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "3ca31777b46598f07854c5987aa1086fbcc9a3725ff57169d039c2c19328a524"
+    },
+    {
+      "file": "error.not_implemented.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 10,
+      "sha256": "c62a54f50be19c908642473324d599d3b264fee0826f2ed60b6584fab61dfa1d"
+    },
+    {
+      "file": "error.not_initialized.json",
+      "schema": "ctx.error.v1",
+      "command": "status",
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "99d09347da05c65d04a0f5ef8c7fb67a29275dbbc5c7c76cfe7527fcdd03a071"
+    },
+    {
+      "file": "error.not_resolvable.json",
+      "schema": "ctx.error.v1",
+      "command": "resolve",
+      "stream": "stderr",
+      "exit_code": 9,
+      "sha256": "0d8269648b09e32a3551ec341ce8d7ef9a5da30348a270647bdd498d622f3b14"
+    },
+    {
+      "file": "error.page_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "6a1805460e3045ff6b76408df1b7019321d506ad58386dd45a9066182fa86c9d"
+    },
+    {
+      "file": "error.quota_exceeded.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 11,
+      "sha256": "52cc5bb4bdab16de996b50b1ed3b2f93ff61b8c3f9461af084af6e99b429a5bb"
+    },
+    {
+      "file": "error.rate_limited.json",
+      "schema": "ctx.error.v1",
+      "command": "pull",
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "dc45a5dbc0975f5a45c920539bcb4c9e708114714fc925db422e7114705d97e8"
+    },
+    {
+      "file": "error.repo_not_configured.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "e3a62705be40d13c14b2da770b92efd662a1499fd786e625d980bf8f82966ebe"
+    },
+    {
+      "file": "error.repo_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "0a243a50624a46f1ffcfc5f3d269858ad2006033f8c9ac75b56e225cd085cca6"
+    },
+    {
+      "file": "error.server_error.json",
+      "schema": "ctx.error.v1",
+      "command": "pull",
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "434f60286d43856d4bbfdfdc61e56596469d6151b863d392ceb9a50005b22fac"
+    },
+    {
+      "file": "error.server_unresolved.json",
+      "schema": "ctx.error.v1",
+      "command": "pull",
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "ff8e1b997924345758982494952e0f564fcf36769718d14002199f03d6f02717"
+    },
+    {
+      "file": "error.server_unsupported.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 10,
+      "sha256": "7796227b46a1693fc2182a785a238ecc59c89197e4a61328fa5fff6fd01aad77"
+    },
+    {
+      "file": "error.sha_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": "show",
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "cdfd5292702ce2da7a3e7997a8a8d96ef092819d65c6693a645b50971e88d6f1"
+    },
+    {
+      "file": "error.stale.json",
+      "schema": "ctx.error.v1",
+      "command": "resolve",
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "1020822f7f51896640d77bbac2451de8626629363b82f3da8a6267e64a570629"
+    },
+    {
+      "file": "error.usage.json",
+      "schema": "ctx.error.v1",
+      "command": "resolve",
+      "stream": "stderr",
+      "exit_code": 3,
+      "sha256": "8c4d6654b668b755da698c51427b8a5a20868d4bc574d76736b233432f30f88d"
+    },
+    {
+      "file": "pull.case-collision.json",
+      "schema": "ctx.pull.v1",
+      "command": "pull",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "0079ef7b070c4a1cc653338992903879df089c9200c57954dcb77ec39b0c8140"
+    },
+    {
+      "file": "pull.ok.json",
+      "schema": "ctx.pull.v1",
+      "command": "pull",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "5bc3f0df8e8f1e42e071e37972441b24dc3664916f44b02f354e385f032d4149"
+    },
+    {
+      "file": "pull.skipped-and-adopted.json",
+      "schema": "ctx.pull.v1",
+      "command": "pull",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "95b254c1ecdbf7171ff48dc0ad4c1b8d37ac94b837372b66966e07cffeca1495"
+    },
+    {
+      "file": "pull.up-to-date.json",
+      "schema": "ctx.pull.v1",
+      "command": "pull",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b7c6ca91c269f736279dd5fbb0ef1d8ee39b951e7ecdacc175ec0f07a6220213"
+    },
+    {
+      "file": "push.distill-bypassed.json",
+      "schema": "ctx.push.v1",
+      "command": "push",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "03a413db6e368d2a7a2631d9dd72ec485438ed0022a6120dba889e2abfa5ed6b"
+    },
+    {
+      "file": "push.dry-run.json",
+      "schema": "ctx.push.v1",
+      "command": "push",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b05d7782e3fcd0b062c99a4708752f0864c0be25cb21cd846d01a58c4e6ec40d"
+    },
+    {
+      "file": "push.nothing.json",
+      "schema": "ctx.push.v1",
+      "command": "push",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "e6530ed823adfe967fae5002e3d37ba5d58b131c620dca5fb44f0619c0439111"
+    },
+    {
+      "file": "push.ok.json",
+      "schema": "ctx.push.v1",
+      "command": "push",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "568d793c6385a58514944cb71d766dc3420d4396bc2eeb5835436fdbc994b4a9"
+    },
+    {
+      "file": "push.partial-conflict.json",
+      "schema": "ctx.push.v1",
+      "command": "push",
+      "stream": "stdout",
+      "exit_code": 6,
+      "sha256": "ecc59e6648392cfe3d980607c228c20b73245e52986b97a66b61aa569e04c453"
+    },
+    {
+      "file": "push.partial-conflict.stderr.json",
+      "schema": "ctx.error.v1",
+      "command": "push",
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "845fcbc2068a8c21b8d2f02c35618b3bf1a2c6ff69f3f7948199d1a2495da825"
+    },
+    {
+      "file": "raw/retry-policy.base.md",
+      "schema": null,
+      "command": "show",
+      "stream": "raw",
+      "exit_code": 0,
+      "sha256": "7c2b6b26489969aceb086630ff6db67caaa67802c66d2f6f59afc64c00d6b801"
+    },
+    {
+      "file": "raw/retry-policy.server.md",
+      "schema": null,
+      "command": "show",
+      "stream": "raw",
+      "exit_code": 0,
+      "sha256": "99d8d72552d29a2212bd87737e2c92679c1829d64932135d090768e8d75e47f8"
+    },
+    {
+      "file": "resolve.ours.json",
+      "schema": "ctx.resolve.v1",
+      "command": "resolve",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b25b957cccc38b44d8f670fe28e76994f7c2556995fb36bce41b752b367e9cad"
+    },
+    {
+      "file": "resolve.theirs.json",
+      "schema": "ctx.resolve.v1",
+      "command": "resolve",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "a947ed19a0e31578db17a4fb14a05b1644e09c958f54170c4f371bc5d5da748a"
+    },
+    {
+      "file": "status.all-states.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "9ea38cbea897b6aa4f037c7acc28f10668e294a72e8905cf49aa4ddb28edd877"
+    },
+    {
+      "file": "status.auth-rejected.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "cecee2387e57efdcfa7118a3436e771edd34c206726b3af0ae05942753882b46"
+    },
+    {
+      "file": "status.captures-blocking.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "3f9433ed315a282a03cec6fa112b50dfa6f6357fef7c490554381931f629712a"
+    },
+    {
+      "file": "status.empty.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "6a8dbb7c6ed7767d1c0962bd384c59e6c90bb9732bb4c2f7783f856f6094593a"
+    },
+    {
+      "file": "status.network-error.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "ed9f5a5352eccc1a54988bb9d8357ffafdab85caef61d8a80ff1cc3adc2c7bf7"
+    },
+    {
+      "file": "status.not-authenticated.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "1064d88cf8f4fbbda55fa41d50498f04317e50468e21903109bee9a87c7b42f7"
+    },
+    {
+      "file": "status.offline-nocache.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "440db78d854739687edb472068a37b12f2efa70edb2d4dee75e554d95427255f"
+    },
+    {
+      "file": "status.offline-sidecar.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b93a4154d34977be0a629892515ec6c632d01667e22ddbd05286349d63d3fcd0"
+    },
+    {
+      "file": "status.old-server.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "7cd0b0cfb2f90c025921546ebdf03b0f9b83323766ab52254bf58afb969a282d"
+    },
+    {
+      "file": "status.repo-missing.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "42c766d97bf12bbca3ac5428399cb42806b107856b8b1bb2f5b2f6e3611988c6"
+    },
+    {
+      "file": "status.short.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "1b60ccac6fb865e7fe16c32e3f3fb6052b5874d9724b3fb57ee578e2c3f79ee1"
+    },
+    {
+      "file": "status.url-mismatch.json",
+      "schema": "ctx.status.v1",
+      "command": "status",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "89464271c8dfaac69ed77df1f163e3f9510a3eeaafd7af03a9998bbe6c8d1b11"
+    },
+    {
+      "file": "version.contract2.json",
+      "schema": "ctx.version.v1",
+      "command": "version",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "e97441fad259c2b6c2f905f3dcdc4a4e262645b3379271bcee2bfade40cd62c3"
+    },
+    {
+      "file": "version.dev.json",
+      "schema": "ctx.version.v1",
+      "command": "version",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "9bf26545981ac246d32a3326b1174407ce6e5fc071f04505faf5333c12599e8d"
+    },
+    {
+      "file": "version.missing-caps.json",
+      "schema": "ctx.version.v1",
+      "command": "version",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f84dabb11e32b052f6ffc01c4042306e83babaac9259325599a0eaf6a564a519"
+    },
+    {
+      "file": "version.release.json",
+      "schema": "ctx.version.v1",
+      "command": "version",
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "3a0470ef1ddbe41590d180fabfdddb35aa0ceb054e40b4a5a5b6b2b58d679010"
+    }
+  ]
+}

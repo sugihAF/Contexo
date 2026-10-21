@@ -1,0 +1,175 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2026-11-03T09:20:31Z",
+  "offline": true,
+  "root": "/Users/alice/code/payments",
+  "contexo_dir": "/Users/alice/code/payments/.contexo",
+  "project": {
+    "repo_id": "acme-payments",
+    "config_server_url": "https://api.contexo.live",
+    "dashboard_url": "https://app.contexo.live",
+    "dashboard_page_url_template": "https://app.contexo.live/repos/acme-payments/page/{path}",
+    "last_pull_sha": "c41b7e09d2f85a36e1b94c07d5a28f6e3b19c0d4"
+  },
+  "server": {
+    "url": "https://api.contexo.live",
+    "url_source": "credentials",
+    "capabilities_known": false,
+    "capabilities": []
+  },
+  "auth": {
+    "state": "unchecked",
+    "credentials_source": "global",
+    "token_kind": "pat",
+    "user_name": "Alice Tan",
+    "user_email": "alice@acme.dev"
+  },
+  "remote": {
+    "source": "none",
+    "page_count": 0
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 1,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 1,
+    "deleted_local": 0,
+    "invalid": 1,
+    "unverified": 0,
+    "ahead": 2,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "raw/sessions/2026-11-03-refund-retries.md",
+      "state": "new",
+      "type": "source",
+      "slug": "2026-11-03-refund-retries",
+      "title": "Refund retries session",
+      "tags": [
+        "refunds"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-03T08:30:00Z",
+      "local": {
+        "file": "raw/sessions/2026-11-03-refund-retries.md",
+        "hash": "sha256:fe4f2354c169bf58393a4949a54efc116d2e362c47cb2d025bf60cd9542979f5"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "Ledger reconciliation",
+      "tags": [
+        "ledger",
+        "reconciliation"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-10-29T08:40:00Z",
+      "reasoning_summary": "Nightly reconciliation matches ledger entries against PSP settlement files and flags drift above 0.01%.",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:e6c017ee461db2a42ef1fb4ec66be2fd691997c24bef705f70aa5e1e6c2df240"
+      },
+      "base": {
+        "sha": "dbcb98ce8f3dd88a4248a84a12d867cc93292661",
+        "hash": "sha256:e6c017ee461db2a42ef1fb4ec66be2fd691997c24bef705f70aa5e1e6c2df240",
+        "synced_at": "2026-10-29T08:45:14Z",
+        "stale": false
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "conflict",
+      "conflict_kind": "both_modified",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "Retry policy",
+      "tags": [
+        "payments",
+        "retries"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-03T09:10:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:9c8b7a6f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0f9e8d7c6b5a4f"
+      },
+      "base": {
+        "sha": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+        "hash": "sha256:1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3",
+        "synced_at": "2026-10-30T14:22:09Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "Ledger service",
+      "tags": [
+        "ledger"
+      ],
+      "author": "alice",
+      "updated": "2026-11-03T09:01:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f"
+      },
+      "base": {
+        "sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+        "hash": "sha256:6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e",
+        "synced_at": "2026-10-31T11:12:13Z",
+        "stale": false
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/payment-gateway.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/entities/payment-gateway.md"
+      },
+      "base": {
+        "sha": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "hash": "sha256:3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a",
+        "synced_at": "2026-10-25T15:00:00Z",
+        "stale": false
+      },
+      "invalid": {
+        "stage": "parse",
+        "message": "page: parse frontmatter: yaml: line 4: did not find expected key"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 1,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": [
+      {
+        "session_id": "b2f4c8e1-93a7-4d65-8c1f-7e0a5d3b9f42",
+        "turns": 3,
+        "updated_at": "2026-11-02T18:47:05Z",
+        "fresh": false
+      }
+    ]
+  },
+  "warnings": []
+}

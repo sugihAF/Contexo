@@ -1,0 +1,22 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "https://api.contexo.live",
+  "repo_id": "acme-payments",
+  "head": "17b0dcc7458f3dbc03c46536ca67312828b45514",
+  "written": [
+    {
+      "path": "wiki/analyses/psp-latency-2026-10.md",
+      "sha": "69ffa45b35736e1759952fad8fce29310e214eac",
+      "kind": "create"
+    },
+    {
+      "path": "wiki/concepts/webhook-signing.md",
+      "sha": "17b0dcc7458f3dbc03c46536ca67312828b45514",
+      "kind": "update"
+    }
+  ],
+  "adopted": [],
+  "skipped": [],
+  "reindexed": true,
+  "warnings": []
+}

@@ -22,6 +22,9 @@ func TestBuildCoversTheWholeCommandTree(t *testing.T) {
 		"ctx activity", "ctx status", "ctx log", "ctx history", "ctx diff",
 		"ctx evolution", "ctx capture", "ctx hooks", "ctx migrate", "ctx generate",
 		"ctx version", "ctx update",
+		// Hidden wave-0 stubs (WP-0.1); wave 1 unhides them. Presence, not
+		// an exact list, so unhiding keeps this valid.
+		"ctx show", "ctx resolve", "ctx repair",
 	} {
 		if _, ok := byPath[want]; !ok {
 			t.Errorf("missing command %q", want)

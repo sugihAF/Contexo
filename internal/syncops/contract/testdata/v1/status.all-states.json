@@ -1,0 +1,399 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2026-11-03T09:14:07Z",
+  "offline": false,
+  "root": "/Users/alice/code/payments",
+  "contexo_dir": "/Users/alice/code/payments/.contexo",
+  "project": {
+    "repo_id": "acme-payments",
+    "config_server_url": "https://api.contexo.live",
+    "dashboard_url": "https://app.contexo.live",
+    "dashboard_page_url_template": "https://app.contexo.live/repos/acme-payments/page/{path}",
+    "last_pull_sha": "c41b7e09d2f85a36e1b94c07d5a28f6e3b19c0d4"
+  },
+  "server": {
+    "url": "https://api.contexo.live",
+    "url_source": "credentials",
+    "version": "0.7.0",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "global",
+    "token_kind": "pat",
+    "user_name": "Alice Tan",
+    "user_email": "alice@acme.dev"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2026-11-03T09:14:07Z",
+    "repo_exists": true,
+    "head": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d",
+    "page_count": 10
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 2,
+    "incoming": 1,
+    "incoming_new": 1,
+    "conflict": 2,
+    "deleted_local": 1,
+    "invalid": 2,
+    "unverified": 1,
+    "ahead": 3,
+    "behind": 2
+  },
+  "pages": [
+    {
+      "path": "raw/sessions/2026-11-02-retry-budget.md",
+      "state": "new",
+      "type": "source",
+      "slug": "2026-11-02-retry-budget",
+      "title": "Retry budget review",
+      "tags": [
+        "payments",
+        "retries"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-02T17:40:00Z",
+      "local": {
+        "file": "raw/sessions/2026-11-02-retry-budget.md",
+        "hash": "sha256:fab31e5ece5d52f7cb2988329972470281fa3b3b75555e0cc6396439b7a776d9"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/analyses/q3-chargebacks.md",
+      "state": "incoming_new",
+      "tags": [],
+      "remote": {
+        "sha": "d41298b0d3d6f2a04e41fef0d4761b023cb6bebd",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-02T16:05:41Z",
+        "message": "Add Q3 chargeback analysis"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/idempotency-keys.md",
+      "state": "incoming",
+      "type": "concept",
+      "slug": "idempotency-keys",
+      "title": "Idempotency keys",
+      "tags": [
+        "api",
+        "payments"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-10-28T09:58:00Z",
+      "local": {
+        "file": "wiki/concepts/idempotency-keys.md",
+        "hash": "sha256:2a21c0e22add741161074e06fcd70e62039b229e99b0ad02dd10ebc15ca97ec5"
+      },
+      "base": {
+        "sha": "668881d41b49278e6366e71be328597cbdc76ffa",
+        "hash": "sha256:2a21c0e22add741161074e06fcd70e62039b229e99b0ad02dd10ebc15ca97ec5",
+        "synced_at": "2026-10-28T10:02:15Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "f8d742d029e7090b5663924940d48bb74ddbb53f",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-01T13:27:09Z",
+        "message": "Document idempotency key TTL"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "Ledger reconciliation",
+      "tags": [
+        "ledger",
+        "reconciliation"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-10-29T08:40:00Z",
+      "reasoning_summary": "Nightly reconciliation matches ledger entries against PSP settlement files and flags drift above 0.01%.",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:e6c017ee461db2a42ef1fb4ec66be2fd691997c24bef705f70aa5e1e6c2df240"
+      },
+      "base": {
+        "sha": "dbcb98ce8f3dd88a4248a84a12d867cc93292661",
+        "hash": "sha256:e6c017ee461db2a42ef1fb4ec66be2fd691997c24bef705f70aa5e1e6c2df240",
+        "synced_at": "2026-10-29T08:45:14Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "dbcb98ce8f3dd88a4248a84a12d867cc93292661",
+        "author": "Alice Tan",
+        "email": "alice@acme.dev",
+        "time": "2026-10-29T08:45:12Z",
+        "message": "ctx push (3 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "conflict",
+      "conflict_kind": "both_modified",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "Retry policy",
+      "tags": [
+        "payments",
+        "retries"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-03T09:10:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:9c8b7a6f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0f9e8d7c6b5a4f"
+      },
+      "base": {
+        "sha": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+        "hash": "sha256:1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3",
+        "synced_at": "2026-10-30T14:22:09Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-03T07:55:30Z",
+        "message": "Tighten retry ceilings"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "state": "unverified",
+      "type": "concept",
+      "slug": "settlement-windows",
+      "title": "Settlement windows",
+      "tags": [
+        "settlement"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-03T08:52:00Z",
+      "local": {
+        "file": "wiki/concepts/settlement-windows.md",
+        "hash": "sha256:7e58ed50e50a648d7c6bd84bb4c02c93283332d8653250297863b02b3d6ec97f"
+      },
+      "base": {
+        "sha": "123415e4d01d0d03eea8d032df242aac6f8f657b",
+        "stale": true
+      },
+      "remote": {
+        "sha": "aedf7e29fd41e6f6dd5f7b3e02bd5d2dbc1634ba",
+        "author": "Alice Tan",
+        "email": "alice@acme.dev",
+        "time": "2026-11-02T19:31:47Z",
+        "message": "Add settlement cut-off times"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/webhook-signing.md",
+      "state": "conflict",
+      "conflict_kind": "both_added",
+      "type": "concept",
+      "slug": "webhook-signing",
+      "title": "Webhook signing",
+      "tags": [
+        "webhooks",
+        "security"
+      ],
+      "author": "alice",
+      "agent": "claude-code",
+      "updated": "2026-11-02T11:30:00Z",
+      "local": {
+        "file": "wiki/concepts/webhook-signing.md",
+        "hash": "sha256:5b4ef13bd4ce56fa77ee32c463ed4505e12d03a7831ca0e7baeb72d494526643"
+      },
+      "remote": {
+        "sha": "c8ec006c6bfcdbd8a78395f83554ffc30ed13070",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-02T11:18:52Z",
+        "message": "Add webhook signing notes"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/fraud-service.md",
+      "state": "deleted_local",
+      "tags": [],
+      "base": {
+        "sha": "5cfed4493d6b590bdbfa6b1c3b9576ddb139f7ab",
+        "hash": "sha256:87dc3b790770718753c0e5769a92455f5c5dea22c210c6d2472d87d325bd9996",
+        "synced_at": "2026-10-20T09:30:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "5dbaabe99e131393c56e1177e0c61873ff4c8db1",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-01T09:12:44Z",
+        "message": "Note fraud-service rule engine migration"
+      },
+      "notes": [
+        "remote_changed"
+      ]
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "Ledger service",
+      "tags": [
+        "ledger"
+      ],
+      "author": "alice",
+      "updated": "2026-11-03T09:01:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f"
+      },
+      "base": {
+        "sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+        "hash": "sha256:6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e",
+        "synced_at": "2026-10-31T11:12:13Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+        "author": "Alice Tan",
+        "email": "alice@acme.dev",
+        "time": "2026-10-31T11:12:10Z",
+        "message": "ctx push (2 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/payment-gateway.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/entities/payment-gateway.md"
+      },
+      "base": {
+        "sha": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "hash": "sha256:3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a",
+        "synced_at": "2026-10-25T15:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "author": "Alice Tan",
+        "email": "alice@acme.dev",
+        "time": "2026-10-25T14:59:58Z",
+        "message": "ctx push (1 pages)"
+      },
+      "invalid": {
+        "stage": "parse",
+        "message": "page: parse frontmatter: yaml: line 4: did not find expected key"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/payout-scheduler.md",
+      "state": "new",
+      "type": "entity",
+      "slug": "payout-scheduler",
+      "title": "Payout scheduler",
+      "tags": [
+        "payouts"
+      ],
+      "author": "alice",
+      "updated": "2026-10-24T16:38:00Z",
+      "local": {
+        "file": "wiki/entities/payout-scheduler.md",
+        "hash": "sha256:fca5c876bc9a6d3623dc60270f21e292bfc7a17aa9eebaa9a830d46df1b4e279"
+      },
+      "base": {
+        "sha": "6248f7d6c99ecc2cd055cacfb7c618d0ac5a463f",
+        "hash": "sha256:fca5c876bc9a6d3623dc60270f21e292bfc7a17aa9eebaa9a830d46df1b4e279",
+        "synced_at": "2026-10-24T16:40:02Z",
+        "stale": false
+      },
+      "notes": [
+        "missing_on_server"
+      ]
+    },
+    {
+      "path": "wiki/entities/refund-worker.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/entities/refund-worker.md"
+      },
+      "base": {
+        "sha": "176219ed32c7098fc425412824e7715443556b58",
+        "hash": "sha256:ed2d85835e97eea78f465c651e9a9045868e4c06072656a13c1439178a5ebcf6",
+        "synced_at": "2026-10-22T14:05:31Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "982090ab97808547c104891250779b847345de84",
+        "author": "Bob Lee",
+        "email": "bob@acme.dev",
+        "time": "2026-11-02T08:20:15Z",
+        "message": "Describe refund retry backoff"
+      },
+      "invalid": {
+        "stage": "path_mismatch",
+        "message": "page: path mismatch: frontmatter type entity, slug refund-service belongs at wiki/entities/refund-service.md",
+        "expected_path": "wiki/entities/refund-service.md"
+      },
+      "notes": [
+        "remote_changed"
+      ]
+    }
+  ],
+  "captures": {
+    "pending": 2,
+    "fresh": 1,
+    "blocks_push": false,
+    "sessions": [
+      {
+        "session_id": "5d0c6a3e-1f2b-4c7d-9e8f-0a1b2c3d4e5f",
+        "turns": 14,
+        "updated_at": "2026-11-03T09:12:40Z",
+        "fresh": true
+      },
+      {
+        "session_id": "b2f4c8e1-93a7-4d65-8c1f-7e0a5d3b9f42",
+        "turns": 3,
+        "updated_at": "2026-11-02T18:47:05Z",
+        "fresh": false
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "code": "base_repair_skipped",
+      "message": "1 page could not be verified against the server",
+      "paths": [
+        "wiki/concepts/settlement-windows.md"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":8,"error":{"code":"base_unavailable","message":"show: no verified base for wiki/concepts/webhook-signing.md","advice":[],"retryable":false}}
