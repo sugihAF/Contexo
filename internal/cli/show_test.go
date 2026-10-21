@@ -14,32 +14,6 @@ import (
 	"github.com/sugihAF/contexo/internal/ui"
 )
 
-// wp01Command returns the named top-level command of a fresh root.
-func wp01Command(t *testing.T, name string) *cobra.Command {
-	t.Helper()
-	for _, c := range NewRootCmd().Commands() {
-		if c.Name() == name {
-			return c
-		}
-	}
-	t.Fatalf("ctx %s is not registered", name)
-	return nil
-}
-
-// wp01ArgsCode runs cmd's Args validator and returns the contract code of its
-// error ("" when the args are accepted).
-func wp01ArgsCode(t *testing.T, cmd *cobra.Command, args ...string) contract.ErrorCode {
-	t.Helper()
-	if cmd.Args == nil {
-		t.Fatalf("%s has no Args validator", cmd.Name())
-	}
-	err := cmd.Args(cmd, args)
-	if err == nil {
-		return ""
-	}
-	return ui.ToContractError(err).Code
-}
-
 func TestShowStubHiddenAndFlags(t *testing.T) {
 	show := wp01Command(t, "show")
 	if !show.Hidden {

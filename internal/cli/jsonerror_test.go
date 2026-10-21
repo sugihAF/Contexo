@@ -20,7 +20,37 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/ui"
 )
+
+// wp01Command returns the named top-level command of a fresh root. It lives
+// in this frozen file, not in an inherited stub test, so a wave-1 owner can
+// rewrite show_test.go, resolve_test.go or repair_test.go without breaking
+// another owner's file.
+func wp01Command(t *testing.T, name string) *cobra.Command {
+	t.Helper()
+	for _, c := range NewRootCmd().Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	t.Fatalf("ctx %s is not registered", name)
+	return nil
+}
+
+// wp01ArgsCode runs cmd's Args validator and returns the contract code of its
+// error ("" when the args are accepted).
+func wp01ArgsCode(t *testing.T, cmd *cobra.Command, args ...string) contract.ErrorCode {
+	t.Helper()
+	if cmd.Args == nil {
+		t.Fatalf("%s has no Args validator", cmd.Name())
+	}
+	err := cmd.Args(cmd, args)
+	if err == nil {
+		return ""
+	}
+	return ui.ToContractError(err).Code
+}
 
 // wp01IsolateEnv points HOME (and USERPROFILE) at a fresh temp dir and turns
 // the update check off, so no test reads or writes the developer's real

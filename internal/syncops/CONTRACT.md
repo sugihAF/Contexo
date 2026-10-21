@@ -268,6 +268,9 @@ removes a frozen identifier.
   21 rows: r01-r19 plus r03b and r12b. `expected.state` `""` means no entry
   (r07). `scm_group` is null where `SCMGroup` returns `""` (unchanged,
   unverified, r07).
+- `push.dry-run.json`: a dry run writes nothing, neither the server nor
+  `.contexo/.sync` (E31(h)); the document has `dry_run` true, no `new_head`,
+  `pushed` entries without `sha` and `conflicts` `[]`.
 - Hygiene: emails only `@acme.dev`; no access tokens; page and commit SHAs
   are full 40-hex lowercase; times are `YYYY-MM-DDTHH:MM:SSZ`; no fixture lists
   `pages.etag` or `remote.source` `cache`; 24 `error.<code>.json` files;
@@ -291,3 +294,6 @@ WP-0.I.
 | 9 | An unknown duck-typed `ErrorCode()` maps to internal; an empty one is ignored and the chain walk continues. | The envelope code must be one of the 24 known codes, consistent with `ExitCodeFor` (unknown gives 1). An empty code must not hide a coded error deeper in the chain. | A code a parallel WP adds before the table knows it surfaces as internal (exit 1) until the table is extended. |
 | 10 | `EnvelopeMode` is false for `ctx mcp`, `ctx capture turn` and shell completion, even with a raw `--json`. | These surfaces own their streams (MCP stdio JSON-RPC; capture hooks keep stdout byte-empty; cobra completion). | A `--json` failure there exits 1 with human text instead of an envelope. |
 | 11 | `http_status` carries the real status, so a garbled 200 reports 200. | It is defined as the status of the response that caused the error; the real value keeps FakeRemote/client parity exact. | Logs show server_error with http_status 200, which looks odd; behaviour follows the code (retryable). |
+| 12 | `ctx show`'s hidden `--json` cannot be set false: `--json=false` fails flag parsing (usage, exit 3), and `EnvelopeMode` treats the top-level `ctx show` as envelope mode whatever its flags. | E20/E21 make show always machine mode; a plain bool flag let `--json=false` switch show to human rendering, exit 1 and the update nudge. | A caller passing `--json=false` to show gets a usage envelope; show has no human mode to fall back to. |
+| 13 | With a live listing, every page an online status leaves unverified is named by a `base_repair_skipped` warning; an offline status never carries that warning. | Contract status ONLINE ("those pages stay unverified and warning base_repair_skipped is added"), E5 (EnsureBase is a no-op without a listing) and E12. The canonical fixtures follow it. | WP-1.1 must warn for every online unverified page, or its output disagrees with `status.all-states.json` / `status.old-server.json`. |
+| 14 | Status fixtures obey invariants read from the contract prose: `authenticated` implies `remote.source` live; offline implies `server.capabilities_known` false; source none implies no `repo_exists`/`head` and `page_count` 0; `remote.error` implies source none; `server_outdated` iff capabilities are known and a v1 server capability is missing (E13); a remote side without a live listing carries only `sha` (E9). | The fixtures must be documents a conforming ctx can emit; `TestStatusFixturesConsistent` checks them. | If WP-1.1 reads one rule differently, its goldens (WP-2.2) disagree with a canonical fixture and one side changes then. |
