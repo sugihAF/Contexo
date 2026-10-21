@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	gosync "sync"
 	"testing"
@@ -822,6 +823,48 @@ func TestPush_JunkAuthorFallsBackToUser(t *testing.T) {
 	}
 	if commits[0].Author != "Alice" || commits[0].Email != "alice@example.com" {
 		t.Errorf("commit author %q <%s>, want Alice <alice@example.com>", commits[0].Author, commits[0].Email)
+	}
+}
+
+// TestPush_StatErrorNeverPurgesAnExistingRepo: if the repo directory cannot
+// be stat'ed (EACCES here; EMFILE or EIO in production), Exists reports false
+// for a repo that exists. The create path must then fail, never treat the repo
+// as new: purging "stale" rows there would wipe a live repo's membership.
+func TestPush_StatErrorNeverPurgesAnExistingRepo(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions enforced for the test user")
+	}
+	rig, alice := wp02UserRig(t)
+	if w, _ := wp02Push(t, rig.router, "team-repo", alice, "", wp02PushFile{Path: "wiki/a.md", Content: "a"}); w.Code != http.StatusOK {
+		t.Fatalf("seed push: %d %s", w.Code, w.Body.String())
+	}
+	bob := signIn(t, rig.router, "bob-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+	bobID := wp02UserID(t, rig, "bob@example.com")
+	if err := rig.users.AddMember("team-repo", bobID, userstore.RoleMember); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	dir := filepath.Join(rig.store.Root, "team-repo")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if rig.store.Exists("team-repo") {
+		t.Skip("stat still succeeds under chmod 000 on this filesystem")
+	}
+	w, _ := wp02Push(t, rig.router, "team-repo", bob, "", wp02PushFile{Path: "wiki/b.md", Content: "b"})
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod back: %v", err)
+	}
+	if w.Code == http.StatusOK {
+		t.Errorf("push while the repo cannot be stat'ed: 200, want an error")
+	}
+	if r := wp02Role(t, rig, "team-repo", aliceID); r != userstore.RoleOwner {
+		t.Errorf("alice's role after the failed push: %q, want owner", r)
+	}
+	if r := wp02Role(t, rig, "team-repo", bobID); r != userstore.RoleMember {
+		t.Errorf("bob's role after the failed push: %q, want member", r)
 	}
 }
 

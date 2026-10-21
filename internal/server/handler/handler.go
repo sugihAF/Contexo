@@ -237,11 +237,13 @@ const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 // to an agent) is not refused its own repo, and POST /v1/repos, which claims
 // an existing repo that has no owner, never finds the new repo ownerless.
 //
-// Rows already present for an id that has no repo are stale (a crash between
-// this row and the repo, or an operator deleting a repo directory) and are
-// purged first, so they never grant access to the repo created now. If this
-// request then does not create the repo, or creating it fails, its own row is
-// removed again.
+// Rows other users already hold for the id are stale (a crash between a
+// creator's row and its repo, or an operator deleting a repo directory). They
+// are dropped only once Create reports created=true, which gitstore makes
+// definitive (.git was certainly absent): Exists also reports false when the
+// directory merely cannot be stat'ed, and dropping rows then would wipe a live
+// repo's membership. If this request does not create the repo, or creating it
+// fails, only a row it inserted itself is removed again.
 func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
 	if !repoIDPattern.MatchString(repoID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
@@ -255,24 +257,34 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 	if !h.enforceRepoQuota(c, uid) {
 		return false, false
 	}
-	if err := h.deleteMemberships(repoID, ""); err != nil {
+	wasMember, err := h.users.IsMember(repoID, uid)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false, false
 	}
-	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return false, false
+	if !wasMember {
+		if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return false, false
+		}
 	}
-	created, err := h.store.Create(repoID)
+	created, err = h.store.Create(repoID)
 	if err != nil || !created {
-		// Failed, or created outside createRepoMu (POST /v1/repos, legacy auth
-		// or another process): not ours.
-		_ = h.deleteMemberships(repoID, uid)
+		// Failed (possibly an existing repo that could not be stat'ed), or
+		// created outside createRepoMu (POST /v1/repos, legacy auth or another
+		// process): not ours.
+		if !wasMember {
+			_ = h.deleteMemberships(repoID, uid)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return false, false
 		}
 		return false, true
+	}
+	if err := h.claimNewRepo(repoID, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false, false
 	}
 	return true, true
 }
@@ -281,19 +293,30 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 // (tests build several over one store).
 var createRepoMu gosync.Mutex
 
-// deleteMemberships deletes repoID's membership rows: all of them when userID
-// is "", otherwise that user's. userstore.RemoveMember refuses to remove a
-// repo's last owner (a guard for removals from the members UI), but the rows
-// createOwnedRepo deletes (stale rows for an id that has no repo, or its own
-// row after a failed create) must go unconditionally.
+// deleteMemberships deletes userID's membership row for repoID.
+// userstore.RemoveMember refuses to remove a repo's last owner (a guard for
+// removals from the members UI), but createOwnedRepo's own row after a failed
+// create must go unconditionally.
 func (h *Handler) deleteMemberships(repoID, userID string) error {
-	q, args := `DELETE FROM repo_members WHERE repo_id = ?`, []any{repoID}
-	if userID != "" {
-		q += ` AND user_id = ?`
-		args = append(args, userID)
+	if _, err := h.users.DB().Exec(
+		`DELETE FROM repo_members WHERE repo_id = ? AND user_id = ?`, repoID, userID,
+	); err != nil {
+		return fmt.Errorf("handler: delete membership of %q in %q: %w", userID, repoID, err)
 	}
-	if _, err := h.users.DB().Exec(q, args...); err != nil {
-		return fmt.Errorf("handler: delete memberships of %q: %w", repoID, err)
+	return nil
+}
+
+// claimNewRepo makes uid the only member, as owner, of repoID, which uid has
+// just created (gitstore.Create reported created=true): rows other users held
+// for the id are stale, and uid's own stale row may carry another role.
+func (h *Handler) claimNewRepo(repoID, uid string) error {
+	db := h.users.DB()
+	if _, err := db.Exec(`DELETE FROM repo_members WHERE repo_id = ? AND user_id <> ?`, repoID, uid); err != nil {
+		return fmt.Errorf("handler: drop stale memberships of %q: %w", repoID, err)
+	}
+	if _, err := db.Exec(`UPDATE repo_members SET role = ? WHERE repo_id = ? AND user_id = ?`,
+		userstore.RoleOwner, repoID, uid); err != nil {
+		return fmt.Errorf("handler: make %q owner of %q: %w", uid, repoID, err)
 	}
 	return nil
 }

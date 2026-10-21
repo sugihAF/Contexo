@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -91,8 +92,14 @@ func (s *Store) Create(repoID string) (created bool, err error) {
 	// only exists without them while its creator holds the lock.
 	unlock := lockRepo(dir)
 	defer unlock()
+	// created must be definitive: callers treat a created repo as brand new
+	// (handler.createOwnedRepo drops stale membership rows). Only a .git that
+	// is certainly absent counts; any other stat error (EACCES, EMFILE, EIO)
+	// may hide an existing repo and is returned.
 	if _, err := os.Stat(gitDir); err == nil {
 		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("gitstore: stat %s: %w", gitDir, err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, fmt.Errorf("gitstore: mkdir repo: %w", err)
