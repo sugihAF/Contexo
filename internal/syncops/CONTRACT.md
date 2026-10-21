@@ -276,10 +276,9 @@ removes a frozen identifier.
   `pages.etag` or `remote.source` `cache`; 24 `error.<code>.json` files;
   version.release and version.dev list the 11 v1 capabilities then `repair`.
 
-## Deviations pending review
+## Deviations confirmed by the user (2026-10-21)
 
-Decisions the errata do not cover. [HUMAN] confirms or vetoes each row before
-WP-0.I.
+Decisions the errata do not cover.
 
 | # | Decision | Why | Cost if wrong |
 |---|---|---|---|
