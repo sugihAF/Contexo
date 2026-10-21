@@ -868,36 +868,6 @@ func TestPush_StatErrorNeverPurgesAnExistingRepo(t *testing.T) {
 	}
 }
 
-// TestPush_StaleRowsPurgedOnCreate: membership rows for an id that has no
-// repo (left by a crash between adding a creator's owner row and creating the
-// repo, or by an operator deleting a repo directory) must not grant access to
-// the repo whoever creates that id next.
-func TestPush_StaleRowsPurgedOnCreate(t *testing.T) {
-	rig := setupRig(t)
-	wp02WireSync(rig)
-	alice := signIn(t, rig.router, "alice-token")
-	bob := signIn(t, rig.router, "bob-token")
-	aliceID := wp02UserID(t, rig, "alice@example.com")
-	bobID := wp02UserID(t, rig, "bob@example.com")
-	if err := rig.users.AddMember("ghost", bobID, userstore.RoleOwner); err != nil {
-		t.Fatalf("seed stale row: %v", err)
-	}
-
-	w, _ := wp02Push(t, rig.router, "ghost", alice, "", wp02PushFile{Path: "wiki/secret.md", Content: "alice only"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("alice's first push: %d %s", w.Code, w.Body.String())
-	}
-	if owners, err := rig.users.RepoOwners("ghost"); err != nil || len(owners) != 1 || owners[0] != aliceID {
-		t.Errorf("owners %v (err %v), want only alice", owners, err)
-	}
-	if r := wp02Role(t, rig, "ghost", bobID); r != "" {
-		t.Errorf("bob kept role %q from the stale row", r)
-	}
-	if w := doGet(t, rig.router, "/v1/repos/ghost/pages/wiki/secret.md", bob, nil); w.Code != http.StatusForbidden {
-		t.Errorf("bob reads alice's page: %d, want 403", w.Code)
-	}
-}
-
 // TestPush_SameUserConcurrentFirstPushAllSucceed: one user's parallel first
 // pushes to a new repo (the editor extension and an agent, say) must all
 // succeed. createOwnedRepo used to create the repo before adding the owner

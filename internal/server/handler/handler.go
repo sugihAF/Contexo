@@ -4,7 +4,6 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -231,19 +230,16 @@ const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 // response is already written: 400 for a non-canonical id, 402 from the
 // quota, 500 when a store call fails.
 //
-// Creations are serialized process-wide (createRepoMu; they are rare). The
-// owner row is added BEFORE the repo exists, so anything that sees the repo
-// also sees its owner: a parallel push by the same user (the extension next
-// to an agent) is not refused its own repo, and POST /v1/repos, which claims
-// an existing repo that has no owner, never finds the new repo ownerless.
-//
-// Rows other users already hold for the id are stale (a crash between a
-// creator's row and its repo, or an operator deleting a repo directory). They
-// are dropped only once Create reports created=true, which gitstore makes
-// definitive (.git was certainly absent): Exists also reports false when the
-// directory merely cannot be stat'ed, and dropping rows then would wipe a live
-// repo's membership. If this request does not create the repo, or creating it
-// fails, only a row it inserted itself is removed again.
+// Creations are serialized process-wide (createRepoMu; they are rare): the
+// Exists check, gitstore.Create and the owner row happen as one step for every
+// request that goes through here. The row is added only after this request
+// created the repo (Create reports created=true only when .git was certainly
+// absent), so no row is ever added for a repo that already exists or was never
+// made. The short window between the repo appearing and its owner row is
+// closed on the reader side: requireMemberAfterCreate waits for an in-flight
+// creation before refusing, so the creator's own parallel request (the
+// extension next to an agent) is not refused its repo. If AddMember fails the
+// new repo is left empty and ownerless, as before.
 func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
 	if !repoIDPattern.MatchString(repoID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
@@ -257,32 +253,17 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 	if !h.enforceRepoQuota(c, uid) {
 		return false, false
 	}
-	wasMember, err := h.users.IsMember(repoID, uid)
+	created, err := h.store.Create(repoID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false, false
 	}
-	if !wasMember {
-		if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return false, false
-		}
-	}
-	created, err = h.store.Create(repoID)
-	if err != nil || !created {
-		// Failed (possibly an existing repo that could not be stat'ed), or
-		// created outside createRepoMu (POST /v1/repos, legacy auth or another
-		// process): not ours.
-		if !wasMember {
-			_ = h.deleteMemberships(repoID, uid)
-		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return false, false
-		}
+	if !created {
+		// Created outside createRepoMu (POST /v1/repos, legacy auth or
+		// another process): not ours.
 		return false, true
 	}
-	if err := h.claimNewRepo(repoID, uid); err != nil {
+	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false, false
 	}
@@ -293,32 +274,37 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 // (tests build several over one store).
 var createRepoMu gosync.Mutex
 
-// deleteMemberships deletes userID's membership row for repoID.
-// userstore.RemoveMember refuses to remove a repo's last owner (a guard for
-// removals from the members UI), but createOwnedRepo's own row after a failed
-// create must go unconditionally.
-func (h *Handler) deleteMemberships(repoID, userID string) error {
-	if _, err := h.users.DB().Exec(
-		`DELETE FROM repo_members WHERE repo_id = ? AND user_id = ?`, repoID, userID,
-	); err != nil {
-		return fmt.Errorf("handler: delete membership of %q in %q: %w", userID, repoID, err)
+// isMemberAfterCreate reports whether uid is a member of repoID. When the
+// first check says no, it checks again under createRepoMu, that is after any
+// in-flight createOwnedRepo has added its owner row, so a request that found
+// the repo a moment after its creator made it is not refused its own repo.
+func (h *Handler) isMemberAfterCreate(repoID, uid string) (bool, error) {
+	member, err := h.users.IsMember(repoID, uid)
+	if err != nil || member {
+		return member, err
 	}
-	return nil
+	createRepoMu.Lock()
+	defer createRepoMu.Unlock()
+	return h.users.IsMember(repoID, uid)
 }
 
-// claimNewRepo makes uid the only member, as owner, of repoID, which uid has
-// just created (gitstore.Create reported created=true): rows other users held
-// for the id are stale, and uid's own stale row may carry another role.
-func (h *Handler) claimNewRepo(repoID, uid string) error {
-	db := h.users.DB()
-	if _, err := db.Exec(`DELETE FROM repo_members WHERE repo_id = ? AND user_id <> ?`, repoID, uid); err != nil {
-		return fmt.Errorf("handler: drop stale memberships of %q: %w", repoID, err)
+// requireMemberAfterCreate is requireMember for the create-adjacent routes
+// (push, legacy create): see isMemberAfterCreate.
+func (h *Handler) requireMemberAfterCreate(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) || h.users == nil {
+		return h.requireMember(c, repoID)
 	}
-	if _, err := db.Exec(`UPDATE repo_members SET role = ? WHERE repo_id = ? AND user_id = ?`,
-		userstore.RoleOwner, repoID, uid); err != nil {
-		return fmt.Errorf("handler: make %q owner of %q: %w", uid, repoID, err)
+	member, err := h.isMemberAfterCreate(repoID, uid)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
 	}
-	return nil
+	if !member {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+		return false
+	}
+	return true
 }
 
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
@@ -356,7 +342,7 @@ func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 		// Another request created it first: it is an existing repo now.
 	}
 
-	member, err := h.users.IsMember(repoID, uid)
+	member, err := h.isMemberAfterCreate(repoID, uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -530,11 +516,11 @@ func (h *Handler) Push(c *gin.Context) {
 			if !ok {
 				return
 			}
-			if !created && !h.requireMember(c, repoID) {
+			if !created && !h.requireMemberAfterCreate(c, repoID) {
 				return
 			}
 		}
-	} else if !h.requireMember(c, repoID) {
+	} else if !h.requireMemberAfterCreate(c, repoID) {
 		return
 	}
 
