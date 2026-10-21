@@ -714,10 +714,16 @@ func (s *Store) git(dir string, args ...string) (string, error) {
 // (isUnknownRev, the "does not have any commits" checks) match git's English
 // messages, which a translated git would otherwise change under the host's
 // locale.
+//
+// GIT_LITERAL_PATHSPECS=1 makes every "-- <path>" argument a literal path.
+// Page paths are client-supplied, and as pathspecs a leading ':' is magic
+// (":memo.md" means memo.md) and '*', '?' and '[' are globs ("wiki/a?.md" also
+// matches wiki/ab.md), so a write or read would otherwise check, stage and
+// commit other pages than the one named.
 func gitCmd(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1")
 	return cmd
 }
 

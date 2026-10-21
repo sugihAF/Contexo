@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	gosync "sync"
 	"testing"
@@ -366,5 +367,108 @@ func TestReadDeletedOrDirectoryIsNotExist(t *testing.T) {
 	}
 	if content, sha, err := s.ReadPageAt("r", "wiki/a.md", c2); err != nil || string(content) != "alpha" || sha != c1 {
 		t.Errorf("ReadPageAt(a, c2) = %q@%s err=%v, want alpha@%s", content, sha, err, c1)
+	}
+}
+
+// wp02CommitFiles returns the paths a commit touches, verbatim (-z output is
+// never C-quoted).
+func wp02CommitFiles(t *testing.T, s *Store, sha string) []string {
+	t.Helper()
+	out, err := s.git(s.repoDir("r"), "diff-tree", "-r", "--root", "--no-commit-id", "--name-only", "-z", sha)
+	if err != nil {
+		t.Fatalf("diff-tree %s: %v %s", sha, err, out)
+	}
+	var files []string
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files
+}
+
+// wp02Status returns `git status --porcelain` for repo "r" (untracked files
+// included), or "" when the working tree and index match HEAD.
+func wp02Status(t *testing.T, s *Store) string {
+	t.Helper()
+	out, err := s.git(s.repoDir("r"), "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("status: %v %s", err, out)
+	}
+	return strings.TrimSpace(out)
+}
+
+// TestWriteMagicPathIsLiteral: page paths reach git as pathspecs, where a
+// leading ':' is pathspec magic (":memo.md" means "memo.md"). Unless pathspecs
+// are literal, a write of ":memo.md" stages and checks memo.md instead,
+// reports an unchanged no-op and leaves the new file untracked.
+func TestWriteMagicPathIsLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("':' is not valid in a Windows file name")
+	}
+	s := wp02Store(t)
+	c := wp02Write(t, s, "memo.md", "memo", "")
+
+	o := wp02Opts("")
+	o.ExpectAbsent = true
+	res, conflict, err := s.WriteWithOptions("r", ":memo.md", []byte("magic"), o)
+	if err != nil || conflict != nil {
+		t.Fatalf("write :memo.md: res=%+v conflict=%+v err=%v", res, conflict, err)
+	}
+	if !res.Changed || res.SHA == c {
+		t.Fatalf("write :memo.md: got %+v, want Changed=true and a new commit (memo.md is at %s)", res, c)
+	}
+	if files := wp02CommitFiles(t, s, res.SHA); len(files) != 1 || files[0] != ":memo.md" {
+		t.Errorf("commit %s touches %q, want only \":memo.md\"", res.SHA, files)
+	}
+	if content, sha, err := s.Read("r", ":memo.md"); err != nil || string(content) != "magic" || sha != res.SHA {
+		t.Errorf("Read(:memo.md) = %q@%s err=%v, want magic@%s", content, sha, err, res.SHA)
+	}
+	if content, sha, err := s.Read("r", "memo.md"); err != nil || string(content) != "memo" || sha != c {
+		t.Errorf("Read(memo.md) = %q@%s err=%v, want memo@%s (unchanged)", content, sha, err, c)
+	}
+	if st := wp02Status(t, s); st != "" {
+		t.Errorf("git status --porcelain = %q, want clean", st)
+	}
+}
+
+// TestWriteGlobPathIsLiteral: '?', '*' and '[' in a page path are glob
+// characters to git unless pathspecs are literal, so "wiki/a?.md" would also
+// match wiki/ab.md: its "last commit" would be ab's, and a write of
+// "wiki/a*.md" would sweep a dirty wiki/ab.md into its commit.
+func TestWriteGlobPathIsLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("'?' and '*' are not valid in a Windows file name")
+	}
+	s := wp02Store(t)
+	c1 := wp02Write(t, s, "wiki/a?.md", "glob", "")
+	c2 := wp02Write(t, s, "wiki/ab.md", "ab", "")
+
+	res, conflict, err := s.WriteWithOptions("r", "wiki/a?.md", []byte("glob"), wp02Opts(c1))
+	if err != nil || conflict != nil {
+		t.Errorf("unchanged rewrite of wiki/a?.md with parent %s: res=%+v conflict=%+v err=%v", c1, res, conflict, err)
+	} else if res.Changed || res.SHA != c1 {
+		t.Errorf("unchanged rewrite of wiki/a?.md: got %+v, want {SHA:%s Changed:false}", res, c1)
+	}
+	if content, sha, err := s.Read("r", "wiki/a?.md"); err != nil || string(content) != "glob" || sha != c1 {
+		t.Errorf("Read(wiki/a?.md) = %q@%s err=%v, want glob@%s", content, sha, err, c1)
+	}
+	if content, pathSHA, err := s.ReadPageAt("r", "wiki/a?.md", c2); err != nil || string(content) != "glob" || pathSHA != c1 {
+		t.Errorf("ReadPageAt(wiki/a?.md, c2) = %q@%s err=%v, want glob@%s", content, pathSHA, err, c1)
+	}
+
+	dirty := filepath.Join(s.repoDir("r"), "wiki", "ab.md")
+	if err := os.WriteFile(dirty, []byte("dirty"), 0o644); err != nil {
+		t.Fatalf("dirty wiki/ab.md: %v", err)
+	}
+	res, conflict, err = s.WriteWithOptions("r", "wiki/a*.md", []byte("star"), wp02Opts(""))
+	if err != nil || conflict != nil || !res.Changed {
+		t.Fatalf("write wiki/a*.md: res=%+v conflict=%+v err=%v, want a new commit", res, conflict, err)
+	}
+	if files := wp02CommitFiles(t, s, res.SHA); len(files) != 1 || files[0] != "wiki/a*.md" {
+		t.Errorf("commit %s touches %q, want only \"wiki/a*.md\"", res.SHA, files)
+	}
+	if content, sha, err := s.Read("r", "wiki/ab.md"); err != nil || string(content) != "ab" || sha != c2 {
+		t.Errorf("Read(wiki/ab.md) = %q@%s err=%v, want ab@%s (the dirty file must not be committed)", content, sha, err, c2)
 	}
 }
