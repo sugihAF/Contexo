@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	gosync "sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -221,35 +222,68 @@ const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 // pattern: a data root may hold repos and membership rows under ids from
 // before it, and their members must keep working.
 //
-// created is true only for the request that ran git init (gitstore.Create),
-// and only that request becomes owner: checking Exists and then creating
-// races, and every racer would otherwise add itself as owner. created is
-// false with ok true when another request created the repo first; the caller
-// then applies its existing-repo rules. ok is false when the response is
-// already written: 400 for a non-canonical id, 402 from the quota, 500 when a
-// store call fails.
+// created is true only for the request that created the repo
+// (gitstore.Create), and only that request becomes owner: checking Exists and
+// then creating races, and every racer would otherwise add itself as owner.
+// created is false with ok true when another request created the repo first;
+// the caller then applies its existing-repo rules. ok is false when the
+// response is already written: 400 for a non-canonical id, 402 from the
+// quota, 500 when a store call fails.
+//
+// Creations are serialized process-wide (createRepoMu; they are rare), and
+// the owner row is added BEFORE the repo exists, so any request that sees the
+// repo also sees its owner. Created first, a concurrent push by the same user
+// (the extension next to an agent) could find the repo but not yet the row
+// and get 403. If this request then does not create the repo, or creating it
+// fails, the row it added is removed again, so it never grants access to a
+// repo someone else made.
 func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
 	if !repoIDPattern.MatchString(repoID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
 		return false, false
 	}
+	createRepoMu.Lock()
+	defer createRepoMu.Unlock()
+	if h.store.Exists(repoID) {
+		return false, true
+	}
 	if !h.enforceRepoQuota(c, uid) {
 		return false, false
 	}
-	created, err := h.store.Create(repoID)
+	wasMember, err := h.users.IsMember(repoID, uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false, false
 	}
-	if !created {
-		return false, true
+	if !wasMember {
+		if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return false, false
+		}
 	}
-	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
+	undo := func() {
+		if !wasMember {
+			_ = h.users.RemoveMember(repoID, uid)
+		}
+	}
+	created, err = h.store.Create(repoID)
+	if err != nil {
+		undo()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false, false
 	}
+	if !created {
+		// Created outside createRepoMu (POST /v1/repos, legacy auth or
+		// another process): not ours.
+		undo()
+		return false, true
+	}
 	return true, true
 }
+
+// createRepoMu serializes createOwnedRepo across every Handler in the process
+// (tests build several over one store).
+var createRepoMu gosync.Mutex
 
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
 // existing CLI's repo-init flow. Kept for back-compat with legacy auth; real

@@ -758,3 +758,47 @@ func TestPush_ConcurrentFirstPushOneOwner(t *testing.T) {
 		}
 	}
 }
+
+// TestPush_SameUserConcurrentFirstPushAllSucceed: one user's parallel first
+// pushes to a new repo (the editor extension and an agent, say) must all
+// succeed. createOwnedRepo used to create the repo before adding the owner
+// row, so a push that lost the create race could check membership in between
+// and get 403 from its own owner's repo. Now the owner row exists before the
+// repo does, and repo creation is serialized.
+func TestPush_SameUserConcurrentFirstPushAllSucceed(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	wp02WireLegacyCreate(rig)
+	alice := signIn(t, rig.router, "alice-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+
+	for i := 0; i < 20; i++ {
+		repo := fmt.Sprintf("same-user-%02d", i)
+		const n = 3
+		got := make([]*httptest.ResponseRecorder, n+1)
+		fns := make([]func(), n+1)
+		for j := 0; j < n; j++ {
+			page := fmt.Sprintf("wiki/p%d.md", j)
+			body := map[string]any{"message": "first", "files": []wp02PushFile{{Path: page, Content: page}}}
+			fns[j] = func() {
+				got[j] = doJSON(t, rig.router, http.MethodPost, "/v1/repos/"+repo+"/sync/push", alice, body)
+			}
+		}
+		fns[n] = func() {
+			got[n] = doJSON(t, rig.router, http.MethodPost, "/v1/repos/"+repo, alice, nil)
+		}
+		wp02Race(fns...)
+
+		for j := 0; j < n; j++ {
+			if got[j].Code != http.StatusOK {
+				t.Errorf("%s: push %d: %d %s, want 200", repo, j, got[j].Code, got[j].Body.String())
+			}
+		}
+		if got[n].Code != http.StatusCreated {
+			t.Errorf("%s: legacy create: %d %s, want 201", repo, got[n].Code, got[n].Body.String())
+		}
+		if owners, err := rig.users.RepoOwners(repo); err != nil || len(owners) != 1 || owners[0] != aliceID {
+			t.Errorf("%s: owners %v (err %v), want only alice", repo, owners, err)
+		}
+	}
+}
