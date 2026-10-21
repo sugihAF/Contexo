@@ -29,6 +29,46 @@ func newLoginCmd() *cobra.Command {
 	return c
 }
 
+// browserLogin is runBrowserLogin behind a seam, so tests can drive the login
+// command without opening a browser.
+var browserLogin = runBrowserLogin
+
+// loginDashboard is the dashboard the browser flow mints the token on:
+// --dashboard, else config.dashboard_url, else the hosted dashboard.
+func loginDashboard(dashboardFlag string, cfg *config.Config) string {
+	if dash := strings.TrimRight(strings.TrimSpace(dashboardFlag), "/"); dash != "" {
+		return dash
+	}
+	if cfg != nil && cfg.DashboardURL != "" {
+		return strings.TrimRight(cfg.DashboardURL, "/")
+	}
+	return config.DefaultDashboardURL
+}
+
+// browserLoginRefusal stops the browser flow before it mints anything when
+// the hosted dashboard would issue the token but the server_url comes from
+// the workspace config and is not the hosted API (lead ruling L8). Login
+// would save that hosted PAT, project and global, with the workspace URL and
+// send it there, so a cloned repo's config could collect it. An explicit
+// --server, --token, the paste prompt and a non-hosted dashboard are
+// unaffected.
+func browserLoginRefusal(serverFlag, dashboardFlag string, cfg *config.Config) error {
+	if serverFlag != "" || cfg == nil || cfg.ServerURL == "" ||
+		config.SameServer(cfg.ServerURL, config.DefaultServerURL) {
+		return nil
+	}
+	dash := loginDashboard(dashboardFlag, cfg)
+	if !config.SameServer(dash, config.DefaultDashboardURL) {
+		return nil
+	}
+	return suggestRemote("login", &config.RemoteError{
+		Code: "server_unresolved",
+		Msg: fmt.Sprintf("this project's config points at %s, but the browser login mints tokens on %s for %s; refusing to send a hosted token to %s",
+			cfg.ServerURL, dash, config.DefaultServerURL, cfg.ServerURL),
+		Advice: []string{"ctx auth login --server <url> --dashboard <dashboard-url>", "ctx auth login --token <token>"},
+	})
+}
+
 func newAuthLoginCmd() *cobra.Command {
 	var (
 		token        string
@@ -69,17 +109,12 @@ prompt, or pass --token directly to skip the browser entirely.`,
 				//   otherwise: TTY → browser, no-TTY → error
 				useBrowser := forceBrowser || (!noBrowser && stdinIsTTY())
 				if useBrowser {
-					dash := strings.TrimRight(strings.TrimSpace(dashboardURL), "/")
-					if dash == "" {
-						cfgEarly, _ := config.Load(root)
-						if cfgEarly != nil && cfgEarly.DashboardURL != "" {
-							dash = strings.TrimRight(cfgEarly.DashboardURL, "/")
-						}
+					cfgEarly, _ := config.Load(root)
+					if err := browserLoginRefusal(serverURL, dashboardURL, cfgEarly); err != nil {
+						return err
 					}
-					if dash == "" {
-						dash = config.DefaultDashboardURL
-					}
-					res, err := runBrowserLogin(context.Background(), dash, cmd.OutOrStdout())
+					dash := loginDashboard(dashboardURL, cfgEarly)
+					res, err := browserLogin(context.Background(), dash, cmd.OutOrStdout())
 					if err != nil {
 						return err
 					}

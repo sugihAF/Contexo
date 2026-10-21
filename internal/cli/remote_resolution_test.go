@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -409,4 +411,116 @@ func TestRemoteSetNotesCredentialsServer(t *testing.T) {
 			t.Errorf("remote set to the credentials' own server printed a note:\n%s", out)
 		}
 	})
+}
+
+// wp03FakeBrowserLogin swaps the browser flow for a fake that never opens a
+// browser: it records each dashboard it was asked to mint on and returns
+// token. It returns the recorded dashboards.
+func wp03FakeBrowserLogin(t *testing.T, token string) *[]string {
+	t.Helper()
+	var dashboards []string
+	prev := browserLogin
+	browserLogin = func(_ context.Context, dash string, _ io.Writer) (BrowserLoginResult, error) {
+		dashboards = append(dashboards, dash)
+		return BrowserLoginResult{Token: token}, nil
+	}
+	t.Cleanup(func() { browserLogin = prev })
+	return &dashboards
+}
+
+// The browser flow mints on the hosted dashboard unless told otherwise. With
+// a non-hosted server_url from the workspace config and no --server, the
+// hosted PAT would be saved (project and global) for that URL and sent
+// there, so the flow refuses (lead ruling L8). Every other path is unchanged.
+func TestBrowserLoginRefusal(t *testing.T) {
+	const self = "https://ctx.b.example.test"
+	const selfDash = "https://dash.b.example.test"
+
+	refused := []struct {
+		name, serverFlag, dashFlag string
+		cfg                        *config.Config
+	}{
+		{"workspace server, hosted default dashboard", "", "", &config.Config{ServerURL: self}},
+		{"config dashboard_url is the hosted dashboard", "", "", &config.Config{ServerURL: self, DashboardURL: "HTTPS://App.Contexo.Live/"}},
+		{"--dashboard names the hosted dashboard", "", "https://app.contexo.live/", &config.Config{ServerURL: self}},
+	}
+	for _, c := range refused {
+		t.Run("refuses: "+c.name, func(t *testing.T) {
+			wp03IsolateHome(t)
+			err := browserLoginRefusal(c.serverFlag, c.dashFlag, c.cfg)
+			if code := wp03RemoteCode(err); code != "server_unresolved" {
+				t.Fatalf("error code = %q (err: %v), want server_unresolved", code, err)
+			}
+			var ce *ui.CLIError
+			if !errors.As(err, &ce) || len(ce.Advice) != 2 {
+				t.Fatalf("want ui.Suggest with two advice lines, got %#v", err)
+			}
+			if msg := err.Error(); !strings.HasPrefix(msg, "login: ") || !strings.Contains(msg, self) {
+				t.Errorf("message %q must start with 'login: ' and name %s", msg, self)
+			}
+			for _, a := range ce.Advice {
+				if strings.Contains(a, self) {
+					t.Errorf("advice %q hands the workspace URL back as a command to paste", a)
+				}
+			}
+		})
+	}
+
+	allowed := []struct {
+		name, serverFlag, dashFlag string
+		cfg                        *config.Config
+	}{
+		{"explicit --server", self, "", &config.Config{ServerURL: self}},
+		{"--dashboard names the server's own dashboard", "", selfDash, &config.Config{ServerURL: self}},
+		{"config dashboard_url names the server's own dashboard", "", "", &config.Config{ServerURL: self, DashboardURL: selfDash}},
+		{"config server is the hosted API", "", "", &config.Config{ServerURL: "HTTPS://API.Contexo.Live/"}},
+		{"no config server", "", "", &config.Config{}},
+		{"no config", "", "", nil},
+	}
+	for _, c := range allowed {
+		t.Run("allows: "+c.name, func(t *testing.T) {
+			wp03IsolateHome(t)
+			if err := browserLoginRefusal(c.serverFlag, c.dashFlag, c.cfg); err != nil {
+				t.Errorf("browserLoginRefusal = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// End to end: `ctx auth login --browser` in a project whose config names B
+// refuses before minting, leaves the global credentials and the project
+// alone, and sends nothing. An explicit --server still runs the flow.
+func TestLoginBrowserRefusesWorkspaceServer(t *testing.T) {
+	tr := wp03TrapServers(t)
+	root := wp03Project(t, tr)
+	dashboards := wp03FakeBrowserLogin(t, "ctxp_wp03_hosted_pat")
+
+	_, _, err := wp03Run(t, root, "auth", "login", "--browser")
+	if code := wp03RemoteCode(err); code != "server_unresolved" {
+		t.Errorf("auth login --browser: error code = %q (err: %v), want server_unresolved", code, err)
+	}
+	if len(*dashboards) != 0 {
+		t.Errorf("the browser flow ran (dashboards %q); it must refuse before minting", *dashboards)
+	}
+	global, src, err := config.LoadCredentialsWithSource(t.TempDir())
+	if err != nil || src != "global" || global.Token != wp03Token || global.ServerURL != tr.A.URL {
+		t.Errorf("global credentials changed: %+v (source %q, err %v), want {%s, %s}", global, src, err, wp03Token, tr.A.URL)
+	}
+	if _, err := os.Stat(config.CredentialsPath(root)); !os.IsNotExist(err) {
+		t.Errorf("refused login wrote project credentials (stat err %v)", err)
+	}
+	if hits := tr.Hits(); len(hits) != 0 {
+		t.Errorf("refused login sent requests: %+v", hits)
+	}
+
+	// --token never reaches the guard.
+	if _, _, err := wp03Run(t, root, "auth", "login", "--token", "ctxp_wp03_pasted"); err != nil {
+		t.Errorf("auth login --token: %v", err)
+	}
+	if _, _, err := wp03Run(t, root, "auth", "login", "--browser", "--server", tr.B.URL); err != nil {
+		t.Fatalf("auth login --browser --server: %v", err)
+	}
+	if len(*dashboards) != 1 || (*dashboards)[0] != config.DefaultDashboardURL {
+		t.Errorf("explicit --server must run the browser flow as before; dashboards = %q", *dashboards)
+	}
 }
