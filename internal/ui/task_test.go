@@ -205,9 +205,7 @@ func TestTaskDoesNotReadStdin(t *testing.T) {
 // shutdown and leave the cursor hidden and bracketed paste on. The spinner
 // must restore the terminal first, then end the process (interruptExit).
 func TestTaskInterruptRestoresTerminal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
-	}
+	wp03NeedDeliverableSIGINT(t)
 	wp03IsolateHome(t)
 	exited := make(chan struct{})
 	prev := interruptExit
@@ -242,9 +240,7 @@ func TestTaskInterruptRestoresTerminal(t *testing.T) {
 // watcher still registered when a later ^C arrives would exit the process
 // itself, without the live spinner restoring the terminal.
 func TestTaskInterruptAfterFinishedTask(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
-	}
+	wp03NeedDeliverableSIGINT(t)
 	wp03IsolateHome(t)
 	wp03SingleProc(t)
 	var mu sync.Mutex
@@ -284,6 +280,20 @@ func TestTaskInterruptAfterFinishedTask(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Errorf("interruptExit ran %d times, want once (a finished Task was still watching ^C)", calls)
+	}
+}
+
+// wp03NeedDeliverableSIGINT skips a test that ^Cs a spinner when that cannot
+// work: Windows has no os.Process.Signal(os.Interrupt), and a test binary
+// started with SIGINT ignored (run directly from a script that ignores it;
+// `go test` itself un-ignores it) correctly gets no watcher.
+func wp03NeedDeliverableSIGINT(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+	}
+	if signal.Ignored(os.Interrupt) {
+		t.Skip("SIGINT is ignored in this environment; ^C cannot reach the spinner")
 	}
 }
 
@@ -339,8 +349,13 @@ func TestWp03InterruptHelper(t *testing.T) {
 
 func wp03RunInterruptHelper(t *testing.T, mode string) (string, error) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+	if mode == "ignored" {
+		if runtime.GOOS == "windows" {
+			t.Skip("os.Process.Signal(os.Interrupt) is not supported on Windows")
+		}
+	} else {
+		// The helper inherits this process's SIGINT disposition.
+		wp03NeedDeliverableSIGINT(t)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWp03InterruptHelper$", "-test.count=1")
 	cmd.Env = append(os.Environ(), wp03InterruptHelperEnv+"="+mode)
