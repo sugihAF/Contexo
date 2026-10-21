@@ -418,16 +418,23 @@ func removeLockIfUnchanged(path string, want []byte) (removed bool, err error) {
 	return true, nil
 }
 
-// removeLockFile removes path, retrying transient failures at most
-// lockRemoveAttempts times lockRemoveRetryDelay apart. A missing file is
-// not an error.
+// removeLockFile removes path, retrying transient failures (see
+// removeRetry). A missing file is not an error.
 func removeLockFile(path string) error {
+	return removeRetry(os.Remove, isTransientLockErr, path)
+}
+
+// removeRetry calls remove(path), retrying failures that transient accepts
+// at most lockRemoveAttempts times lockRemoveRetryDelay apart. A missing
+// file is not an error. The lock files and the base and conflict stores
+// delete through it.
+func removeRetry(remove func(string) error, transient func(error) bool, path string) error {
 	for attempt := 1; ; attempt++ {
-		err := os.Remove(path)
+		err := remove(path)
 		if err == nil || errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		if attempt >= lockRemoveAttempts || !isTransientLockErr(err) {
+		if attempt >= lockRemoveAttempts || !transient(err) {
 			return err
 		}
 		time.Sleep(lockRemoveRetryDelay)

@@ -229,9 +229,11 @@ func writeIndexFile(hub, path string, v any) error {
 // removeStoreFile removes path, a file below the store directory root
 // (.sync/base or .sync/conflicts), then every directory between them that
 // the removal left empty, so a later page can reuse the name. root itself
-// is kept. A missing file is not an error.
+// is kept. A missing file is not an error. The file removal is retried like
+// the lock's (removeRetry): on Windows a reader that has it open makes the
+// delete fail transiently.
 func removeStoreFile(root, path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := removeRetry(os.Remove, isTransientLockErr, path); err != nil {
 		return err
 	}
 	prefix := root + string(filepath.Separator)

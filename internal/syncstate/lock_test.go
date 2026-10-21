@@ -854,3 +854,47 @@ func TestWP04ReleaseLockFallsBackWithoutGuard(t *testing.T) {
 		t.Fatalf("fallback release removed a foreign lock: %q -> %q", foreign, got)
 	}
 }
+
+// removeRetry is the bounded delete retry shared by the lock files and the
+// base/conflict stores (contract §4: on Windows a reader holding the file
+// open makes a delete fail transiently). The transient predicate is
+// injected so the policy is pinned on every OS.
+func TestWP04RemoveRetry(t *testing.T) {
+	errBusy := errors.New("file in use")
+	transient := func(err error) bool { return errors.Is(err, errBusy) }
+	failing := func(n int, err error) (func(string) error, *int) {
+		calls := 0
+		return func(path string) error {
+			calls++
+			if path != "p" {
+				t.Errorf("remove(%q), want p", path)
+			}
+			if calls <= n {
+				return err
+			}
+			return nil
+		}, &calls
+	}
+
+	remove, calls := failing(3, errBusy)
+	if err := removeRetry(remove, transient, "p"); err != nil || *calls != 4 {
+		t.Errorf("3 transient failures then success: err = %v after %d calls, want nil after 4", err, *calls)
+	}
+	remove, calls = failing(lockRemoveAttempts, errBusy)
+	start := time.Now()
+	if err := removeRetry(remove, transient, "p"); !errors.Is(err, errBusy) || *calls != 5 {
+		t.Errorf("5 transient failures: err = %v after %d calls, want errBusy after 5", err, *calls)
+	}
+	if d := time.Since(start); d < 4*lockRemoveRetryDelay {
+		t.Errorf("5 attempts took %v, want 4 delays of %v", d, lockRemoveRetryDelay)
+	}
+	errHard := errors.New("permission denied")
+	remove, calls = failing(10, errHard)
+	if err := removeRetry(remove, transient, "p"); !errors.Is(err, errHard) || *calls != 1 {
+		t.Errorf("non-transient failure: err = %v after %d calls, want errHard after 1", err, *calls)
+	}
+	remove, calls = failing(10, fs.ErrNotExist)
+	if err := removeRetry(remove, transient, "p"); err != nil || *calls != 1 {
+		t.Errorf("missing file: err = %v after %d calls, want nil after 1", err, *calls)
+	}
+}
