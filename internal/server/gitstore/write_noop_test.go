@@ -1095,6 +1095,22 @@ func TestWriteToleratesOddCommitMetadata(t *testing.T) {
 	}
 }
 
+// TestWritePushedGitignoreCannotBlockPages: a member can push a page named
+// .gitignore (validatePagePath allows it). Its rules must not apply to the
+// store's own `add`: with "*" in it, every later new page would otherwise
+// fail with "paths are ignored" (a 500 for every push in the repo).
+func TestWritePushedGitignoreCannotBlockPages(t *testing.T) {
+	s := wp02Store(t)
+	wp02Write(t, s, ".gitignore", "*\n", "")
+	res, conflict, err := s.WriteWithOptions("r", "wiki/after.md", []byte("after"), wp02Opts(""))
+	if err != nil || conflict != nil || !res.Changed {
+		t.Fatalf("new page after a pushed .gitignore: res=%+v conflict=%+v err=%v, want a commit", res, conflict, err)
+	}
+	if content, _, err := s.Read("r", "wiki/after.md"); err != nil || string(content) != "after" {
+		t.Errorf("read back: %q, %v", content, err)
+	}
+}
+
 // TestWriteExpectAbsentFailsClosed: when the existence check itself fails
 // (cat-file cannot run), a create-only write must fail, not treat the page as
 // absent and overwrite it, which would silently break expect_absent's

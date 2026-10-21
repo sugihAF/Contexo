@@ -203,7 +203,10 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 	if err := os.WriteFile(abs, content, 0o644); err != nil {
 		return WriteResult{}, nil, fmt.Errorf("gitstore: write: %w", err)
 	}
-	if out, err := s.git(dir, "add", "--", filePath); err != nil {
+	// -f: ignore rules never apply to an explicitly written page. A member can
+	// push a .gitignore, and "*" in it would otherwise make every later add
+	// fail ("paths are ignored").
+	if out, err := s.git(dir, "add", "-f", "--", filePath); err != nil {
 		return WriteResult{}, nil, fmt.Errorf("gitstore: add: %w: %s", err, out)
 	}
 	if err := s.requireIndexed(dir, filePath, abs, created); err != nil {
