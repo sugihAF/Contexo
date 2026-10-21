@@ -193,6 +193,35 @@ func TestResolveRemoteEmptyTokenIsUnauthenticated(t *testing.T) {
 	}
 }
 
+// A cloned repo can ship .contexo/credentials.json as a symlink to the
+// user's global file. Those are still the global credentials, so rule 4
+// applies: without a server_url they stay unresolved and never borrow the
+// workspace config's URL.
+func TestResolveRemoteSymlinkedProjectCredsAreGlobal(t *testing.T) {
+	root := wp03Project(t, &Config{Version: 1, ServerURL: wp03HostB, RepoID: "r1"})
+	if err := SaveGlobalCredentials(&Credentials{Token: "ctxp_global_no_url"}); err != nil {
+		t.Fatal(err)
+	}
+	global, err := GlobalCredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(global, CredentialsPath(root)); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+
+	r := wp03Resolve(t, root)
+	if r.CredsSource != "global" {
+		t.Errorf("CredsSource = %q, want global (the project path is the global file)", r.CredsSource)
+	}
+	if r.ServerURL != "" {
+		t.Fatalf("ServerURL = %q: a global token must never be sent to the workspace URL", r.ServerURL)
+	}
+	if got := wp03Code(t, r.RequireAuth()); got != "server_unresolved" {
+		t.Errorf("RequireAuth code = %q, want server_unresolved", got)
+	}
+}
+
 func TestRequireAuthPrecedence(t *testing.T) {
 	// No token wins over an unresolved URL (E22).
 	r := &Remote{}

@@ -98,15 +98,22 @@ func LoadCredentials(root string) (*Credentials, error) {
 // needs the source, because a global token is never sent to a URL taken
 // from the workspace config.
 func LoadCredentialsWithSource(root string) (*Credentials, string, error) {
-	creds, err := loadCredentialsFile(CredentialsPath(root))
+	projectPath := CredentialsPath(root)
+	globalPath, globalErr := GlobalCredentialsPath()
+	creds, err := loadCredentialsFile(projectPath)
 	if err != nil {
 		return nil, "", err
 	}
 	if creds != nil {
+		// A project path that is the global file (a symlink a cloned repo can
+		// ship, or a project rooted at the home dir) holds the global
+		// credentials, so the global rules apply to them.
+		if globalErr == nil && sameFile(projectPath, globalPath) {
+			return creds, "global", nil
+		}
 		return creds, "project", nil
 	}
-	globalPath, err := GlobalCredentialsPath()
-	if err != nil {
+	if globalErr != nil {
 		// No home dir → just no global fallback; treat as unauthenticated.
 		return nil, "", nil
 	}
@@ -115,6 +122,19 @@ func LoadCredentialsWithSource(root string) (*Credentials, string, error) {
 		return nil, "", err
 	}
 	return creds, "global", nil
+}
+
+// sameFile reports whether a and b resolve to the same existing file.
+func sameFile(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 func loadCredentialsFile(path string) (*Credentials, error) {
