@@ -707,6 +707,14 @@ func sanitize(repoID string) string {
 	}, repoID)
 }
 
+// ValidatePagePath returns ErrUnsafePath when p is not an acceptable page
+// path: the same check every Store method applies to a page path before it
+// reaches git or the filesystem. Callers use it to validate every path of a
+// batch before writing any of them.
+func ValidatePagePath(p string) error {
+	return validatePagePath(p)
+}
+
 // validatePagePath rejects any caller-supplied page path that could escape the
 // repo working tree or be parsed by git as an option. Legitimate page paths are
 // clean, relative, forward-slash paths such as "wiki/concepts/foo.md". This is

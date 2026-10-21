@@ -830,3 +830,31 @@ func TestCreateReportsCreatedOnce(t *testing.T) {
 		t.Errorf("Create(\"...\") = %v err=%v, want an invalid repoID error", created, err)
 	}
 }
+
+// TestValidatePagePathExported: the exported validator lets a caller check
+// every path of a batch before any write, so it must agree with the guard
+// every gitstore entry point applies.
+func TestValidatePagePathExported(t *testing.T) {
+	safe := []string{"wiki/a.md", "a.md", "wiki/café.md", "wiki/a b.md"}
+	unsafe := []string{"", "/etc/passwd", "../x.md", "wiki/../x.md", "wiki//a.md",
+		"wiki/./a.md", "wiki/-x.md", "--all", ".git/config", "wiki/.GIT/hooks",
+		"wiki/a\x00.md", "wiki/a\n.md", `..\x.md`}
+	// OS-dependent (Windows refuses ':'): only checked for agreement.
+	osDependent := []string{":memo.md", "notes/todo.md "}
+	for _, p := range safe {
+		if err := ValidatePagePath(p); err != nil {
+			t.Errorf("ValidatePagePath(%q) = %v, want nil", p, err)
+		}
+	}
+	for _, p := range unsafe {
+		if err := ValidatePagePath(p); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("ValidatePagePath(%q) = %v, want ErrUnsafePath", p, err)
+		}
+	}
+	all := append(append(append([]string{}, safe...), unsafe...), osDependent...)
+	for _, p := range all {
+		if got, want := ValidatePagePath(p), validatePagePath(p); got != want {
+			t.Errorf("ValidatePagePath(%q) = %v, validatePagePath = %v", p, got, want)
+		}
+	}
+}
