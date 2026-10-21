@@ -347,11 +347,11 @@ func TestHeadSHAForPath(t *testing.T) {
 
 func TestSanitizeRepoID(t *testing.T) {
 	cases := map[string]string{
-		"chompchat":            "chompchat",
-		"my-project_v2":        "my-project_v2",
-		"foo/bar":              "foobar",
-		"../../etc/passwd":     "etcpasswd",
-		"":                     "",
+		"chompchat":        "chompchat",
+		"my-project_v2":    "my-project_v2",
+		"foo/bar":          "foobar",
+		"../../etc/passwd": "etcpasswd",
+		"":                 "",
 	}
 	for in, want := range cases {
 		if got := sanitize(in); got != want {

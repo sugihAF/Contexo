@@ -28,7 +28,7 @@ func TestValidatePagePathRejectsTraversal(t *testing.T) {
 		"wiki//foo.md",
 		"./foo.md",
 		"wiki/./foo.md",
-		"wiki/x\x00.md", // NUL byte
+		"wiki/x\x00.md",  // NUL byte
 		"wiki/x\tfoo.md", // control byte (tab)
 	}
 	for _, p := range bad {

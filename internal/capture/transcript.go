@@ -31,8 +31,8 @@ func LatestExchange(path string) (Exchange, error) {
 	defer f.Close()
 
 	var (
-		records       []transcriptRecord
-		scanner       = bufio.NewScanner(f)
+		records []transcriptRecord
+		scanner = bufio.NewScanner(f)
 	)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -85,7 +85,7 @@ func LatestExchange(path string) (Exchange, error) {
 }
 
 type transcriptRecord struct {
-	Type    string             `json:"type"`
+	Type    string            `json:"type"`
 	Message transcriptMessage `json:"message"`
 }
 

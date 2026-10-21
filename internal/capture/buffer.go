@@ -171,8 +171,8 @@ func List(contexoDir string) ([]*Buffer, error) {
 	}
 
 	type bufWithTime struct {
-		buf  *Buffer
-		mod  time.Time
+		buf *Buffer
+		mod time.Time
 	}
 	var bs []bufWithTime
 	for _, e := range entries {

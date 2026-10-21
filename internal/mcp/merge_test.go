@@ -31,8 +31,8 @@ func TestBuildMergeDirective_ThreeWayLayout(t *testing.T) {
 		"YOUR changes vs ancestor:",
 		"SERVER changes vs ancestor:",
 		"CONFLICTING regions (both sides changed):",
-		"## Decision",                     // listed in the conflicting set
-		"+ ## Refund handling",            // server-only addition
+		"## Decision",          // listed in the conflicting set
+		"+ ## Refund handling", // server-only addition
 		"--- ANCESTOR VERSION ---",
 		"--- YOUR VERSION",
 		"--- SERVER VERSION ---",

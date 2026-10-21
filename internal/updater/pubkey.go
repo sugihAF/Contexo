@@ -14,7 +14,7 @@ package updater
 // One-time setup to enable signing end to end:
 //  1. Generate a password-less keypair (password-less so CI can sign
 //     non-interactively):
-//       minisign -G -W -p minisign.pub -s minisign.key
+//     minisign -G -W -p minisign.pub -s minisign.key
 //  2. Paste the "Public key:" base64 value below (and into scripts/install.sh's
 //     MINISIGN_PUBKEY for parity).
 //  3. Add the contents of minisign.key as the GitHub Actions secret MINISIGN_KEY

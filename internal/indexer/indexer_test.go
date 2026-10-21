@@ -112,10 +112,10 @@ func TestEmptyStoreGeneratesEmptySections(t *testing.T) {
 
 func TestTitleFromSlug(t *testing.T) {
 	cases := map[string]string{
-		"stripe-subscription":           "Stripe Subscription",
-		"telnyx-voice-ai-architecture":  "Telnyx Voice Ai Architecture",
-		"single":                        "Single",
-		"":                              "",
+		"stripe-subscription":          "Stripe Subscription",
+		"telnyx-voice-ai-architecture": "Telnyx Voice Ai Architecture",
+		"single":                       "Single",
+		"":                             "",
 	}
 	for input, want := range cases {
 		if got := titleFromSlug(input); got != want {

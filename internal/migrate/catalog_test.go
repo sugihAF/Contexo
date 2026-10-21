@@ -12,9 +12,9 @@ import (
 
 func TestBuildOrdersDedupsAndFlags(t *testing.T) {
 	src := t.TempDir()
-	writeFile(t, filepath.Join(src, "README.md"), "# Proj\n\nx")            // docs → entity
-	writeFile(t, filepath.Join(src, "CLAUDE.md"), "# Rules\n\ny")          // agentfiles → concept
-	writeFile(t, filepath.Join(src, "docs", "auth.md"), "# Auth\n\nz")     // docs → concept
+	writeFile(t, filepath.Join(src, "README.md"), "# Proj\n\nx")       // docs → entity
+	writeFile(t, filepath.Join(src, "CLAUDE.md"), "# Rules\n\ny")      // agentfiles → concept
+	writeFile(t, filepath.Join(src, "docs", "auth.md"), "# Auth\n\nz") // docs → concept
 
 	// A .contexo store that already has "proj".
 	hub := t.TempDir()
