@@ -858,3 +858,38 @@ func TestValidatePagePathExported(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteDecomposedUnicodePath: with core.precomposeunicode (git's default
+// on macOS) git indexes a decomposed (NFD) name such as "wiki/café.md"
+// under its precomposed (NFC) bytes. That is the page the client named, not a
+// case variant, so the write must succeed and an unchanged rewrite must be a
+// no-op at the same commit.
+func TestWriteDecomposedUnicodePath(t *testing.T) {
+	s := wp02Store(t)
+	out, _ := s.git(s.repoDir("r"), "config", "--type=bool", "core.precomposeunicode")
+	if strings.TrimSpace(out) != "true" {
+		t.Skipf("core.precomposeunicode is %q, not true", strings.TrimSpace(out))
+	}
+	const nfd = "wiki/café.md"
+
+	res, conflict, err := s.WriteWithOptions("r", nfd, []byte("accent"), wp02Opts(""))
+	if err != nil || conflict != nil || !res.Changed {
+		t.Fatalf("write %q: res=%+v conflict=%+v err=%v, want a new commit", nfd, res, conflict, err)
+	}
+	again, conflict, err := s.WriteWithOptions("r", nfd, []byte("accent"), wp02Opts(res.SHA))
+	if err != nil || conflict != nil || again.Changed || again.SHA != res.SHA {
+		t.Errorf("unchanged rewrite of %q: res=%+v conflict=%+v err=%v, want {SHA:%s Changed:false}", nfd, again, conflict, err, res.SHA)
+	}
+	if st := wp02Status(t, s); st != "" {
+		t.Errorf("git status --porcelain = %q, want clean", st)
+	}
+	if content, sha, err := s.Read("r", nfd); err != nil || string(content) != "accent" || sha != res.SHA {
+		t.Errorf("Read(%q) = %q@%s err=%v, want accent@%s", nfd, content, sha, err, res.SHA)
+	}
+	o := wp02Opts("")
+	o.ExpectAbsent = true
+	if _, conflict, err := s.WriteWithOptions("r", nfd, []byte("mine"), o); !errors.Is(err, ErrConflict) ||
+		conflict == nil || conflict.CurrentSHA != res.SHA || string(conflict.CurrentContent) != "accent" {
+		t.Errorf("ExpectAbsent rewrite of %q: conflict=%+v err=%v, want ErrConflict at %s with content accent", nfd, conflict, err, res.SHA)
+	}
+}

@@ -232,26 +232,33 @@ func (s *Store) WriteWithOptions(repoID, filePath string, content []byte, o Writ
 }
 
 // requireIndexed checks, right after `git add -- filePath`, that the index
-// holds exactly filePath. On a case-insensitive filesystem (core.ignorecase) a
-// case variant of a tracked page ("Wiki/A.md" while wiki/a.md is tracked)
-// opens and overwrites the tracked file, while git add stages nothing under
-// the new name; unchecked, the write would be reported as an unchanged no-op
-// and leave the tracked page modified on disk. ls-files pathspecs are literal
-// (gitCmd) and case-sensitive, so its -z output must be filePath + NUL.
+// holds the file filePath names. On a case-insensitive filesystem
+// (core.ignorecase) a case variant of a tracked page ("Wiki/A.md" while
+// wiki/a.md is tracked) opens and overwrites the tracked file, while git add
+// stages nothing under the new name; unchecked, the write would be reported
+// as an unchanged no-op and leave the tracked page modified on disk.
 //
-// On a mismatch the write is undone, best effort, and the path is refused with
-// ErrUnsafePath. The caller holds the repo lock, so no other write is in
-// flight and the index otherwise equals HEAD: a file this write created
-// (abs, when created) is deleted, `reset -q` unstages what git add staged
-// under the on-disk name (a new page under a case variant of a tracked
-// directory, e.g. "Wiki/c.md" staged as wiki/c.md), and `checkout -- .` puts
-// back the tracked file the write overwrote.
+// The check is that `ls-files -z -- filePath` lists exactly one entry, not
+// that the entry's bytes equal filePath: with core.precomposeunicode (git's
+// default on macOS) git precomposes its arguments and indexes a decomposed
+// (NFD) name such as "wiki/café.md" under its NFC bytes, which is the
+// same page. ls-files pathspecs are literal (gitCmd) and case-sensitive, so
+// they only ever match the file git staged for this name, and a case variant
+// matches nothing.
+//
+// When there is not exactly one entry the write is undone, best effort, and
+// the path is refused with ErrUnsafePath. The caller holds the repo lock, so
+// no other write is in flight and the index otherwise equals HEAD: a file
+// this write created (abs, when created) is deleted, `reset -q` unstages what
+// git add staged under the on-disk name (a new page under a case variant of a
+// tracked directory, e.g. "Wiki/c.md" staged as wiki/c.md), and
+// `checkout -- .` puts back the tracked file the write overwrote.
 func (s *Store) requireIndexed(dir, filePath, abs string, created bool) error {
 	out, err := gitCmd(dir, "ls-files", "-z", "--", filePath).Output()
 	if err != nil {
 		return fmt.Errorf("gitstore: ls-files: %w", err)
 	}
-	if string(out) == filePath+"\x00" {
+	if entries := string(out); strings.Count(entries, "\x00") == 1 && strings.HasSuffix(entries, "\x00") {
 		return nil
 	}
 	if created {
