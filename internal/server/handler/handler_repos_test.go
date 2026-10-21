@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sqlite "modernc.org/sqlite"
 
 	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/server/gitstore"
@@ -215,6 +218,23 @@ func (q wp07QuotaHook) AllowRepoCreate(string, int) error {
 }
 
 func (wp07QuotaHook) AllowMemberAdd(string, []string, int) error { return nil }
+
+// wp07LockProbeFunc names the SQL function that reports whether createRepoMu
+// is held when SQLite calls it: 1 when it is, else 0. A trigger calls it in
+// the middle of the statement that fires the trigger, on the goroutine that
+// runs that statement. It is registered with the driver at init, before any
+// test opens a userstore, so every connection of every rig has it.
+const wp07LockProbeFunc = "wp07_create_repo_mu_held"
+
+func init() {
+	sqlite.MustRegisterScalarFunction(wp07LockProbeFunc, 0, func(*sqlite.FunctionContext, []driver.Value) (driver.Value, error) {
+		if createRepoMu.TryLock() {
+			createRepoMu.Unlock()
+			return int64(0), nil
+		}
+		return int64(1), nil
+	})
+}
 
 // wp07MustPush pushes one page as bearer and fails the test unless it is
 // committed (200).
@@ -925,14 +945,44 @@ func TestCreateRepoRechecksExistenceUnderCreateRepoMu(t *testing.T) {
 // gives one owner per id, so the one-owner races pass without createRepoMu.
 // What the lock adds is that the quota count, the creation, the purge and
 // the owner row are one step for every other creation and for a push's
-// re-check (TestCreateRepoConcurrentDistinctIDsQuotaExact,
-// TestCreateRepoCreatorsPushWaitsForOwnerRow). Pinned directly here:
-// createRepoMu is held when the quota is checked. That it is still held
-// through the purge and the owner row is pinned by
-// TestCreateRepoCreatorsPushWaitsForOwnerRow.
+// re-check. The races that show it are timing-based:
+// TestCreateRepoConcurrentDistinctIDsQuotaExact needs a second create to
+// count its quota inside the window, and
+// TestCreateRepoCreatorsPushWaitsForOwnerRow is deterministic only up to the
+// purge (a release between the purge and the owner row lets the woken push
+// race the insert, which the insert nearly always wins). Pinned directly and
+// deterministically here, step by step: the quota hook, and triggers on the
+// purge's deletes and on the owner row's insert, record whether createRepoMu
+// is held when they run. A create that released it before the owner row
+// exists would let another create pass the quota on a count without this
+// repo, and refuse the creator's own push 403.
 func TestCreateRepoHoldsCreateRepoMu(t *testing.T) {
 	rig := setupRig(t)
-	alice := wp07SignIn(t, rig, "alice")["alice"]
+	us := wp07SignIn(t, rig, "alice", "bob")
+	alice, bob := us["alice"], us["bob"]
+	// Stale rows of "locked" from before it had a directory, for the purge.
+	if err := rig.users.AddMember("locked", bob.id, userstore.RoleMember); err != nil {
+		t.Fatalf("seed locked: %v", err)
+	}
+	if _, _, err := rig.users.MintInviteKey("locked", bob.id, "k"); err != nil {
+		t.Fatalf("seed locked key: %v", err)
+	}
+	if err := rig.users.RecordActivity("locked", bob.id, "push", ""); err != nil {
+		t.Fatalf("seed locked activity: %v", err)
+	}
+	db := rig.users.DB()
+	stmts := []string{`CREATE TABLE wp07_lock_probe (step TEXT NOT NULL, held INTEGER NOT NULL)`}
+	for _, table := range []string{"repo_members", "repo_invite_keys", "repo_activity"} {
+		stmts = append(stmts, `CREATE TRIGGER wp07_probe_purge_`+table+` BEFORE DELETE ON `+table+`
+BEGIN INSERT INTO wp07_lock_probe VALUES ('purge `+table+` ' || OLD.repo_id, `+wp07LockProbeFunc+`()); END`)
+	}
+	stmts = append(stmts, `CREATE TRIGGER wp07_probe_owner_row AFTER INSERT ON repo_members
+BEGIN INSERT INTO wp07_lock_probe VALUES ('insert repo_members ' || NEW.repo_id || ' ' || NEW.role, `+wp07LockProbeFunc+`()); END`)
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("install the lock probe: %v", err)
+		}
+	}
 	calls, held := 0, 0
 	rig.h.SetQuota(wp07QuotaHook{hook: func() {
 		calls++
@@ -942,10 +992,38 @@ func TestCreateRepoHoldsCreateRepoMu(t *testing.T) {
 		}
 		held++
 	}})
+
 	wp07WantCreated(t, "alice creates locked", wp07Create(t, rig, "locked", alice.bearer), "locked")
 	if calls != 1 || held != 1 {
 		t.Errorf("quota checked %d times, %d of them under createRepoMu; want 1 and 1", calls, held)
 	}
+	rows, err := db.Query(`SELECT step, held FROM wp07_lock_probe ORDER BY rowid`)
+	if err != nil {
+		t.Fatalf("read the lock probe: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var step string
+		var locked int
+		if err := rows.Scan(&step, &locked); err != nil {
+			t.Fatalf("scan the lock probe: %v", err)
+		}
+		got = append(got, fmt.Sprintf("%s held=%d", step, locked))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the lock probe: %v", err)
+	}
+	want := []string{
+		"purge repo_members locked held=1",
+		"purge repo_invite_keys locked held=1",
+		"purge repo_activity locked held=1",
+		"insert repo_members locked owner held=1",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("statements of the create and whether createRepoMu was held:\n got %q\nwant %q", got, want)
+	}
+	wp07WantMembers(t, "locked", rig, "locked", map[string]string{alice.id: userstore.RoleOwner})
 }
 
 // TestCreateRepoConcurrentDistinctIDsQuotaExact: one user one repo short of
@@ -998,7 +1076,9 @@ func TestCreateRepoConcurrentDistinctIDsQuotaExact(t *testing.T) {
 // that finds the repo before its owner row exists re-checks under
 // createRepoMu, which the create holds until the purge and the owner row
 // are done. This is the realistic race and does not hit the window on every
-// run; TestCreateRepoCreatorsPushWaitsForOwnerRow pins it deterministically.
+// run. TestCreateRepoCreatorsPushWaitsForOwnerRow pins deterministically that
+// the push waits while the create is held before its purge, and
+// TestCreateRepoHoldsCreateRepoMu that the lock covers the owner row.
 func TestCreateRepoCreatorsOwnPushesNotRefused(t *testing.T) {
 	rig := setupRig(t)
 	wp02WireSync(rig)
@@ -1038,7 +1118,10 @@ func TestCreateRepoCreatorsOwnPushesNotRefused(t *testing.T) {
 // and must wait for createRepoMu, which the create holds until its purge
 // and owner row are done, instead of being refused 403 on its own repo.
 // It fails if the create does not take createRepoMu or releases it before
-// the owner row exists.
+// its purge commits. It does not catch a release between the purge and the
+// owner row: the woken push then races the creator's insert, which nearly
+// always lands first. TestCreateRepoHoldsCreateRepoMu pins that the lock is
+// held through the owner row.
 func TestCreateRepoCreatorsPushWaitsForOwnerRow(t *testing.T) {
 	rig := setupRig(t)
 	wp02WireSync(rig)
