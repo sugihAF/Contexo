@@ -9,6 +9,7 @@ import (
 	"strings"
 	gosync "sync"
 	"testing"
+	"time"
 )
 
 // wp02Store returns a Store with one initialized repo "r".
@@ -891,5 +892,31 @@ func TestWriteDecomposedUnicodePath(t *testing.T) {
 	if _, conflict, err := s.WriteWithOptions("r", nfd, []byte("mine"), o); !errors.Is(err, ErrConflict) ||
 		conflict == nil || conflict.CurrentSHA != res.SHA || string(conflict.CurrentContent) != "accent" {
 		t.Errorf("ExpectAbsent rewrite of %q: conflict=%+v err=%v, want ErrConflict at %s with content accent", nfd, conflict, err, res.SHA)
+	}
+}
+
+// TestLockRepoKeyIsCaseInsensitive: on a case-insensitive filesystem "Repo"
+// and "repo" are one git repo, so they must share one lock.
+func TestLockRepoKeyIsCaseInsensitive(t *testing.T) {
+	base := t.TempDir()
+	unlock := lockRepo(filepath.Join(base, "Repo"))
+	acquired := make(chan struct{})
+	go func() {
+		release := lockRepo(filepath.Join(base, "repo"))
+		close(acquired)
+		release()
+	}()
+
+	select {
+	case <-acquired:
+		unlock()
+		t.Fatal("lockRepo(repo) was acquired while lockRepo(Repo) was held")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-acquired:
+	case <-time.After(10 * time.Second):
+		t.Fatal("lockRepo(repo) still blocked after lockRepo(Repo) was released")
 	}
 }

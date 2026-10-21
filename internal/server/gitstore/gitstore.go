@@ -273,8 +273,13 @@ func (s *Store) requireIndexed(dir, filePath, abs string, created bool) error {
 // single process per data root). Values are *sync.Mutex.
 var repoLocks sync.Map
 
+// lockRepo locks dir's repo and returns its unlock. The key is the lowercased
+// dir: on a case-insensitive filesystem (macOS, Windows) repo IDs "Repo" and
+// "repo" name one git repo, which must have one mutex. On a case-sensitive
+// host two repos that differ only in case then share a mutex, which only
+// serializes their writes and is harmless.
 func lockRepo(dir string) (unlock func()) {
-	v, _ := repoLocks.LoadOrStore(dir, &sync.Mutex{})
+	v, _ := repoLocks.LoadOrStore(strings.ToLower(dir), &sync.Mutex{})
 	mu := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
