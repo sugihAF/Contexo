@@ -1120,6 +1120,9 @@ func TestWriteToleratesOddCommitMetadata(t *testing.T) {
 		{AuthorName: ".", AuthorEmail: "t@example.com", Message: "m"},
 		{AuthorName: "", AuthorEmail: "", Message: ""},
 		{AuthorName: "Eve <evil>", AuthorEmail: "e@x>\n<y", Message: "m"},
+		{AuthorName: " ", AuthorEmail: "　", Message: "m"},
+		{AuthorName: ".  ", AuthorEmail: "t@example.com", Message: "m"},
+		{AuthorName: "Tester", AuthorEmail: "t@example.com", Message: "fix\x00x"},
 	}
 	for i, o := range cases {
 		p := fmt.Sprintf("wiki/odd-%d.md", i)

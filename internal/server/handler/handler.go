@@ -463,6 +463,9 @@ func (h *Handler) Push(c *gin.Context) {
 	//      proper attribution instead of "unknown".
 	//   3. Only fall through to the "unknown" sentinel if both the request
 	//      and the user lookup are empty (legacy auth without user identity).
+	// A value git would reject (only spaces or punctuation) counts as empty.
+	req.AuthorName = gitstore.CleanIdent(req.AuthorName)
+	req.AuthorEmail = gitstore.CleanIdent(req.AuthorEmail)
 	if (req.AuthorName == "" || req.AuthorEmail == "") && !auth.IsLegacy(uid) && h.users != nil {
 		if u, lerr := h.users.GetUserByID(uid); lerr == nil {
 			if req.AuthorName == "" {

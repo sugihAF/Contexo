@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Store wraps a directory holding one git working repo per repo_id.
@@ -287,29 +288,37 @@ func (s *Store) requireIndexed(dir, filePath, abs string, created bool) error {
 // "Name <email>" form. Such values fall back to the defaults handler.Push
 // uses for missing ones.
 func commitMeta(o WriteOptions) (authorArg, message string) {
-	message = o.Message
+	// NUL cannot appear in a process argument (exec fails with EINVAL).
+	message = strings.ReplaceAll(o.Message, "\x00", "")
 	if strings.TrimSpace(message) == "" {
 		message = "ctx push"
 	}
-	name := cleanIdent(o.AuthorName, "unknown")
-	email := cleanIdent(o.AuthorEmail, "unknown@contexo.local")
+	name := CleanIdent(o.AuthorName)
+	if name == "" {
+		name = "unknown"
+	}
+	email := CleanIdent(o.AuthorEmail)
+	if email == "" {
+		email = "unknown@contexo.local"
+	}
 	return fmt.Sprintf("--author=%s <%s>", name, email), message
 }
 
-// cleanIdent drops '<', '>' and control characters from an identity part and
-// returns def when nothing but git's crud characters (whitespace and
-// . , : ; " ' \) remains.
-func cleanIdent(s, def string) string {
+// CleanIdent returns an author name or email as git will accept it in
+// "--author=Name <email>": '<', '>' and control characters removed, and any
+// whitespace (Unicode included) and git's "crud" characters (. , : ; " ' \)
+// trimmed from both ends. It returns "" when nothing else is left, which
+// callers treat as a missing value (git refuses an empty identity).
+func CleanIdent(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if r == '<' || r == '>' || r < 0x20 || r == 0x7f {
 			return -1
 		}
 		return r
 	}, s)
-	if strings.Trim(s, " .,:;\"'\\") == "" {
-		return def
-	}
-	return strings.TrimSpace(s)
+	return strings.TrimFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(".,:;\"'\\", r)
+	})
 }
 
 // repoLocks serializes writes per repo directory (in-process; the server is a

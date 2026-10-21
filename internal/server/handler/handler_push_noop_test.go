@@ -799,6 +799,24 @@ func TestPush_FailedCreateLeavesNoOwnerRow(t *testing.T) {
 	}
 }
 
+// TestPush_JunkAuthorFallsBackToUser: an author name or email that git would
+// reject (only spaces or punctuation) counts as missing, so a signed-in
+// user's commit is credited to their account, not to "unknown".
+func TestPush_JunkAuthorFallsBackToUser(t *testing.T) {
+	rig, alice := wp02UserRig(t)
+	body := []byte(`{"author_name":" . ","author_email":" ","message":"m","files":[{"path":"wiki/a.md","content":"a"}]}`)
+	if w, _ := wp02PushRaw(t, rig.router, "team-repo", alice, "", body); w.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", w.Code, w.Body.String())
+	}
+	commits, err := rig.store.Log("team-repo", 1)
+	if err != nil || len(commits) != 1 {
+		t.Fatalf("log: %v %v", commits, err)
+	}
+	if commits[0].Author != "Alice" || commits[0].Email != "alice@example.com" {
+		t.Errorf("commit author %q <%s>, want Alice <alice@example.com>", commits[0].Author, commits[0].Email)
+	}
+}
+
 // TestPush_StaleRowsPurgedOnCreate: membership rows for an id that has no
 // repo (left by a crash between adding a creator's owner row and creating the
 // repo, or by an operator deleting a repo directory) must not grant access to
