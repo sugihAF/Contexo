@@ -210,19 +210,59 @@ func errorWithCode(c *gin.Context, status int, msg, code string) {
 // CreateRepoLegacy handles the deprecated POST /v1/repos/:id used by the
 // existing CLI's repo-init flow. Kept for back-compat with legacy auth; real
 // users should use POST /v1/repos.
+//
+// For a signed-in user it never grants access to someone else's repo: an
+// existing repo answers 201 (no membership change) only to a member, is
+// claimed like POST /v1/repos only when it has no owner, and is otherwise a
+// 409. Legacy auth (or no user store) keeps the idempotent Init.
 func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
-	// Gate only a genuinely new repo (re-initing an existing one is idempotent).
-	if !h.store.Exists(repoID) && !h.enforceRepoQuota(c, uid) {
+	if auth.IsLegacy(uid) || h.users == nil {
+		if err := h.store.Init(repoID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 		return
 	}
-	if err := h.store.Init(repoID); err != nil {
+
+	exists := h.store.Exists(repoID)
+	if exists {
+		member, err := h.users.IsMember(repoID, uid)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if member {
+			c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
+			return
+		}
+		hasOwner, err := h.users.RepoHasOwner(repoID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if hasOwner {
+			c.JSON(http.StatusConflict, gin.H{"error": "repo already exists"})
+			return
+		}
+	}
+
+	// The caller becomes a new owner (of a fresh repo or an orphan claim), so
+	// consult the quota before creating anything.
+	if !h.enforceRepoQuota(c, uid) {
+		return
+	}
+	if !exists {
+		if err := h.store.Init(repoID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-	if !auth.IsLegacy(uid) && h.users != nil {
-		_ = h.users.AddMember(repoID, uid, userstore.RoleOwner)
 	}
 	c.JSON(http.StatusCreated, gin.H{"repo_id": repoID})
 }

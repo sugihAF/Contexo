@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/sugihAF/contexo/internal/auth"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/userstore"
 )
 
 // wp02WireSync mounts the sync and page routes on a NEW /v1 group of the rig.
@@ -313,5 +315,115 @@ func TestPush_OversizeBodyIs413(t *testing.T) {
 	w, _ := wp02Push(t, r, "big-repo", "legacy-key", "", wp02PushFile{Path: "wiki/a.md", Content: strings.Repeat("x", 1024)})
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversize push: %d %s, want 413", w.Code, w.Body.String())
+	}
+}
+
+// wp02UserID is the userstore id of a signed-in user.
+func wp02UserID(t *testing.T, rig *testRig, email string) string {
+	t.Helper()
+	u, err := rig.users.GetUserByEmail(email)
+	if err != nil {
+		t.Fatalf("user %s: %v", email, err)
+	}
+	return u.ID
+}
+
+// wp02Role is uid's role in repo, or "" when uid is not a member.
+func wp02Role(t *testing.T, rig *testRig, repo, uid string) string {
+	t.Helper()
+	role, err := rig.users.GetRole(repo, uid)
+	if errors.Is(err, userstore.ErrNotFound) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("role of %s in %s: %v", uid, repo, err)
+	}
+	return role
+}
+
+// TestCreateRepoLegacy_NoOwnerTakeover: the deprecated POST /v1/repos/:id
+// must not make a signed-in caller an owner of a repo someone else owns. It
+// used to: the quota check ran only for a new repo, Init was a no-op on an
+// existing one, and AddMember(owner) ran unconditionally.
+func TestCreateRepoLegacy_NoOwnerTakeover(t *testing.T) {
+	rig := setupRig(t)
+	wp02WireSync(rig)
+	v1 := rig.router.Group("/v1")
+	v1.Use(auth.GinMiddleware(rig.resolver.Validator()))
+	v1.POST("/repos/:id", rig.h.CreateRepoLegacy)
+
+	// Alice signs in first, so she is the one who would claim pre-existing
+	// orphans at sign-in; "orphan" is created only after both sign-ins.
+	alice := signIn(t, rig.router, "alice-token")
+	if w := doJSON(t, rig.router, http.MethodPost, "/v1/repos", alice, map[string]string{"id": "alice-repo"}); w.Code != http.StatusCreated {
+		t.Fatalf("alice creates alice-repo: %d %s", w.Code, w.Body.String())
+	}
+	if w, _ := wp02Push(t, rig.router, "alice-repo", alice, "", wp02PushFile{Path: "wiki/secret.md", Content: "alice only"}); w.Code != http.StatusOK {
+		t.Fatalf("alice pushes: %d %s", w.Code, w.Body.String())
+	}
+	bob := signIn(t, rig.router, "bob-token")
+	aliceID := wp02UserID(t, rig, "alice@example.com")
+	bobID := wp02UserID(t, rig, "bob@example.com")
+	create := func(repo, bearer string) *httptest.ResponseRecorder {
+		t.Helper()
+		return doJSON(t, rig.router, http.MethodPost, "/v1/repos/"+repo, bearer, nil)
+	}
+	wantCreated := func(label string, w *httptest.ResponseRecorder, repo string) {
+		t.Helper()
+		var body struct {
+			RepoID string `json:"repo_id"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != http.StatusCreated || body.RepoID != repo {
+			t.Errorf("%s: %d %s, want 201 {\"repo_id\":%q}", label, w.Code, w.Body.String(), repo)
+		}
+	}
+
+	// Bob cannot take over Alice's repo, and gains no access through trying.
+	w := create("alice-repo", bob)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "repo already exists") {
+		t.Errorf("bob creates alice-repo: %d %s, want 409 repo already exists", w.Code, w.Body.String())
+	}
+	if ok, err := rig.users.IsMember("alice-repo", bobID); err != nil || ok {
+		t.Errorf("bob is a member of alice-repo after the legacy create (member=%v err=%v)", ok, err)
+	}
+	if w := doJSON(t, rig.router, http.MethodGet, "/v1/repos/alice-repo/pages/wiki/secret.md", bob, nil); w.Code != http.StatusForbidden {
+		t.Errorf("bob reads alice's page: %d %s, want 403", w.Code, w.Body.String())
+	}
+
+	// Alice re-creating her own repo stays idempotent and she stays owner.
+	wantCreated("alice re-creates alice-repo", create("alice-repo", alice), "alice-repo")
+	if r := wp02Role(t, rig, "alice-repo", aliceID); r != userstore.RoleOwner {
+		t.Errorf("alice's role in alice-repo = %q, want owner", r)
+	}
+
+	// An existing repo with no owner is claimed, as POST /v1/repos does.
+	if err := rig.store.Init("orphan"); err != nil {
+		t.Fatalf("init orphan: %v", err)
+	}
+	wantCreated("bob claims orphan", create("orphan", bob), "orphan")
+	if r := wp02Role(t, rig, "orphan", bobID); r != userstore.RoleOwner {
+		t.Errorf("bob's role in orphan = %q, want owner", r)
+	}
+
+	// A new repo is created with the caller as owner.
+	wantCreated("bob creates bob-new", create("bob-new", bob), "bob-new")
+	if r := wp02Role(t, rig, "bob-new", bobID); r != userstore.RoleOwner || !rig.store.Exists("bob-new") {
+		t.Errorf("bob-new: bob's role %q exists=%v, want owner on disk", r, rig.store.Exists("bob-new"))
+	}
+
+	// The legacy key re-inits an existing repo without touching membership.
+	wantCreated("legacy key on alice-repo", create("alice-repo", "legacy-key"), "alice-repo")
+
+	// A non-owner member re-creating is a 201 that leaves the role alone.
+	if err := rig.users.AddMember("alice-repo", bobID, userstore.RoleMember); err != nil {
+		t.Fatalf("add bob as member: %v", err)
+	}
+	wantCreated("member bob re-creates alice-repo", create("alice-repo", bob), "alice-repo")
+	if r := wp02Role(t, rig, "alice-repo", bobID); r != userstore.RoleMember {
+		t.Errorf("bob's role in alice-repo = %q, want member", r)
+	}
+	if owners, err := rig.users.RepoOwners("alice-repo"); err != nil || len(owners) != 1 || owners[0] != aliceID {
+		t.Errorf("alice-repo owners = %v (err %v), want only alice %s", owners, err, aliceID)
 	}
 }
