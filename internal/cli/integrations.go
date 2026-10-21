@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -14,13 +15,16 @@ import (
 //
 // The leading mark column carries the at-a-glance state (MCP wired or not);
 // the text cells keep their exact wording so they stay greppable and so the
-// Codex row's "wired (~/.codex, global)" never grows a prefix.
+// Codex row's "wired (~/.codex, global)" never grows a prefix. The VS Code row
+// reads .vscode/mcp.json's servers key (see vscodeMCPLabel) and shows "-" for
+// capture: VS Code has no Stop hook.
 func renderIntegrationTable(out io.Writer, root string, deps mcpWireDeps) {
 	u := ui.Plain(out)
 	hookOn, _ := hookInstalled(root)
 
 	claudeOn, _ := agentwire.WiredJSON(agentwire.ClaudeMCPPath(root))
 	cursorOn, _ := agentwire.WiredJSON(agentwire.CursorMCPPath(root))
+	vscodeOn, _ := agentwire.WiredVSCode(agentwire.VSCodeMCPPath(root))
 
 	codexOn := false
 	codexMCP := "not installed"
@@ -46,12 +50,13 @@ func renderIntegrationTable(out io.Writer, root string, deps mcpWireDeps) {
 	u.Table("", "AGENT", "MCP SERVER", "CAPTURE (STOP HOOK)").
 		Row(u.Mark(claudeOn), "Claude Code", mcpLabel(agentwire.ClaudeMCPPath(root), ".mcp.json"), hookStatus(hookOn)).
 		Row(u.Mark(cursorOn), "Cursor", mcpLabel(agentwire.CursorMCPPath(root), ".cursor/mcp.json"), cursorCapture).
+		Row(u.Mark(vscodeOn), "VS Code", vscodeMCPLabel(root), "-").
 		Row(u.Mark(codexOn), "Codex", codexMCP, codexCapture).
 		Render()
 }
 
 // renderAgentGuide explains how to add Contexo to agents/harnesses beyond the
-// three Contexo wires directly — covering each tool's own MCP config format,
+// four Contexo wires directly — covering each tool's own MCP config format,
 // plus the honest state of per-turn capture. Config locations can change;
 // each row points at the agent's own config so its docs remain the source of
 // truth.
@@ -67,6 +72,7 @@ func renderAgentGuide(out io.Writer) {
 	u.Table("AGENT", "CONFIG", "FORMAT / HOW").
 		Row("Claude Code", "./.mcp.json", "JSON mcpServers   — ctx mcp install --tool=claude").
 		Row("Cursor", "./.cursor/mcp.json", "JSON mcpServers   — ctx mcp install --tool=cursor").
+		Row("VS Code", "./.vscode/mcp.json", "JSON servers   — ctx mcp install --tool=vscode").
 		Row("Codex", "~/.codex/config.toml", "TOML [mcp_servers.contexo]   — ctx mcp install --tool=codex").
 		Row("Windsurf", "~/.codeium/windsurf/mcp_config.json", "JSON mcpServers").
 		Row("OpenCode", "./opencode.json", `JSON  mcp: { contexo: { type: "local", command: ["ctx","mcp"] } }`).
@@ -76,6 +82,7 @@ func renderAgentGuide(out io.Writer) {
 
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, `  JSON mcpServers entry:   "contexo": { "command": "ctx", "args": ["mcp"] }`)
+	fmt.Fprintln(out, `  VS Code servers entry:   "contexo": { "type": "stdio", "command": "ctx", "args": ["mcp", "--root", "${workspaceFolder}"] }`)
 	fmt.Fprintln(out, "  Any other MCP client: add the same server; see its docs for the exact path.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Capture (the Stop hook): Claude Code, Codex, and Cursor are supported.")
@@ -90,6 +97,20 @@ func mcpLabel(path, rel string) string {
 		return "wired (" + rel + ")"
 	}
 	return "not wired (" + rel + ")"
+}
+
+// vscodeMCPLabel is mcpLabel for ./.vscode/mcp.json. mcpLabel cannot be reused:
+// it reads mcpServers, while VS Code's key is servers. A JSONC file is
+// flagged rather than reported as "not wired", since we cannot tell.
+func vscodeMCPLabel(root string) string {
+	wired, err := agentwire.WiredVSCode(agentwire.VSCodeMCPPath(root))
+	switch {
+	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
+		return "not strict JSON (.vscode/mcp.json)"
+	case wired:
+		return "wired (.vscode/mcp.json)"
+	}
+	return "not wired (.vscode/mcp.json)"
 }
 
 func hookStatus(on bool) string {

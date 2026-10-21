@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,9 +22,9 @@ import (
 var codexRunner = agentwire.Runner(agentwire.DefaultRunner)
 
 // newDetachCmd is the inverse of `ctx init`: it removes the wiring that
-// init added (.mcp.json / .cursor/mcp.json entries, the global Codex entry
-// when wired, .gitignore line, Stop hook) and, by default, deletes the
-// .contexo/ knowledge directory itself.
+// init added (.mcp.json / .cursor/mcp.json / .vscode/mcp.json entries, the
+// global Codex entry when wired, .gitignore line, Stop hook) and, by default,
+// deletes the .contexo/ knowledge directory itself.
 //
 // Default is aggressive (purges everything) because the most common use
 // case is "I'm done evaluating, get this off my project." Users who only
@@ -36,9 +37,9 @@ func newDetachCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "detach",
 		Short: "Reverse `ctx init` — remove Contexo wiring (and, by default, the .contexo/ directory)",
-		Long: "Removes the Contexo MCP entries (.mcp.json, .cursor/mcp.json, and " +
-			"Codex's global config when wired), the .gitignore line, and the Claude " +
-			"Code Stop hook installed by `ctx init`. By default also deletes the " +
+		Long: "Removes the Contexo MCP entries (.mcp.json, .cursor/mcp.json, " +
+			".vscode/mcp.json, and Codex's global config when wired), the .gitignore " +
+			"line, and the Claude Code Stop hook installed by `ctx init`. By default also deletes the " +
 			".contexo/ knowledge directory; pass --keep-knowledge to preserve it " +
 			"(useful when only the agent integration should go).",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +59,8 @@ type detachPlan struct {
 	removeMCPFile     bool // true when .mcp.json had only the contexo entry
 	removeCursorEntry bool
 	removeCursorFile  bool // true when .cursor/mcp.json had only the contexo entry
+	removeVSCodeEntry bool // true when .vscode/mcp.json has the contexo entry
+	vscodeManual      bool // true when .vscode/mcp.json is JSONC and mentions "contexo"
 	removeCodex       bool // true when codex is installed and has the contexo entry
 	removeGitignoreLn bool
 	removeStopHook    bool
@@ -67,6 +70,7 @@ type detachPlan struct {
 	contexoDirPath    string
 	mcpPath           string
 	cursorPath        string
+	vscodePath        string
 	gitignorePath     string
 	hookSettingsPath  string
 }
@@ -78,7 +82,14 @@ func runDetach(cmd *cobra.Command, root string, assumeYes, keepKnowledge bool) e
 	}
 	u := ui.From(cmd)
 	if !plan.anyAction() {
-		fmt.Fprintln(u.Out(), u.Style(ui.FG2, "Nothing to detach — no Contexo wiring or .contexo/ directory found here."))
+		msg := "Nothing to detach — no Contexo wiring or .contexo/ directory found here."
+		if plan.vscodeManual {
+			// The manual line names a contexo entry, so the summary must not
+			// claim that no Contexo wiring was found.
+			fmt.Fprintln(u.Out(), vscodeDetachManualLine)
+			msg = "Nothing to detach automatically — remove the .vscode/mcp.json entry above by hand."
+		}
+		fmt.Fprintln(u.Out(), u.Style(ui.FG2, msg))
 		return nil
 	}
 
@@ -103,6 +114,7 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 		contexoDirPath:   config.ContexoDirPath(root),
 		mcpPath:          filepath.Join(root, ".mcp.json"),
 		cursorPath:       agentwire.CursorMCPPath(root),
+		vscodePath:       agentwire.VSCodeMCPPath(root),
 		gitignorePath:    filepath.Join(root, ".gitignore"),
 		hookSettingsPath: filepath.Join(root, filepath.FromSlash(claudeSettingsRel)),
 	}
@@ -131,6 +143,18 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 	// shape: drop the contexo entry, deleting the file when it held nothing else.
 	plan.removeMCPEntry, plan.removeMCPFile = jsonMCPState(plan.mcpPath)
 	plan.removeCursorEntry, plan.removeCursorFile = jsonMCPState(plan.cursorPath)
+
+	// VS Code (./.vscode/mcp.json) keys servers under "servers", so it has its
+	// own helpers. Checked whether or not VS Code is detected: detach cleans up
+	// what is on disk. A JSONC file is never rewritten; when it mentions
+	// contexo, the user is told to remove the entry by hand.
+	vscodeWired, err := agentwire.WiredVSCode(plan.vscodePath)
+	switch {
+	case vscodeWired:
+		plan.removeVSCodeEntry = true
+	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
+		plan.vscodeManual = vscodeJSONCMentionsContexo(plan.vscodePath)
+	}
 
 	// Codex's MCP server lives in its GLOBAL config; only remove it when codex
 	// is installed and actually has our entry.
@@ -164,9 +188,13 @@ func buildDetachPlan(root string, keepKnowledge bool) (detachPlan, error) {
 
 func (p detachPlan) anyAction() bool {
 	return p.removeContexoDir || p.removeMCPEntry || p.removeMCPFile ||
-		p.removeCursorEntry || p.removeCursorFile || p.removeCodex ||
+		p.removeCursorEntry || p.removeCursorFile || p.removeVSCodeEntry || p.removeCodex ||
 		p.removeGitignoreLn || p.removeStopHook || p.removeCodexHooks || p.removeCursorHooks
 }
+
+// vscodeDetachManualLine is printed (never acted on) for a JSONC
+// .vscode/mcp.json that holds the contexo entry: detach leaves it untouched.
+const vscodeDetachManualLine = "  - .vscode/mcp.json left alone: remove servers.contexo manually (the file has comments or trailing commas)"
 
 func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
 	out := cmd.OutOrStdout()
@@ -181,6 +209,12 @@ func printDetachPlan(cmd *cobra.Command, plan detachPlan, keepKnowledge bool) {
 		fmt.Fprintf(out, "  - delete .cursor/mcp.json (only contained the contexo entry)\n")
 	} else if plan.removeCursorEntry {
 		fmt.Fprintf(out, "  - remove the \"contexo\" entry from .cursor/mcp.json (other servers left alone)\n")
+	}
+	if plan.removeVSCodeEntry {
+		fmt.Fprintf(out, "  - remove the \"contexo\" entry from .vscode/mcp.json (the file is deleted if nothing else is left)\n")
+	}
+	if plan.vscodeManual {
+		fmt.Fprintln(out, vscodeDetachManualLine)
 	}
 	if plan.removeCodex {
 		fmt.Fprintf(out, "  - remove contexo from Codex's GLOBAL config (codex mcp remove contexo)\n")
@@ -257,6 +291,16 @@ func executeDetachPlan(cmd *cobra.Command, root string, plan detachPlan) error {
 			u.Step("Removed .cursor/mcp.json")
 		} else {
 			u.Step("Removed contexo entry from .cursor/mcp.json")
+		}
+	}
+
+	if plan.removeVSCodeEntry {
+		if _, deleted, err := agentwire.UnwireVSCode(plan.vscodePath); err != nil {
+			noteErr("update .vscode/mcp.json", err)
+		} else if deleted {
+			u.Step("Removed .vscode/mcp.json")
+		} else {
+			u.Step("Removed contexo entry from .vscode/mcp.json")
 		}
 	}
 

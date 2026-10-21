@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,17 +15,20 @@ import (
 )
 
 // mcpWireDeps holds the externally-facing dependencies of the wiring
-// commands (the codex CLI runner and the codex-installed probe) so tests can
-// inject stubs instead of touching the real environment.
+// commands (the codex CLI runner and the codex/VS Code installed probes) so
+// tests can inject stubs instead of touching the real environment.
 type mcpWireDeps struct {
-	runner         agentwire.Runner
-	codexInstalled func() bool
+	runner          agentwire.Runner
+	codexInstalled  func() bool
+	vscodeInstalled func() bool
 }
 
 func defaultMCPWireDeps() mcpWireDeps {
 	return mcpWireDeps{
 		runner:         agentwire.DefaultRunner,
 		codexInstalled: agentwire.CodexInstalled,
+		// Late-bound so a test's stub of detectVSCode applies here too.
+		vscodeInstalled: func() bool { return detectVSCode() },
 	}
 }
 
@@ -34,19 +39,20 @@ func newMCPInstallCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Wire the Contexo MCP server into an agent's config (claude|cursor|codex|all)",
+		Short: "Wire the Contexo MCP server into an agent's config (claude|cursor|vscode|codex|all)",
 		Long: "Adds Contexo's MCP server so an agent's tools (ctx_push/pull/write_page,\n" +
 			"history/diff, etc.) become available:\n\n" +
 			"  claude  -> ./.mcp.json            (project-local)\n" +
 			"  cursor  -> ./.cursor/mcp.json     (project-local)\n" +
+			"  vscode  -> ./.vscode/mcp.json     (project-local, key servers)\n" +
 			"  codex   -> ~/.codex/config.toml   (GLOBAL — prompts unless --yes)\n\n" +
-			"--tool=all wires the project-local agents (claude, cursor) and also codex\n" +
-			"when it is installed.",
+			"--tool=all wires the project-local agents (claude, cursor), VS Code when it\n" +
+			"is detected (~/.vscode or `code` on PATH), and codex when it is installed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMCPInstall(cmd, GetRootDir(), tool, assumeYes, defaultMCPWireDeps())
 		},
 	}
-	cmd.Flags().StringVar(&tool, "tool", "all", "agent to wire: claude|cursor|codex|all")
+	cmd.Flags().StringVar(&tool, "tool", "all", "agent to wire: claude|cursor|vscode|codex|all")
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip confirmation prompts (e.g. Codex's global config)")
 	return cmd
 }
@@ -55,12 +61,12 @@ func newMCPUninstallCmd() *cobra.Command {
 	var tool string
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the Contexo MCP server from an agent's config (claude|cursor|codex|all)",
+		Short: "Remove the Contexo MCP server from an agent's config (claude|cursor|vscode|codex|all)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMCPUninstall(cmd, GetRootDir(), tool, defaultMCPWireDeps())
 		},
 	}
-	cmd.Flags().StringVar(&tool, "tool", "all", "agent to unwire: claude|cursor|codex|all")
+	cmd.Flags().StringVar(&tool, "tool", "all", "agent to unwire: claude|cursor|vscode|codex|all")
 	return cmd
 }
 
@@ -88,12 +94,12 @@ func newMCPGuideCmd() *cobra.Command {
 // expandTools turns a --tool value into the concrete set, validating it.
 func expandTools(tool string) ([]string, error) {
 	switch tool {
-	case "claude", "cursor", "codex":
+	case "claude", "cursor", "vscode", "codex":
 		return []string{tool}, nil
 	case "all", "":
-		return []string{"claude", "cursor", "codex"}, nil
+		return []string{"claude", "cursor", "vscode", "codex"}, nil
 	default:
-		return nil, fmt.Errorf("unknown --tool %q (want claude, cursor, codex, or all)", tool)
+		return nil, fmt.Errorf("unknown --tool %q (want claude, cursor, vscode, codex, or all)", tool)
 	}
 }
 
@@ -117,6 +123,14 @@ func runMCPInstall(cmd *cobra.Command, root, tool string, assumeYes bool, deps m
 			if err := installJSONTarget(out, "Cursor", agentwire.CursorMCPPath(root), ".cursor/mcp.json"); err != nil {
 				return err
 			}
+		case "vscode":
+			// Under --tool=all, silently skip VS Code when it isn't detected.
+			explicit := tool == "vscode"
+			if explicit || deps.vscodeInstalled() {
+				if err := installVSCodeTarget(out, agentwire.VSCodeMCPPath(root), explicit); err != nil {
+					return err
+				}
+			}
 		case "codex":
 			if err := installCodexTarget(cmd, deps, assumeYes, explicitCodex); err != nil {
 				return err
@@ -136,6 +150,38 @@ func installJSONTarget(out io.Writer, label, path, rel string) error {
 		u.Success("Wired %s (%s)", label, rel)
 	} else {
 		noopLine(u, fmt.Sprintf("%s already wired (%s); nothing to do.", label, rel))
+	}
+	return nil
+}
+
+// vscodeManualWarning introduces VSCodeManualSnippet wherever a JSONC
+// .vscode/mcp.json was left untouched (ctx mcp install and ctx init).
+const vscodeManualWarning = ".vscode/mcp.json is not strict JSON (comments or trailing commas?); left it untouched. Add this entry by hand:"
+
+// warnVSCodeManual prints vscodeManualWarning followed by the snippet.
+func warnVSCodeManual(u *ui.UI) {
+	u.Warn(vscodeManualWarning)
+	fmt.Fprint(u.Out(), agentwire.VSCodeManualSnippet())
+}
+
+// installVSCodeTarget wires ./.vscode/mcp.json. A JSONC file is never
+// rewritten: the snippet is printed instead, and that is an error only when
+// VS Code was asked for explicitly (under --tool=all the run continues).
+func installVSCodeTarget(out io.Writer, path string, explicit bool) error {
+	u := ui.Plain(out)
+	changed, err := agentwire.WireVSCode(path)
+	switch {
+	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
+		warnVSCodeManual(u)
+		if explicit {
+			return fmt.Errorf("mcp install VS Code: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("mcp install VS Code: %w", err)
+	case changed:
+		u.Success("Wired VS Code (.vscode/mcp.json)")
+	default:
+		noopLine(u, "VS Code already wired (.vscode/mcp.json); nothing to do.")
 	}
 	return nil
 }
@@ -171,6 +217,9 @@ func runMCPUninstall(cmd *cobra.Command, root, tool string, deps mcpWireDeps) er
 			uninstallJSONTarget(out, "Claude Code", agentwire.ClaudeMCPPath(root), ".mcp.json")
 		case "cursor":
 			uninstallJSONTarget(out, "Cursor", agentwire.CursorMCPPath(root), ".cursor/mcp.json")
+		case "vscode":
+			// No detection gate: clean up whatever is on disk.
+			uninstallVSCodeTarget(out, agentwire.VSCodeMCPPath(root))
 		case "codex":
 			if err := uninstallCodexTarget(out, deps); err != nil {
 				return err
@@ -192,6 +241,39 @@ func uninstallJSONTarget(out io.Writer, label, path, rel string) {
 		u.Success("Removed %s entry from %s", label, rel)
 	default:
 		noopLine(u, fmt.Sprintf("%s not wired (%s); nothing to do.", label, rel))
+	}
+}
+
+// vscodeJSONCMentionsContexo reports whether the .vscode/mcp.json at path
+// (one already refused as not strict JSON) mentions a "contexo" key. Only then
+// is there an entry for the user to remove by hand: VS Code documents the file
+// as JSONC, so a commented file that never held contexo is ordinary. Shared by
+// ctx mcp uninstall and ctx detach so both say the same thing about a file.
+func vscodeJSONCMentionsContexo(path string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && bytes.Contains(raw, []byte(`"`+agentwire.ServerName+`"`))
+}
+
+// uninstallVSCodeTarget mirrors uninstallJSONTarget for ./.vscode/mcp.json,
+// leaving a JSONC file untouched.
+func uninstallVSCodeTarget(out io.Writer, path string) {
+	removed, deleted, err := agentwire.UnwireVSCode(path)
+	if errors.Is(err, agentwire.ErrUnparseableVSCodeConfig) && !vscodeJSONCMentionsContexo(path) {
+		// A JSONC file without contexo holds nothing of ours: report a no-op.
+		err = nil
+	}
+	u := ui.Plain(out)
+	switch {
+	case errors.Is(err, agentwire.ErrUnparseableVSCodeConfig):
+		u.Warn(".vscode/mcp.json is not strict JSON; left it alone: remove servers.contexo manually")
+	case err != nil:
+		u.Warn("VS Code: %v", err)
+	case deleted:
+		u.Success("Removed VS Code and deleted .vscode/mcp.json")
+	case removed:
+		u.Success("Removed VS Code entry from .vscode/mcp.json")
+	default:
+		noopLine(u, "VS Code not wired (.vscode/mcp.json); nothing to do.")
 	}
 }
 
