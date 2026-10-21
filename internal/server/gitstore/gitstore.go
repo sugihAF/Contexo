@@ -1,12 +1,14 @@
 package gitstore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -841,19 +843,93 @@ func unquoteGitPath(name string) string {
 
 // blobAt returns the content of filePath at rev when the path is a file
 // (blob) in rev's tree. ok is false when rev does not resolve, or the path is
-// absent or not a file (e.g. a directory) at rev. Absence is decided by git's
-// exit status and the object type, never by message text.
+// absent or not a file (e.g. a directory) at rev. An empty blob is empty,
+// non-nil content.
+//
+// It costs one git process, since Read calls it for every page pull serves:
+// `cat-file --batch` reads "<rev>:<path>" on stdin and answers
+// "<oid> <type> <size>" followed by the content, or "<name> missing" or
+// "<name> ambiguous". Absence is decided by that header and the object type,
+// never by message text. The stdin line cannot be split or extended: rev is
+// a commit id or HEAD, validatePagePath refuses control characters (so a
+// newline) in filePath, and under the default format git takes the whole
+// line, spaces included, as the object name.
+//
+// One exception costs a second process: on macOS git precomposes its
+// arguments (core.precomposeunicode) but not stdin, so a decomposed (NFD)
+// name such as "wiki/café.md", which git tracks under its NFC bytes,
+// is "missing" on stdin. A missing non-ASCII name there is retried once with
+// the name on the command line (blobAtPrecomposed); without the retry Read
+// would 404 such a page and ExpectAbsent would overwrite it.
 func (s *Store) blobAt(dir, rev, filePath string) (content []byte, ok bool, err error) {
 	obj := rev + ":" + filePath
-	typ, terr := gitCmd(dir, "cat-file", "-t", obj).Output()
-	if terr != nil || strings.TrimSpace(string(typ)) != "blob" {
+	cmd := gitCmd(dir, "cat-file", "--batch")
+	cmd.Stdin = strings.NewReader(obj + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("gitstore: cat-file --batch %s: %w", obj, err)
+	}
+	header, body, found := bytes.Cut(out, []byte("\n"))
+	if !found {
+		return nil, false, fmt.Errorf("gitstore: cat-file --batch %s: no header in %q", obj, out)
+	}
+	// A found object's header ends in its size, so a path that itself ends
+	// in " missing" cannot be mistaken for absence.
+	h := string(header)
+	if strings.HasSuffix(h, " missing") {
+		if runtime.GOOS == "darwin" && !isASCII(filePath) {
+			return blobAtPrecomposed(dir, obj)
+		}
 		return nil, false, nil
 	}
+	if strings.HasSuffix(h, " ambiguous") {
+		return nil, false, nil
+	}
+	fields := strings.Split(h, " ")
+	if len(fields) != 3 {
+		return nil, false, fmt.Errorf("gitstore: cat-file --batch %s: bad header %q", obj, h)
+	}
+	size, perr := strconv.ParseInt(fields[2], 10, 64)
+	if perr != nil || size < 0 {
+		return nil, false, fmt.Errorf("gitstore: cat-file --batch %s: bad size in %q", obj, h)
+	}
+	if fields[1] != "blob" {
+		return nil, false, nil
+	}
+	if int64(len(body)) < size {
+		return nil, false, fmt.Errorf("gitstore: cat-file --batch %s: %d of %d bytes", obj, len(body), size)
+	}
+	// body is a sub-slice of out (never nil here), so an empty blob is empty,
+	// non-nil content; the cap stops an append from reaching git's trailer.
+	return body[:size:size], true, nil
+}
+
+// blobAtPrecomposed reads obj ("<rev>:<path>") with the object name on the
+// command line, which git on macOS precomposes (see blobAt). `cat-file blob`
+// prints only a blob and exits non-zero for anything else (absent, a tree, an
+// unresolved rev), so a non-zero exit means obj is not a page.
+func blobAtPrecomposed(dir, obj string) (content []byte, ok bool, err error) {
 	out, err := gitCmd(dir, "cat-file", "blob", obj).Output()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return nil, false, fmt.Errorf("gitstore: cat-file %s: %w", obj, err)
+		return nil, false, fmt.Errorf("gitstore: cat-file blob %s: %w", obj, err)
+	}
+	if out == nil {
+		out = []byte{}
 	}
 	return out, true, nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) headSHA(dir string) (string, error) {

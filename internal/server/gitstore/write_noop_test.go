@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -946,6 +947,82 @@ func TestChangedSinceKeepsSpacesInNames(t *testing.T) {
 	for _, p := range files {
 		if content, _, err := s.Read("r", p); err != nil || string(content) != "spaced "+p {
 			t.Errorf("Read(%q) = %q err=%v, want %q", p, content, err, "spaced "+p)
+		}
+	}
+}
+
+// TestBlobAtTypes pins blobAt per object kind: only a blob is present, its
+// bytes come back exactly (newlines, NUL, header-like text), and an empty
+// blob is empty non-nil content.
+func TestBlobAtTypes(t *testing.T) {
+	s := wp02Store(t)
+	const tricky = "alpha\n0123 blob 5\nwith\x00nul\n\n"
+	c1 := wp02Write(t, s, "wiki/a.md", tricky, "")
+	wp02Write(t, s, "wiki/empty.md", "", "")
+	wp02Write(t, s, "wiki/x missing", "not missing", "")
+	dir := s.repoDir("r")
+
+	cases := []struct {
+		name, rev, path string
+		ok              bool
+		want            string
+	}{
+		{"blob", "HEAD", "wiki/a.md", true, tricky},
+		{"blob at full commit", c1, "wiki/a.md", true, tricky},
+		{"blob at abbreviated commit", c1[:7], "wiki/a.md", true, tricky},
+		{"empty blob", "HEAD", "wiki/empty.md", true, ""},
+		{"name ending in missing", "HEAD", "wiki/x missing", true, "not missing"},
+		{"tree", "HEAD", "wiki", false, ""},
+		{"added later", c1, "wiki/empty.md", false, ""},
+		{"never written", "HEAD", "wiki/none.md", false, ""},
+		{"never written, name ending in missing", "HEAD", "wiki/y missing", false, ""},
+		{"unknown commit", strings.Repeat("deadbeef", 5), "wiki/a.md", false, ""},
+	}
+	for _, tc := range cases {
+		content, ok, err := s.blobAt(dir, tc.rev, tc.path)
+		if err != nil || ok != tc.ok || string(content) != tc.want {
+			t.Errorf("%s: blobAt(%s, %q) = %q ok=%v err=%v, want %q ok=%v", tc.name, tc.rev, tc.path, content, ok, err, tc.want, tc.ok)
+		}
+		if ok && content == nil {
+			t.Errorf("%s: present blob returned nil content", tc.name)
+		}
+	}
+}
+
+// TestBlobAtIsOneGitProcess: Read calls blobAt for every page pull serves,
+// so a lookup must cost one git process, whatever the object turns out to be.
+func TestBlobAtIsOneGitProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("counts git processes through a /bin/sh wrapper")
+	}
+	s := wp02Store(t)
+	wp02Write(t, s, "wiki/a.md", "alpha", "")
+	wp02Write(t, s, "wiki/café.md", "accent", "")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("look up git: %v", err)
+	}
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls.log")
+	wrapper := "#!/bin/sh\necho \"$*\" >> \"$WP02_GIT_CALLS\"\nexec \"$WP02_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("WP02_GIT_CALLS", calls)
+	t.Setenv("WP02_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, p := range []string{"wiki/a.md", "wiki/café.md", "wiki", "wiki/none.md"} {
+		_ = os.Remove(calls)
+		if _, _, err := s.blobAt(s.repoDir("r"), "HEAD", p); err != nil {
+			t.Fatalf("blobAt(HEAD, %q): %v", p, err)
+		}
+		log, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatalf("read git call log: %v", err)
+		}
+		if n := strings.Count(string(log), "\n"); n != 1 {
+			t.Errorf("blobAt(HEAD, %q) ran %d git processes, want 1:\n%s", p, n, log)
 		}
 	}
 }
