@@ -10,15 +10,18 @@ package syncops
 // analysis page.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -1233,5 +1236,301 @@ func TestStatus_SidecarOverlayOnline(t *testing.T) {
 	// Online, R comes only from the listing: the live side, not the sidecar's.
 	if want := st11LiveSide(st11Listing(t, fr)[p]); !reflect.DeepEqual(e.Remote, want) || e.Remote.SHA != sb {
 		t.Fatalf("remote = %+v, want %+v", e.Remote, want)
+	}
+}
+
+// st11Buffer writes a capture buffer for session with data and mtime.
+func st11Buffer(t testing.TB, env Env, session, data string, mtime time.Time) {
+	t.Helper()
+	rel := "raw/sessions/_pending/" + session + ".jsonl"
+	st11Write(t, env, rel, []byte(data))
+	if err := os.Chtimes(filepath.Join(env.HubDir, filepath.FromSlash(rel)), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// st11OverrideCheckGuard replaces the statusCheckGuard seam for the test.
+func st11OverrideCheckGuard(t testing.TB, fn func(Env, []string) (*GuardResult, error)) {
+	t.Helper()
+	prev := statusCheckGuard
+	statusCheckGuard = fn
+	t.Cleanup(func() { statusCheckGuard = prev })
+}
+
+func TestStatus_CapturesCounted(t *testing.T) {
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "")
+	env := st11Env(t, nil)
+	// The batch holds only an entity page: neither the stub nor WP-1.2's
+	// real guard (concept/analysis pages only) requires a distill.
+	const m = "wiki/entities/gateway.md"
+	st11SeedBase(t, env, m, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "v1"}), st11SHA(1))
+	st11Write(t, env, m, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "v2"}))
+	newAt, oldAt := st11Now.Add(-10*time.Minute), st11Now.Add(-7*time.Hour)
+	st11Buffer(t, env, "new-sess", "{\"turn\":1}\n\n{\"turn\":2}\n   \n{\"turn\":3}\n\n", newAt)
+	st11Buffer(t, env, "old-sess", "{\"turn\":1}\n{\"turn\":2}", oldAt)
+	st11Write(t, env, "raw/sessions/_pending/_archive/done.jsonl", []byte("{\"turn\":1}\n"))
+	st11Write(t, env, "raw/sessions/_pending/notes.txt", []byte("not a buffer\n"))
+
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	want := contract.CaptureInfo{Pending: 2, Fresh: 1, BlocksPush: false, Sessions: []contract.CaptureSession{
+		{SessionID: "new-sess", Turns: 3, UpdatedAt: contract.TimeOf(newAt), Fresh: true},
+		{SessionID: "old-sess", Turns: 2, UpdatedAt: contract.TimeOf(oldAt), Fresh: false},
+	}}
+	if !reflect.DeepEqual(doc.Captures, want) {
+		t.Fatalf("captures = %+v, want %+v", doc.Captures, want)
+	}
+	if doc.Counts.Modified != 1 {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+
+	// A fresh buffer without a turn is pending, not fresh; newest first.
+	emptyAt := st11Now.Add(-time.Minute)
+	st11Buffer(t, env, "empty-sess", "\n \n", emptyAt)
+	doc = st11Status(t, env, StatusOptions{Offline: true})
+	if c := doc.Captures; c.Pending != 3 || c.Fresh != 1 || len(c.Sessions) != 3 ||
+		c.Sessions[0] != (contract.CaptureSession{SessionID: "empty-sess", Turns: 0, UpdatedAt: contract.TimeOf(emptyAt)}) {
+		t.Fatalf("captures = %+v", c)
+	}
+}
+
+func TestStatus_CapturesUnreadableDegrade(t *testing.T) {
+	// R8: a pending directory that cannot be listed degrades captures to
+	// nothing; status itself still succeeds.
+	env := st11Env(t, nil)
+	st11Write(t, env, "raw/sessions/_pending", []byte("a file where the directory belongs"))
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	want := contract.CaptureInfo{Sessions: []contract.CaptureSession{}}
+	if !reflect.DeepEqual(doc.Captures, want) {
+		t.Fatalf("captures = %+v, want %+v", doc.Captures, want)
+	}
+}
+
+func TestStatus_BlocksPushHelper(t *testing.T) {
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "")
+	if !statusBlocksPush(&GuardResult{Required: true}) {
+		t.Fatal("Required guard does not block")
+	}
+	if statusBlocksPush(nil) || statusBlocksPush(&GuardResult{Required: false}) {
+		t.Fatal("nil or non-required guard blocks")
+	}
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "1")
+	if statusBlocksPush(&GuardResult{Required: true}) {
+		t.Fatal("CONTEXO_DISTILL_DISABLE=1 does not bypass the guard")
+	}
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "")
+
+	env := st11Env(t, nil)
+	const (
+		mod   = "wiki/concepts/mod.md"
+		fresh = "wiki/analyses/fresh.md"
+		same  = "wiki/concepts/same.md"
+		bad   = "wiki/concepts/bad.md"
+		added = "wiki/entities/added.md"
+	)
+	st11SeedBase(t, env, mod, st11Page(testkit.PageSpec{Slug: "mod", Body: "v1"}), st11SHA(1))
+	st11Write(t, env, mod, st11Page(testkit.PageSpec{Slug: "mod", Body: "v2"}))
+	st11Write(t, env, fresh, st11Page(testkit.PageSpec{Type: schema.TypeAnalysis, Slug: "fresh"}))
+	sameBytes := st11Page(testkit.PageSpec{Slug: "same"})
+	st11SeedBase(t, env, same, sameBytes, st11SHA(2))
+	st11Write(t, env, same, sameBytes)
+	st11Write(t, env, bad, []byte("---\nschema: [\n---\n"))
+	st11Write(t, env, added, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "added"}))
+
+	var batches [][]string
+	st11OverrideCheckGuard(t, func(_ Env, batch []string) (*GuardResult, error) {
+		batches = append(batches, batch)
+		return &GuardResult{Required: true}, nil
+	})
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	if !doc.Captures.BlocksPush {
+		t.Fatal("blocks_push false with a required guard")
+	}
+	if want := [][]string{{fresh, mod, added}}; !reflect.DeepEqual(batches, want) {
+		t.Fatalf("guard batches = %v, want %v (modified ∪ new, sorted)", batches, want)
+	}
+
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "1")
+	if st11Status(t, env, StatusOptions{Offline: true}).Captures.BlocksPush {
+		t.Fatal("blocks_push true with CONTEXO_DISTILL_DISABLE=1")
+	}
+	t.Setenv("CONTEXO_DISTILL_DISABLE", "")
+
+	st11OverrideCheckGuard(t, func(Env, []string) (*GuardResult, error) {
+		return &GuardResult{Required: true}, errors.New("guard: unreadable buffer")
+	})
+	if st11Status(t, env, StatusOptions{Offline: true}).Captures.BlocksPush {
+		t.Fatal("blocks_push true although the guard failed")
+	}
+}
+
+func TestStatus_CaseCollision(t *testing.T) {
+	// Portable on case-insensitive file systems: one local file and a
+	// server path that differ only by case.
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const upper, lower, other = "wiki/concepts/Retry.md", "wiki/concepts/retry.md", "wiki/concepts/other.md"
+	fr.Seed(lower, st11Page(testkit.PageSpec{Slug: "retry"}))
+	st11Write(t, env, upper, st11Page(testkit.PageSpec{Slug: "retry"}))
+	st11Write(t, env, other, st11Page(testkit.PageSpec{Type: schema.TypeConcept, Slug: "other"}))
+
+	doc := st11Status(t, env, StatusOptions{})
+	for _, p := range []string{upper, lower} {
+		if e := st11Entry(t, doc, p); !slices.Contains(e.Notes, contract.NoteCaseCollision) {
+			t.Errorf("%s (%s) notes = %v, want case_collision", p, e.State, e.Notes)
+		}
+	}
+	if e := st11Entry(t, doc, other); len(e.Notes) != 0 {
+		t.Errorf("other notes = %v", e.Notes)
+	}
+	w := st11Warning(doc, contract.WarnCaseCollision)
+	if w == nil || !reflect.DeepEqual(w.Paths, []string{upper, lower}) || w.Message == "" {
+		t.Fatalf("case_collision = %+v, want paths [%s %s]", w, upper, lower)
+	}
+
+	// strings.EqualFold classes: simple folding, Kelvin sign included,
+	// never multi-rune folds.
+	for _, tc := range []struct {
+		a, b string
+		same bool
+	}{
+		{"Retry.md", "rETRY.md", true},
+		{"k", "\u212a", true},
+		{"K", "\u212a", true},
+		{"\u00df", "ss", false},
+		{"a.md", "b.md", false},
+	} {
+		if got := statusFoldKey(tc.a) == statusFoldKey(tc.b); got != tc.same || got != strings.EqualFold(tc.a, tc.b) {
+			t.Errorf("statusFoldKey(%q) == statusFoldKey(%q): %v, want %v", tc.a, tc.b, got, tc.same)
+		}
+	}
+}
+
+func TestStatus_CorruptStateIsWarning(t *testing.T) {
+	const a, b = "wiki/concepts/a.md", "wiki/concepts/b.md"
+	for _, tc := range []struct {
+		name    string
+		corrupt []string
+	}{
+		{"state", []string{"state.json"}},
+		{"state and bases", []string{"state.json", "bases.json"}},
+	} {
+		env := st11Env(t, nil)
+		aBytes := st11Page(testkit.PageSpec{Slug: "a"})
+		st11SeedBase(t, env, a, aBytes, st11SHA(1))
+		st11Write(t, env, a, aBytes)
+		st11Write(t, env, b, st11Page(testkit.PageSpec{Slug: "b"}))
+		for _, name := range tc.corrupt {
+			st11Write(t, env, ".sync/"+name, []byte("{not json"))
+		}
+
+		doc := st11Status(t, env, StatusOptions{Offline: true})
+		w := st11Warning(doc, contract.WarnStateUnreadable)
+		if w == nil || w.Paths == nil || len(w.Paths) != 0 {
+			t.Fatalf("%s: state_unreadable = %+v, want paths []", tc.name, w)
+		}
+		for _, name := range tc.corrupt {
+			if !strings.Contains(w.Message, name) {
+				t.Errorf("%s: message %q does not name %s", tc.name, w.Message, name)
+			}
+		}
+		// page_shas is empty: no page has a base.
+		for _, p := range []string{a, b} {
+			if e := st11Entry(t, doc, p); e.State != contract.StateNew || e.Base != nil {
+				t.Errorf("%s: %s = %+v base %+v, want new without a base", tc.name, p, e, e.Base)
+			}
+		}
+	}
+
+	// bases.json alone: the recorded sha has no base, so the page is
+	// unverified (offline: no base_repair_skipped).
+	env := st11Env(t, nil)
+	aBytes := st11Page(testkit.PageSpec{Slug: "a"})
+	st11SeedBase(t, env, a, aBytes, st11SHA(1))
+	st11Write(t, env, a, aBytes)
+	st11Write(t, env, ".sync/bases.json", []byte("{not json"))
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	w := st11Warning(doc, contract.WarnStateUnreadable)
+	if w == nil || !strings.Contains(w.Message, "bases.json") || strings.Contains(w.Message, "state.json") {
+		t.Fatalf("state_unreadable = %+v, want it to name bases.json only", w)
+	}
+	if e := st11Entry(t, doc, a); e.State != contract.StateUnverified || e.Base == nil || !e.Base.Stale {
+		t.Fatalf("a = %+v base %+v", e, e.Base)
+	}
+}
+
+// st11TimeRE is a contract time on the wire (E16).
+var st11TimeRE = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+
+func TestStatus_TimesWholeSecondsUTC(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	now := time.Date(2026, 11, 3, 16, 14, 7, 987654321, time.FixedZone("+0700", 7*60*60))
+	env.Now = func() time.Time { return now }
+	const a = "wiki/entities/a.md"
+	data := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "a"})
+	st11SeedBase(t, env, a, data, fr.Seed(a, data))
+	st11Write(t, env, a, data)
+	st11Buffer(t, env, "sess", "{\"turn\":1}\n", now.Add(-time.Minute))
+
+	doc := st11Status(t, env, StatusOptions{})
+	var out bytes.Buffer
+	if err := contract.WriteDoc(&out, doc); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		GeneratedAt string `json:"generated_at"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GeneratedAt != "2026-11-03T09:14:07Z" {
+		t.Fatalf("generated_at = %q", decoded.GeneratedAt)
+	}
+	// generated_at, fetched_at, updated, base.synced_at, remote.time and
+	// the session's updated_at.
+	times := regexp.MustCompile(`"(\d{4}-\d\d-\d\dT[^"]*)"`).FindAllStringSubmatch(out.String(), -1)
+	if len(times) < 6 {
+		t.Fatalf("only %d time strings in %s", len(times), out.String())
+	}
+	for _, m := range times {
+		if !st11TimeRE.MatchString(m[1]) {
+			t.Errorf("time %q is not YYYY-MM-DDTHH:MM:SSZ", m[1])
+		}
+	}
+}
+
+func BenchmarkStatus_Offline2000(b *testing.B) {
+	env := st11Env(b, nil)
+	bases, err := syncstate.OpenBases(env.HubDir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	st, _, err := sync.LoadStateOrEmpty(env.HubDir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := range 2000 {
+		slug := fmt.Sprintf("page-%04d", i)
+		rel := "wiki/concepts/" + slug + ".md"
+		data := st11Page(testkit.PageSpec{Slug: slug, Body: strings.Repeat("Some knowledge. ", 40)})
+		st11Write(b, env, rel, data)
+		if err := bases.Put(rel, data, st11SHA(i), st11Now); err != nil {
+			b.Fatal(err)
+		}
+		st.PageSHAs[rel] = st11SHA(i)
+	}
+	if err := bases.Save(); err != nil {
+		b.Fatal(err)
+	}
+	if err := sync.SaveState(env.HubDir, st); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		doc, err := Status(context.Background(), env, StatusOptions{Offline: true})
+		if err != nil || doc.Counts.Unchanged != 2000 {
+			b.Fatalf("Status: %v, counts %+v", err, doc.Counts)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package syncops
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/sugihAF/contexo/internal/capture"
 	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
@@ -88,6 +91,9 @@ func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc,
 	doc.Counts.Ahead = doc.Counts.Modified + doc.Counts.New
 	doc.Counts.Behind = doc.Counts.Incoming + doc.Counts.IncomingNew
 
+	doc.Captures = statusCaptures(hub, now)
+	doc.Captures.BlocksPush = statusGuardBlocks(env, doc.Pages)
+
 	// Deviation 13: online, every page left unverified is named, also when
 	// EnsureBase failed or said nothing. Merging below keeps EnsureBase's
 	// own message.
@@ -98,8 +104,152 @@ func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc,
 			Paths:   unverified,
 		})
 	}
+	if paths := statusCaseCollisions(doc.Pages); len(paths) > 0 {
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code: contract.WarnCaseCollision,
+			Message: fmt.Sprintf("%d paths differ only by letter case; "+
+				"pull skips them until all but one of each are renamed", len(paths)),
+			Paths: paths,
+		})
+	}
+	if len(view.Corrupt) > 0 {
+		// R7: the paths stay empty, so the extension never opens .sync files.
+		files := make([]string, len(view.Corrupt))
+		for i, name := range view.Corrupt {
+			files[i] = ".sync/" + name
+		}
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code:    contract.WarnStateUnreadable,
+			Message: "could not read " + strings.Join(files, ", ") + "; treated as empty",
+			Paths:   []string{},
+		})
+	}
 	doc.Warnings = statusMergeWarnings(doc.Warnings)
 	return doc, nil
+}
+
+// statusFreshWindow is the distill window: a pending buffer with a turn
+// modified within it is fresh.
+const statusFreshWindow = 6 * time.Hour
+
+// statusCaptures summarizes the pending capture buffers, newest first. Turns
+// are the non-blank lines (the buffers are not decoded). Captures never fail
+// status (R8): an unlistable pending directory gives none, and a buffer that
+// cannot be read (one archived meanwhile) is skipped.
+func statusCaptures(hub string, now time.Time) contract.CaptureInfo {
+	info := contract.CaptureInfo{Sessions: []contract.CaptureSession{}}
+	bufs, err := capture.List(hub)
+	if err != nil {
+		return info
+	}
+	type session struct {
+		s   contract.CaptureSession
+		mod time.Time
+	}
+	var all []session
+	for _, b := range bufs {
+		fi, err := os.Stat(b.Path())
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(b.Path())
+		if err != nil {
+			continue
+		}
+		turns := statusTurns(data)
+		all = append(all, session{mod: fi.ModTime(), s: contract.CaptureSession{
+			SessionID: b.SessionID,
+			Turns:     turns,
+			UpdatedAt: contract.TimeOf(fi.ModTime()),
+			Fresh:     turns > 0 && !fi.ModTime().Before(now.Add(-statusFreshWindow)),
+		}})
+	}
+	slices.SortStableFunc(all, func(a, b session) int {
+		if c := b.mod.Compare(a.mod); c != 0 {
+			return c
+		}
+		return strings.Compare(a.s.SessionID, b.s.SessionID)
+	})
+	for _, s := range all {
+		info.Pending++
+		if s.s.Fresh {
+			info.Fresh++
+		}
+		info.Sessions = append(info.Sessions, s.s)
+	}
+	return info
+}
+
+// statusTurns counts the non-blank lines of a capture buffer.
+func statusTurns(data []byte) int {
+	n := 0
+	for len(data) > 0 {
+		line := data
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			data = nil
+		}
+		if len(bytes.TrimSpace(line)) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// statusGuardBlocks is captures.blocks_push (E24): the distill guard over
+// the pages a push would send (modified ∪ new, sorted). A guard error
+// blocks nothing; push runs the guard again and reports it.
+func statusGuardBlocks(env Env, pages []contract.PageEntry) bool {
+	batch := []string{}
+	for _, p := range pages {
+		if p.State == contract.StateModified || p.State == contract.StateNew {
+			batch = append(batch, p.Path)
+		}
+	}
+	g, err := statusCheckGuard(env, batch)
+	if err != nil {
+		return false
+	}
+	return statusBlocksPush(g)
+}
+
+// statusCaseCollisions adds note case_collision to every entry whose path
+// equals another entry's under strings.EqualFold, and returns those paths
+// sorted (none when there is no collision).
+func statusCaseCollisions(pages []contract.PageEntry) []string {
+	groups := map[string][]int{}
+	for i, p := range pages {
+		k := statusFoldKey(p.Path)
+		groups[k] = append(groups[k], i)
+	}
+	var paths []string
+	for _, idx := range groups {
+		if len(idx) < 2 {
+			continue
+		}
+		for _, i := range idx {
+			pages[i].Notes = append(pages[i].Notes, contract.NoteCaseCollision)
+			paths = append(paths, pages[i].Path)
+		}
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// statusFoldKey maps s to a key shared exactly by the strings EqualFold to
+// it: each rune becomes the smallest rune of its unicode.SimpleFold orbit.
+func statusFoldKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			low = min(low, f)
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
 }
 
 // statusNewDoc is the document skeleton: every array non-nil, the remote
