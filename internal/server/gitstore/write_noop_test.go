@@ -125,7 +125,7 @@ func TestWriteNoopIsLocaleIndependent(t *testing.T) {
 			t.Fatalf("read git call log: %v", err)
 		}
 		for _, line := range strings.Split(string(log), "\n") {
-			if f := strings.Fields(line); len(f) > 2 && f[2] == "commit" {
+			if wp2iGitSubcommand(strings.Fields(line)) == "commit" {
 				t.Errorf("an unchanged write ran %q; no-op detection must not go through git commit", line)
 			}
 		}
@@ -133,6 +133,19 @@ func TestWriteNoopIsLocaleIndependent(t *testing.T) {
 			t.Errorf("an unchanged write did not use diff --cached --quiet:\n%s", log)
 		}
 	}
+}
+
+// wp2iGitSubcommand returns the git subcommand of a traced call: the first
+// argument after the leading `-c <key=value>` pairs that gitCmd prepends.
+func wp2iGitSubcommand(args []string) string {
+	i := 0
+	for i+1 < len(args) && args[i] == "-c" {
+		i += 2
+	}
+	if i < len(args) {
+		return args[i]
+	}
+	return ""
 }
 
 func TestWriteWithOptionsReportsChanged(t *testing.T) {
