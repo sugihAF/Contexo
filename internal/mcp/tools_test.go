@@ -2,7 +2,7 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +17,7 @@ import (
 	"github.com/sugihAF/contexo/internal/schema"
 	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/testkit"
 )
 
 // wp03Token is the bearer every resolution test stores in the credentials.
@@ -273,88 +274,87 @@ func TestPushHandshakeFiresOnBufferAndConcept(t *testing.T) {
 	}
 }
 
-func TestPushSkipsHandshakeWhenNoBuffer(t *testing.T) {
-	called := false
-	ps := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		resp, _ := json.Marshal(sync.PushResponse{NewHead: "abcd1234", Pushed: []sync.PushedFile{{Path: "wiki/concepts/foo.md", SHA: "abcd1234"}}})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(resp)
-	}))
-	defer ps.Close()
-	srv, _ := setupCaptureServer(t, false /* no buffer */, ps)
+// wp21CaptureServer is setupCaptureServer wired to a real testkit server:
+// project config and credentials (repo "test-repo", the server's legacy
+// key) point at it. The engine lists pages before it pushes, so a mock that
+// answers only POST /sync/push no longer works (WP-2.1).
+func wp21CaptureServer(t *testing.T, withBuffer bool) (*Server, string, *testkit.Server) {
+	t.Helper()
+	ts := testkit.StartServer(t)
+	srv, root := setupCaptureServer(t, withBuffer, nil)
+	if err := config.Save(root, &config.Config{Version: 1, ServerURL: ts.URL, RepoID: "test-repo"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := config.SaveCredentials(root, &config.Credentials{
+		Token: ts.Key, ServerURL: ts.URL,
+		UserName: "tester", UserEmail: "tester@example.com",
+	}); err != nil {
+		t.Fatalf("save creds: %v", err)
+	}
+	return srv, root, ts
+}
 
-	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{"feature": "foo"})
+// wp21ServerHas reports whether the testkit server serves path in
+// "test-repo", and returns its bytes.
+func wp21ServerHas(t *testing.T, ts *testkit.Server, path string) ([]byte, bool) {
+	t.Helper()
+	data, _, err := sync.NewClient(ts.URL, ts.Key).ReadPage("test-repo", path)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// wp21WantPushed asserts res is a successful push of n page(s) and that the
+// server now serves every path in paths.
+func wp21WantPushed(t *testing.T, res *ToolResult, ts *testkit.Server, n int, paths ...string) {
+	t.Helper()
 	if res == nil || res.IsError {
 		t.Fatalf("expected ok push, got %+v", res)
 	}
-	if !called {
-		t.Errorf("server push should have been called when no buffer is pending")
+	if want := fmt.Sprintf("Pushed %d page(s); HEAD=", n); !strings.HasPrefix(wp03ResultText(res), want) {
+		t.Errorf("result should start with %q:\n%s", want, wp03ResultText(res))
 	}
+	for _, p := range paths {
+		if _, ok := wp21ServerHas(t, ts, p); !ok {
+			t.Errorf("server should serve %s after the push", p)
+		}
+	}
+}
+
+func TestPushSkipsHandshakeWhenNoBuffer(t *testing.T) {
+	srv, _, ts := wp21CaptureServer(t, false /* no buffer */)
+
+	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{"feature": "foo"})
+	wp21WantPushed(t, res, ts, 2, "wiki/concepts/foo.md", "wiki/entities/foo-ent.md")
 }
 
 func TestPushSkipsHandshakeWhenDisabled(t *testing.T) {
 	t.Setenv("CONTEXO_DISTILL_DISABLE", "1")
-	called := false
-	ps := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		resp, _ := json.Marshal(sync.PushResponse{NewHead: "ff00", Pushed: []sync.PushedFile{{Path: "wiki/concepts/foo.md", SHA: "ff00"}}})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(resp)
-	}))
-	defer ps.Close()
-	srv, _ := setupCaptureServer(t, true /* buffer present */, ps)
+	srv, _, ts := wp21CaptureServer(t, true /* buffer present */)
 
 	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{"feature": "foo"})
-	if res == nil || res.IsError {
-		t.Fatalf("expected ok push: %+v", res)
-	}
-	if !called {
-		t.Errorf("env var should bypass handshake")
-	}
+	wp21WantPushed(t, res, ts, 2, "wiki/concepts/foo.md")
 }
 
 func TestPushSkipsHandshakeWhenNoDistillFlag(t *testing.T) {
-	called := false
-	ps := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		resp, _ := json.Marshal(sync.PushResponse{NewHead: "aa", Pushed: []sync.PushedFile{{Path: "wiki/concepts/foo.md", SHA: "aa"}}})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(resp)
-	}))
-	defer ps.Close()
-	srv, _ := setupCaptureServer(t, true, ps)
+	srv, _, ts := wp21CaptureServer(t, true)
 
 	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{
 		"feature":    "foo",
 		"no_distill": true,
 	})
-	if res == nil || res.IsError {
-		t.Fatalf("expected ok: %+v", res)
-	}
-	if !called {
-		t.Errorf("no_distill should bypass handshake")
-	}
+	wp21WantPushed(t, res, ts, 2, "wiki/concepts/foo.md")
 }
 
 func TestPushSkipsHandshakeWhenNoConceptPage(t *testing.T) {
-	called := false
-	ps := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		resp, _ := json.Marshal(sync.PushResponse{NewHead: "bb", Pushed: []sync.PushedFile{{Path: "wiki/entities/foo-ent.md", SHA: "bb"}}})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(resp)
-	}))
-	defer ps.Close()
-	srv, _ := setupCaptureServer(t, true, ps)
+	srv, _, ts := wp21CaptureServer(t, true)
 
 	// Push entity-only: handshake should not fire even though buffer is non-empty.
 	res := srv.HandleToolCall(context.Background(), "ctx_push", map[string]interface{}{"type": "entity"})
-	if res == nil || res.IsError {
-		t.Fatalf("expected ok: %+v", res)
-	}
-	if !called {
-		t.Errorf("entity-only push should not trigger handshake")
+	wp21WantPushed(t, res, ts, 1, "wiki/entities/foo-ent.md")
+	if _, ok := wp21ServerHas(t, ts, "wiki/concepts/foo.md"); ok {
+		t.Errorf("type=entity must not push the concept page")
 	}
 }
 
@@ -396,22 +396,7 @@ func TestPushDistillDoneErrorsWhenSourcePageMissing(t *testing.T) {
 }
 
 func TestPushDistillDoneLinksSourceAndArchivesBuffer(t *testing.T) {
-	var receivedBody []byte
-	ps := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedBody, _ = readAll(r.Body)
-		resp, _ := json.Marshal(sync.PushResponse{
-			NewHead: "deadbeef",
-			Pushed: []sync.PushedFile{
-				{Path: "wiki/concepts/foo.md", SHA: "deadbeef"},
-				{Path: "raw/sessions/2026-05-17-foo.md", SHA: "deadbeef"},
-			},
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(resp)
-	}))
-	defer ps.Close()
-
-	srv, root := setupCaptureServer(t, true, ps)
+	srv, root, ts := wp21CaptureServer(t, true)
 	// Pre-create the source page that the agent would have authored.
 	now := time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC)
 	sourcePage := &schema.Page{
@@ -430,42 +415,26 @@ func TestPushDistillDoneLinksSourceAndArchivesBuffer(t *testing.T) {
 		"distill_done": true,
 		"source_slug":  "2026-05-17-foo",
 	})
-	if res == nil || res.IsError {
-		t.Fatalf("expected ok push: %+v", res)
-	}
-	if !strings.Contains(res.Content[0].Text, "Pushed") {
-		t.Errorf("expected Pushed in result: %s", res.Content[0].Text)
-	}
+	// The push must include the concept page (with sources: patched to
+	// include the source slug), the entity and the source page itself.
+	wp21WantPushed(t, res, ts, 3, "wiki/concepts/foo.md", "wiki/entities/foo-ent.md", "raw/sessions/2026-05-17-foo.md")
 
-	// The push payload must include BOTH the concept page (with sources:
-	// patched to include the source slug) and the source page itself.
-	var req sync.PushRequest
-	if err := json.Unmarshal(receivedBody, &req); err != nil {
-		t.Fatalf("parse push body: %v", err)
-	}
-	pathSet := map[string]bool{}
-	for _, f := range req.Files {
-		pathSet[f.Path] = true
-	}
-	if !pathSet["wiki/concepts/foo.md"] {
-		t.Errorf("concept page missing from push: %v", pathSet)
-	}
-	if !pathSet["raw/sessions/2026-05-17-foo.md"] {
-		t.Errorf("source page missing from push: %v", pathSet)
-	}
-
-	// The concept page on disk must now carry sources: [2026-05-17-foo].
+	// The concept page on disk and on the server must now carry
+	// sources: [2026-05-17-foo].
 	contexoDir := config.ContexoDirPath(root)
 	data, err := os.ReadFile(filepath.Join(contexoDir, "wiki", "concepts", "foo.md"))
 	if err != nil {
 		t.Fatalf("read concept: %v", err)
 	}
-	patched, err := schema.ParsePage(data)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(patched.Frontmatter.Sources) != 1 || patched.Frontmatter.Sources[0] != "2026-05-17-foo" {
-		t.Errorf("concept sources not patched: %v", patched.Frontmatter.Sources)
+	served, _ := wp21ServerHas(t, ts, "wiki/concepts/foo.md")
+	for label, b := range map[string][]byte{"local": data, "server": served} {
+		patched, err := schema.ParsePage(b)
+		if err != nil {
+			t.Fatalf("parse %s concept: %v", label, err)
+		}
+		if len(patched.Frontmatter.Sources) != 1 || patched.Frontmatter.Sources[0] != "2026-05-17-foo" {
+			t.Errorf("%s concept sources not patched: %v", label, patched.Frontmatter.Sources)
+		}
 	}
 
 	// The buffer must have been archived.
@@ -520,6 +489,53 @@ func TestWritePageToolDescribesEachType(t *testing.T) {
 		if !strings.Contains(desc, typ) {
 			t.Errorf("ctx_write_page description should explain when to use type %q; got:\n%s", typ, desc)
 		}
+	}
+}
+
+// TestMCPWritePage_KeepsUnknownKeysAndCreated: rewriting an existing slug
+// is a read-modify-write (WP-1.6 request). Frontmatter keys the schema does
+// not define, created and parent_sha survive; the body and updated change.
+func TestMCPWritePage_KeepsUnknownKeysAndCreated(t *testing.T) {
+	srv, _ := setupCaptureServer(t, false, nil)
+	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	existing := &schema.Page{
+		Frontmatter: schema.PageFrontmatter{
+			Schema: schema.PageSchemaV1, Slug: "foo", Type: schema.TypeConcept,
+			Author: "sugihAF", Created: created, Updated: created, ParentSHA: "abc1234",
+			Tags:  []string{"foo"},
+			Extra: map[string]any{"custom_key": "keep-me"},
+		},
+		Body: "## Decision\nOld.\n",
+	}
+	if err := srv.store.Write(existing); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	res := srv.HandleToolCall(context.Background(), "ctx_write_page", map[string]interface{}{
+		"slug": "foo", "type": "concept", "body": "## Decision\nNew.\n",
+	})
+	if res == nil || res.IsError {
+		t.Fatalf("ctx_write_page: %+v", res)
+	}
+	got, err := srv.store.Read("wiki/concepts/foo.md")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	fm := got.Frontmatter
+	if !fm.Created.Equal(created) {
+		t.Errorf("created = %v, want %v", fm.Created, created)
+	}
+	if fm.ParentSHA != "abc1234" {
+		t.Errorf("parent_sha = %q, want abc1234", fm.ParentSHA)
+	}
+	if fm.Extra["custom_key"] != "keep-me" {
+		t.Errorf("unknown key lost: extra = %v", fm.Extra)
+	}
+	if got.Body != "## Decision\nNew.\n" {
+		t.Errorf("body = %q", got.Body)
+	}
+	if !fm.Updated.After(created) {
+		t.Errorf("updated should move forward, got %v", fm.Updated)
 	}
 }
 
@@ -581,19 +597,26 @@ func TestMCPToolsUseResolvedServer(t *testing.T) {
 	}
 }
 
+// wp21EngineTool reports whether a remote tool runs on the syncops engines
+// (WP-2.1), whose failures read "ctx_<tool> failed: <code>: <message>"
+// followed by "Fix: <advice>".
+func wp21EngineTool(name string) bool { return name == "ctx_push" || name == "ctx_pull" }
+
 // TestMCPToolsReportRemoteErrorAdvice: when the remote is unusable every
 // remote tool fails before sending anything, with the RemoteError message
 // and the command that fixes it.
 func TestMCPToolsReportRemoteErrorAdvice(t *testing.T) {
 	cases := []struct {
-		name  string
-		setup func(t *testing.T, root string, tr *wp03Trap)
-		wants []string
+		name              string
+		setup             func(t *testing.T, root string, tr *wp03Trap)
+		code, msg, advice string
 	}{
 		{
-			name:  "no credentials",
-			setup: func(t *testing.T, root string, tr *wp03Trap) {},
-			wants: []string{"not authenticated", "(run 'ctx auth login')"},
+			name:   "no credentials",
+			setup:  func(t *testing.T, root string, tr *wp03Trap) {},
+			code:   "not_authenticated",
+			msg:    "not authenticated",
+			advice: "ctx auth login",
 		},
 		{
 			name: "empty-token project credentials shadow valid global ones",
@@ -603,14 +626,18 @@ func TestMCPToolsReportRemoteErrorAdvice(t *testing.T) {
 					t.Fatalf("save project creds: %v", err)
 				}
 			},
-			wants: []string{"not authenticated", "(run 'ctx auth login')"},
+			code:   "not_authenticated",
+			msg:    "not authenticated",
+			advice: "ctx auth login",
 		},
 		{
 			name: "global credentials without server_url",
 			setup: func(t *testing.T, root string, tr *wp03Trap) {
 				wp03SplitCreds(t, root, tr.B.URL, "")
 			},
-			wants: []string{"server URL unresolved", "(run 'ctx auth login --server <url>')"},
+			code:   "server_unresolved",
+			msg:    "server URL unresolved",
+			advice: "ctx auth login --server <url>",
 		},
 		{
 			name: "credentials with server_url but no repo",
@@ -619,7 +646,9 @@ func TestMCPToolsReportRemoteErrorAdvice(t *testing.T) {
 					t.Fatalf("save global creds: %v", err)
 				}
 			},
-			wants: []string{"repo not configured", "(run 'ctx remote set-repo <id>')"},
+			code:   "repo_not_configured",
+			msg:    "repo not configured",
+			advice: "ctx remote set-repo <id>",
 		},
 	}
 	for _, c := range cases {
@@ -629,7 +658,12 @@ func TestMCPToolsReportRemoteErrorAdvice(t *testing.T) {
 			c.setup(t, root, tr)
 			for _, call := range wp03RemoteToolCalls() {
 				res := srv.HandleToolCall(context.Background(), call.name, call.args)
-				wp03WantError(t, call.name, res, append([]string{call.name + ": "}, c.wants...)...)
+				if wp21EngineTool(call.name) {
+					wp03WantError(t, call.name, res,
+						call.name+" failed: "+c.code+": "+c.msg, "\nFix: "+c.advice)
+					continue
+				}
+				wp03WantError(t, call.name, res, call.name+": ", c.msg, "(run '"+c.advice+"')")
 			}
 			if hits := tr.Hits(); len(hits) != 0 {
 				t.Errorf("nothing may be sent while the remote is unusable; A received %+v", hits)
@@ -652,6 +686,10 @@ func TestMCPCorruptCredentialsIsCleanError(t *testing.T) {
 	wp03WantError(t, "ctx_status", res, "ctx_status: credentials: parse")
 	for _, call := range wp03RemoteToolCalls() {
 		res := srv.HandleToolCall(context.Background(), call.name, call.args)
+		if wp21EngineTool(call.name) {
+			wp03WantError(t, call.name, res, call.name+" failed: internal: ", "credentials: parse")
+			continue
+		}
 		wp03WantError(t, call.name, res, call.name+": credentials: parse")
 	}
 	if hits := tr.Hits(); len(hits) != 0 {
