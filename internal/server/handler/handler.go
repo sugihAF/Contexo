@@ -257,9 +257,10 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 // owner row. The decisions are isMemberAfterCreate (push, the deprecated
 // create) and the invite-key routes JoinRepo, MintInviteKey, ListInviteKeys
 // and DeleteInviteKey, which hold it from their membership or key check
-// through their write. A decision therefore runs either wholly before a
-// creation of its repo, whose purge then removes what it wrote, or after the
-// creation's purge and owner row, and sees only the new repo's rows.
+// through the rows they act on (insert, list, delete). A decision therefore
+// runs either wholly before a creation of its repo, whose purge then removes
+// what it wrote, or after the creation's purge and owner row, and sees only
+// the new repo's rows.
 //
 // Each of these takes it once, directly, and none calls another of them
 // while holding it: it is not reentrant. It is never held while a request
