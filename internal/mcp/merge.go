@@ -1,81 +1,141 @@
 package mcp
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/sugihAF/contexo/internal/diff"
-	syncpkg "github.com/sugihAF/contexo/internal/sync"
 )
 
-// buildMergeDirective renders a single MERGE_REQUIRED text block that lays
-// out everything an agent needs to reconcile a 409 push: ancestor sha, the
-// three versions, what each side changed vs the ancestor, conflicting
-// sections (modified on both sides), and a numbered list of next steps.
-//
-// Inputs:
-//
-//	conflicts: the rejected files, as returned by the push response (carries
-//	           ancestor + server-current content).
-//	localBySlug: the bytes the agent just tried to push, keyed by path.
-func buildMergeDirective(conflicts []syncpkg.Conflict, localByPath map[string][]byte) string {
-	var sb strings.Builder
-	sb.WriteString("<MERGE_REQUIRED>\n")
-	fmt.Fprintf(&sb, "Push rejected: %d file(s) have moved on the server since your edit.\n\n",
-		len(conflicts))
-	sb.WriteString("Reconcile each file below by writing a merged version that\n")
-	sb.WriteString("incorporates BOTH your changes AND the server's changes, then\n")
-	sb.WriteString("re-invoke ctx_push. The state has been updated so the re-push\n")
-	sb.WriteString("uses the server's current sha as the new parent.\n\n")
+// mergeItem is one page of a MERGE_REQUIRED brief: the three versions an
+// agent needs to reconcile it. Ancestor is the base snapshot (syncops.Show
+// At "base"), empty when there is none; Yours is the working file; Server
+// is the sanitized server version at ServerSHA (the conflict sidecar's
+// content, else syncops.Show At ServerSHA).
+type mergeItem struct {
+	Path, AncestorSHA string
+	Ancestor          []byte
+	Yours             []byte
+	ServerSHA         string
+	Server            []byte
+}
 
-	for i, cf := range conflicts {
-		yours := localByPath[cf.Path]
-		fmt.Fprintf(&sb, "─── FILE %d/%d: %s ───\n", i+1, len(conflicts), cf.Path)
-		fmt.Fprintf(&sb, "  ancestor (both diverged from):  %s\n", shortMergeSHA(cf.ExpectedParentSHA))
-		fmt.Fprintf(&sb, "  server now:                     %s\n", shortMergeSHA(cf.CurrentSHA))
+// briefSHAs records, per project root and page path, the server sha of the
+// last MERGE_REQUIRED this process showed the agent with the server
+// version's content. ctx_push resolved=[...] re-bases only onto a sha the
+// agent was shown, so this is the first place it looks.
+var briefSHAs = struct {
+	mu sync.Mutex
+	m  map[string]string
+}{m: map[string]string{}}
+
+func briefKey(root, path string) string { return root + "\x00" + path }
+
+// briefRecord remembers that the agent was shown path at sha.
+func briefRecord(root, path, sha string) {
+	briefSHAs.mu.Lock()
+	defer briefSHAs.mu.Unlock()
+	briefSHAs.m[briefKey(root, path)] = sha
+}
+
+// briefLookup returns the server sha of the last brief shown for path.
+func briefLookup(root, path string) (string, bool) {
+	briefSHAs.mu.Lock()
+	defer briefSHAs.mu.Unlock()
+	sha, ok := briefSHAs.m[briefKey(root, path)]
+	return sha, ok
+}
+
+// briefForget drops path once it was resolved.
+func briefForget(root, path string) {
+	briefSHAs.mu.Lock()
+	defer briefSHAs.mu.Unlock()
+	delete(briefSHAs.m, briefKey(root, path))
+}
+
+// buildMergeBrief renders one MERGE_REQUIRED block for the pages ctx_push
+// could not send or ctx_pull kept (origin "push" or "pull"): per page the
+// ancestor and server shas, what each side changed, the sections both
+// changed and the three full versions, then the steps that end in
+// ctx_push(resolved=[...]). The local sync state is never touched for a
+// conflict, so the brief never claims it was.
+func buildMergeBrief(origin string, items []mergeItem) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<MERGE_REQUIRED origin=%s>\n", origin)
+	if origin == "pull" {
+		fmt.Fprintf(&sb, "%d page(s) changed both locally and on the server since your last sync. "+
+			"Your local version was kept; nothing was overwritten.\n", len(items))
+	} else {
+		fmt.Fprintf(&sb, "%d page(s) changed both locally and on the server since your last sync. "+
+			"They were not pushed; the server keeps the other version.\n", len(items))
+	}
+	sb.WriteString("Local sync state was NOT changed; the page stays a conflict until you resolve it.\n\n")
+
+	paths := make([]string, len(items))
+	for i, it := range items {
+		paths[i] = it.Path
+		fmt.Fprintf(&sb, "─── FILE %d/%d: %s ───\n", i+1, len(items), it.Path)
+		ancestor := "(none)"
+		if it.AncestorSHA != "" {
+			ancestor = shortMergeSHA(it.AncestorSHA)
+		}
+		fmt.Fprintf(&sb, "  ancestor (both diverged from):  %s\n", ancestor)
+		fmt.Fprintf(&sb, "  server now:                     %s\n", it.ServerSHA)
 		fmt.Fprintln(&sb)
 
-		// "You vs ancestor" diff — what your edit changed.
-		yourDiff := diff.PageSections(cf.AncestorContent, yours, cf.ExpectedParentSHA, "local")
+		yourDiff := diff.PageSections(it.Ancestor, it.Yours, it.AncestorSHA, "local")
 		writeSidedDiff(&sb, "YOUR changes vs ancestor:", &yourDiff)
-
-		// "Server vs ancestor" diff — what the server's HEAD changed.
-		serverDiff := diff.PageSections(cf.AncestorContent, cf.CurrentContent, cf.ExpectedParentSHA, cf.CurrentSHA)
+		serverDiff := diff.PageSections(it.Ancestor, it.Server, it.AncestorSHA, it.ServerSHA)
 		writeSidedDiff(&sb, "SERVER changes vs ancestor:", &serverDiff)
 
-		// Conflicting sections: heading modified by BOTH sides.
-		conflicting := overlappingModifiedSections(&yourDiff, &serverDiff)
-		if len(conflicting) > 0 {
+		if conflicting := overlappingModifiedSections(&yourDiff, &serverDiff); len(conflicting) > 0 {
 			fmt.Fprintln(&sb, "  CONFLICTING regions (both sides changed):")
 			for _, h := range conflicting {
 				fmt.Fprintf(&sb, "    %s — synthesize both edits into one coherent version\n", h)
 			}
-			fmt.Fprintln(&sb)
 		} else {
 			fmt.Fprintln(&sb, "  (No section was modified by both sides — auto-mergeable in principle.)")
-			fmt.Fprintln(&sb)
 		}
-
-		fmt.Fprintln(&sb, "  --- ANCESTOR VERSION ---")
-		writeIndented(&sb, "  ", string(cf.AncestorContent))
-		fmt.Fprintln(&sb, "  --- YOUR VERSION (the one you tried to push) ---")
-		writeIndented(&sb, "  ", string(yours))
-		fmt.Fprintln(&sb, "  --- SERVER VERSION ---")
-		writeIndented(&sb, "  ", string(cf.CurrentContent))
 		fmt.Fprintln(&sb)
+
+		// The versions are printed unindented, so "verbatim" means verbatim.
+		writeVersion(&sb, "--- ANCESTOR VERSION ---", it.Ancestor,
+			"(not available: no common base is stored for this page; compare YOUR and SERVER directly)")
+		writeVersion(&sb, "--- YOUR VERSION (your local file) ---", it.Yours,
+			"(the local file is missing)")
+		writeVersion(&sb, "--- SERVER VERSION ---", it.Server,
+			"(could not be fetched; call ctx_push again to get a fresh brief)")
+		fmt.Fprintf(&sb, "--- END OF FILE %d/%d ---\n\n", i+1, len(items))
 	}
 
-	sb.WriteString("STEPS for the agent:\n")
-	sb.WriteString("  1. For each file above: write a merged version via\n")
-	sb.WriteString("     ctx_write_page(slug=..., type=..., body=<merged content>)\n")
-	sb.WriteString("     The merged page must preserve BOTH sides' intent. For prose\n")
-	sb.WriteString("     sections that conflict, synthesize — don't pick one.\n")
-	sb.WriteString("  2. Re-invoke ctx_push with the SAME filters. The local sync state\n")
-	sb.WriteString("     has been updated to point at the server's current sha for each\n")
-	sb.WriteString("     conflicting file, so the next push will not 409 unless someone\n")
-	sb.WriteString("     pushed again in the meantime.\n")
+	resolved, _ := json.Marshal(paths)
+	sb.WriteString("STEPS:\n")
+	sb.WriteString("  1. For each file above, call ctx_write_page (same slug and type) with merged content that\n")
+	sb.WriteString("     keeps BOTH sides' changes. Where both sides changed the same section, synthesize one\n")
+	sb.WriteString("     coherent version; don't just pick one.\n")
+	sb.WriteString("     To accept the server version instead, write the SERVER VERSION verbatim.\n")
+	fmt.Fprintf(&sb, "  2. Call ctx_push with the same filters plus resolved=%s.\n", resolved)
+	sb.WriteString("     ctx_push keeps your merged content, re-bases it on the server version shown above and\n")
+	sb.WriteString("     pushes it. If the server moved again meanwhile, you get a fresh MERGE_REQUIRED instead\n")
+	sb.WriteString("     and nothing is overwritten.\n")
 	sb.WriteString("</MERGE_REQUIRED>")
 	return sb.String()
+}
+
+// writeVersion prints one full version between its marker line and the
+// next, or missing when the version is empty.
+func writeVersion(sb *strings.Builder, marker string, content []byte, missing string) {
+	sb.WriteString(marker + "\n")
+	if len(content) == 0 {
+		sb.WriteString(missing + "\n")
+		return
+	}
+	sb.Write(content)
+	if content[len(content)-1] != '\n' {
+		sb.WriteByte('\n')
+	}
 }
 
 // writeSidedDiff prints a heading and a per-section change list for one side
@@ -127,12 +187,6 @@ func overlappingModifiedSections(yours, theirs *diff.SectionDiff) []string {
 		}
 	}
 	return both
-}
-
-func writeIndented(sb *strings.Builder, prefix, text string) {
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		fmt.Fprintf(sb, "%s%s\n", prefix, line)
-	}
 }
 
 func shortMergeSHA(s string) string {

@@ -249,6 +249,38 @@ func TestDriftSilentWhenRemoteUnusable(t *testing.T) {
 	})
 }
 
+// TestDrift_RequestsNameTheMCPServer: the drift check's requests identify
+// as the MCP server ('ctx-mcp'), never as the CLI (E15).
+func TestDrift_RequestsNameTheMCPServer(t *testing.T) {
+	t.Setenv("CONTEXO_CLIENT", "")
+	var clients []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clients = append(clients, r.Header.Get("X-Contexo-Client"))
+		if strings.Contains(r.URL.Path, "/diff/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"from_sha":"abc1234","to_sha":"def5678","sections":[]}`))
+			return
+		}
+		w.Header().Set("X-Page-SHA", "def567812345abcdef")
+		_, _ = w.Write([]byte("---\nslug: foo\ntype: concept\n---\nbody\n"))
+	}))
+	defer srv.Close()
+	mcpServer, _ := setupCaptureServer(t, false, srv)
+	seedSyncState(t, mcpServer.store.Root, "wiki/concepts/foo.md", "abc1234")
+
+	if _, _, err := mcpServer.HandleResourceRead(context.Background(), "ctx://wiki/foo"); err != nil {
+		t.Fatalf("HandleResourceRead: %v", err)
+	}
+	if len(clients) == 0 {
+		t.Fatal("the drift check made no request")
+	}
+	for _, c := range clients {
+		if c != "ctx-mcp" {
+			t.Errorf("drift request carried X-Contexo-Client %q, want ctx-mcp (all: %q)", c, clients)
+		}
+	}
+}
+
 func TestRenderDriftNotice_CompactSummary(t *testing.T) {
 	d := &diff.SectionDiff{
 		Sections: []diff.SectionChange{
@@ -263,7 +295,7 @@ func TestRenderDriftNotice_CompactSummary(t *testing.T) {
 		"def5678",
 		"~ ## Decision",
 		"+ ## Refund handling",
-		"ctx pull",
+		"ctx_pull is safe",
 		"</DRIFT_NOTICE>",
 	} {
 		if !strings.Contains(notice, want) {

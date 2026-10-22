@@ -92,6 +92,9 @@ func (c *driftChecker) computeNotice(relPath string) (string, error) {
 		return "", nil
 	}
 	client := syncpkg.NewClient(rr.ServerURL, rr.Token)
+	// The checker has no handle on the agent's clientInfo name (server.go
+	// builds it), so it identifies as the MCP server rather than the CLI.
+	client.SetClientName(mcpDefaultClient)
 	_, serverSHA, err := client.ReadPage(rr.RepoID, relPath)
 	if err != nil {
 		return "", err
@@ -140,8 +143,7 @@ func renderDriftNotice(relPath, localSHA, serverSHA string, d *diff.SectionDiff)
 	if !wrote {
 		sb.WriteString("  (changes outside structured sections)\n")
 	}
-	sb.WriteString("\nConsider `ctx pull` before editing this page. If you push without\n")
-	sb.WriteString("pulling, the server will 409 unless your local parent_sha matches.\n")
+	sb.WriteString("\nctx_pull is safe: it updates only pages you have not edited and lists conflicts instead of overwriting.\n")
 	sb.WriteString("Call ctx_diff(slug=...) for the full per-section diff.\n")
 	sb.WriteString("</DRIFT_NOTICE>")
 	return sb.String()
