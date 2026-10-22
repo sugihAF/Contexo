@@ -50,7 +50,7 @@ func newPushCmd() *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fallbackServer {
-				return fmt.Errorf("push: --fallback-server: server-side distillation not implemented yet (planned for Phase 4 of agent-reasoning-capture); use the agent-as-distiller flow via ctx_push MCP for now")
+				return fmt.Errorf("push: --fallback-server: server-side distillation not implemented yet (planned for Phase 4 of agent session capture); use the agent-as-distiller flow via ctx_push MCP for now")
 			}
 			root := GetRootDir()
 			if _, err := syncops.RequireHub(root); err != nil {
@@ -92,11 +92,11 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&typeFilter, "type", "", "push only pages of this type (concept|entity|source|analysis)")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "commit message (default: 'ctx push (N pages)')")
 	cmd.Flags().BoolVar(&fl.dryRun, "dry-run", false, "show what would be pushed without sending or writing anything")
-	cmd.Flags().BoolVar(&fallbackServer, "fallback-server", false, "(planned) route reasoning-trail distillation to the Contexo server; currently errors")
+	cmd.Flags().BoolVar(&fallbackServer, "fallback-server", false, "(planned) route decision-record distillation to the Contexo server; currently errors")
 	cmd.Flags().BoolVarP(&fl.yes, "yes", "y", false, "skip the pre-push confirmation prompt (required for non-interactive use when editing existing pages)")
 	cmd.Flags().BoolVar(&fl.showDiff, "show-diff", false, "print the full per-section diff in the preview, not just a one-line summary")
 	cmd.Flags().BoolVar(&fl.noPreview, "no-preview", false, "skip the pre-push preview entirely (faster; loses the heads-up about what changes)")
-	cmd.Flags().BoolVar(&noDistill, "no-distill", false, "push even when an un-distilled agent session is pending (bypasses the reasoning-trail guard; use deliberately)")
+	cmd.Flags().BoolVar(&noDistill, "no-distill", false, "push even when an un-distilled agent session is pending (bypasses the decision-record guard; use deliberately)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the ctx.push.v1 JSON document; never prompts or previews (implies --yes and --no-preview)")
 	return cmd
 }
