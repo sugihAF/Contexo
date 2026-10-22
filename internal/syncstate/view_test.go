@@ -3,6 +3,7 @@ package syncstate
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -158,34 +159,83 @@ func wp04viewFacts(t *testing.T, v *View, rel string) *PathFacts {
 	return f
 }
 
-// wp04viewSnapshot records every path under dir with its mode, mtime and
-// content, so a test can prove a reader changed nothing.
-func wp04viewSnapshot(t *testing.T, dir string) map[string]string {
+// wp04viewEntry is one path of a wp04viewSnapshot.
+type wp04viewEntry struct {
+	Mode    fs.FileMode
+	ModTime time.Time
+	Size    int64
+	Data    string // regular files only
+}
+
+func (e wp04viewEntry) String() string {
+	return fmt.Sprintf("mode %s mtime %s size %d", e.Mode, e.ModTime.Format(time.RFC3339Nano), e.Size)
+}
+
+// wp04viewSnapshot records every path under dir with its mode, mtime, size
+// and content, so a test can prove a reader changed nothing. Each entry comes
+// from os.Lstat, not the walk's DirEntry.Info: on Windows that FileInfo is the
+// directory-enumeration record, whose NTFS timestamps can lag the file's own
+// and change once the file has been read (windows-latest CI, WP-0.I).
+func wp04viewSnapshot(t *testing.T, dir string) map[string]wp04viewEntry {
 	t.Helper()
-	out := map[string]string{}
+	out := map[string]wp04viewEntry{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		desc := info.Mode().String() + " " + info.ModTime().Format(time.RFC3339Nano)
+		e := wp04viewEntry{Mode: info.Mode(), ModTime: info.ModTime(), Size: info.Size()}
 		if info.Mode().IsRegular() {
 			data, err := os.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			desc += " " + string(data)
+			e.Data = string(data)
 		}
-		out[p] = desc
+		out[p] = e
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// wp04viewSnapshotDiff lists every path whose snapshot entry differs between
+// before and after, with its before/after mode, mtime and size; nil when
+// nothing changed.
+func wp04viewSnapshotDiff(before, after map[string]wp04viewEntry) []string {
+	paths := make([]string, 0, len(before)+len(after))
+	for p := range before {
+		paths = append(paths, p)
+	}
+	for p := range after {
+		if _, ok := before[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	var diff []string
+	for _, p := range paths {
+		b, inBefore := before[p]
+		a, inAfter := after[p]
+		switch {
+		case !inAfter:
+			diff = append(diff, fmt.Sprintf("removed %s (before: %s)", p, b))
+		case !inBefore:
+			diff = append(diff, fmt.Sprintf("added %s (after: %s)", p, a))
+		case b.Mode != a.Mode || !b.ModTime.Equal(a.ModTime) || b.Size != a.Size || b.Data != a.Data:
+			l := fmt.Sprintf("changed %s: before %s; after %s", p, b, a)
+			if b.Data != a.Data {
+				l += " (content differs)"
+			}
+			diff = append(diff, l)
+		}
+	}
+	return diff
 }
 
 // TestLoadViewKinds builds, for each contract decision-table row r01-r19
@@ -587,8 +637,9 @@ func TestWP04LoadViewCorruptIndexes(t *testing.T) {
 			if f.Remote != wantRemote {
 				t.Errorf("Remote = %+v, want %+v", f.Remote, wantRemote)
 			}
-			if after := wp04viewSnapshot(t, hub); !reflect.DeepEqual(before, after) {
-				t.Error("LoadView changed the hub; it must only read (no repair of corrupt indexes)")
+			if diff := wp04viewSnapshotDiff(before, wp04viewSnapshot(t, hub)); len(diff) != 0 {
+				t.Errorf("LoadView changed the hub; it must only read (no repair of corrupt indexes):\n%s",
+					strings.Join(diff, "\n"))
 			}
 		})
 	}
@@ -690,8 +741,69 @@ func TestWP04LoadViewEntrySet(t *testing.T) {
 		t.Errorf("c.md = %+v/%+v/%+v, want absent/none/present", f.Local, f.Base, f.Remote)
 	}
 
-	if after := wp04viewSnapshot(t, hub); !reflect.DeepEqual(before, after) {
-		t.Error("LoadView changed the hub; it must only read")
+	if diff := wp04viewSnapshotDiff(before, wp04viewSnapshot(t, hub)); len(diff) != 0 {
+		t.Errorf("LoadView changed the hub; it must only read:\n%s", strings.Join(diff, "\n"))
+	}
+}
+
+// TestWP04ViewSnapshotDiffNamesChangedPaths pins the read-only checks'
+// failure output: every changed, added or removed path is named with its
+// before/after mode, mtime and size.
+func TestWP04ViewSnapshotDiffNamesChangedPaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a.md", "b.md", "c.md"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := wp04viewSnapshot(t, dir)
+	if diff := wp04viewSnapshotDiff(before, wp04viewSnapshot(t, dir)); len(diff) != 0 {
+		t.Fatalf("diff of an untouched dir = %q, want none", diff)
+	}
+
+	a, b := filepath.Join(dir, "a.md"), filepath.Join(dir, "b.md")
+	aTime := before[a].ModTime
+	if err := os.WriteFile(a, []byte("a changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(a, aTime, aTime); err != nil { // content and size change, mtime does not
+		t.Fatal(err)
+	}
+	later := before[b].ModTime.Add(time.Hour)
+	if err := os.Chtimes(b, later, later); err != nil { // only the mtime changes
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "c.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "d.md"), []byte("d"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff := wp04viewSnapshotDiff(before, wp04viewSnapshot(t, dir))
+	line := func(name string) string {
+		t.Helper()
+		for _, l := range diff {
+			if strings.Contains(l, filepath.Join(dir, name)) {
+				return l
+			}
+		}
+		t.Fatalf("diff does not name %s:\n%s", name, strings.Join(diff, "\n"))
+		return ""
+	}
+	if l := line("a.md"); !strings.Contains(l, "size 4;") || !strings.Contains(l, "size 9") ||
+		!strings.Contains(l, "content differs") {
+		t.Errorf("a.md line %q: want before size 4, after size 9 and content differs", l)
+	}
+	if l := line("b.md"); !strings.Contains(l, later.Format(time.RFC3339Nano)) ||
+		!strings.Contains(l, before[b].ModTime.Format(time.RFC3339Nano)) {
+		t.Errorf("b.md line %q: want the before and after mtimes", l)
+	}
+	if l := line("c.md"); !strings.Contains(l, "removed") {
+		t.Errorf("c.md line %q: want removed", l)
+	}
+	if l := line("d.md"); !strings.Contains(l, "added") {
+		t.Errorf("d.md line %q: want added", l)
 	}
 }
 
