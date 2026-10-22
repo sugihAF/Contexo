@@ -296,3 +296,13 @@ Decisions the errata do not cover.
 | 12 | `ctx show`'s hidden `--json` cannot be set false: `--json=false` fails flag parsing (usage, exit 3), and `EnvelopeMode` treats the top-level `ctx show` as envelope mode whatever its flags. | E20/E21 make show always machine mode; a plain bool flag let `--json=false` switch show to human rendering, exit 1 and the update nudge. | A caller passing `--json=false` to show gets a usage envelope; show has no human mode to fall back to. |
 | 13 | With a live listing, every page an online status leaves unverified is named by a `base_repair_skipped` warning; an offline status never carries that warning. | Contract status ONLINE ("those pages stay unverified and warning base_repair_skipped is added"), E5 (EnsureBase is a no-op without a listing) and E12. The canonical fixtures follow it. | WP-1.1 must warn for every online unverified page, or its output disagrees with `status.all-states.json` / `status.old-server.json`. |
 | 14 | Status fixtures obey invariants read from the contract prose: `authenticated` implies `remote.source` live; offline implies `server.capabilities_known` false; source none implies no `repo_exists`/`head` and `page_count` 0; `remote.error` implies source none; `server_outdated` iff capabilities are known and a v1 server capability is missing (E13); a remote side without a live listing carries only `sha` (E9). | The fixtures must be documents a conforming ctx can emit; `TestStatusFixturesConsistent` checks them. | If WP-1.1 reads one rule differently, its goldens (WP-2.2) disagree with a canonical fixture and one side changes then. |
+
+## Known deviations
+
+Product behavior that differs from the contract, found by the e2e suite
+(`internal/e2e`). The scenario skips through `knownDeviation(t, "DEV-n")`;
+`CONTEXO_E2E_STRICT=1` turns the skip into a failure. Owners fix the
+product, never the test.
+
+| id | CONTRACT text | Actual behavior | Owner |
+|---|---|---|---|
