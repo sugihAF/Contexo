@@ -102,6 +102,10 @@ Notes on the shapes as built:
   canonical fixture stays the reference.
 - `resolve.theirs.json`'s `backup_file` is relative to `.contexo/`:
   `.sync/backup/<P>.<YYYYMMDDTHHMMSSZ>`.
+- Contract §7(i) ("lossy frontmatter not detected") no longer holds for
+  unknown frontmatter keys (WP-1.6): they survive push -> pull -> teammate
+  edit -> pull, normalized (schema keys first, extras sorted, YAML re-indented)
+  and the page stays unchanged afterwards (e2e scenario 12).
 
 ## Exit codes and error codes (E2, E17)
 
