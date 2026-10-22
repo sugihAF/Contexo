@@ -35,6 +35,13 @@ type PageFrontmatter struct {
 	Related          []string  `yaml:"related,omitempty"`
 	Tags             []string  `yaml:"tags,omitempty"`
 	ReasoningSummary string    `yaml:"reasoning_summary,omitempty"`
+
+	// Extra holds the frontmatter keys this schema does not define, as
+	// ParsePage decodes them (nil when there are none), so they survive
+	// ParsePage -> SerializePage. Validate and RelPath ignore it.
+	// SerializePage writes them after the schema keys, in byte order.
+	// Copies of a Page share this map: replace it, never mutate it in place.
+	Extra map[string]any `yaml:",inline" json:"-"`
 }
 
 func (fm *PageFrontmatter) Validate() error {
