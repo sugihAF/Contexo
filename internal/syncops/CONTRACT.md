@@ -270,6 +270,19 @@ As built and observed by the e2e suite: the first write creates
 (scenario 02); a push 409 writes a `source: push` sidecar (scenario 07
 conflict); `status --offline` reads sidecars only (E9) and writes nothing.
 
+E10 as extended by lead ruling L28 (WP-4.1, GFR-1): a push conflict found
+from the live listing (no 409; skipped with reason `conflict`) writes a
+`source: push` sidecar exactly like a 409 — `server_sha`, `base_sha`
+(omitted for both_added), `kind`, `detected_at` and the sanitized server
+content — and never moves `page_shas` or the base. The content is fetched
+like pull fetches it (one `PullPages("")` for more than 8 such paths, else
+`ReadPage` at concurrency 4); the fetched sha is the sidecar's and the
+skipped entry's `server_sha`. A sidecar that already records the same sha,
+kind and base with content is kept as is; a page the server no longer has
+gets none; a failed fetch records the listing sha without content. A dry
+run, a refused or declined push and a failed send write no sidecar. No JSON
+shape changes.
+
 Write order per operation: working files, base files, `conflicts/<path>`,
 `bases.json`, `conflicts.json`, `state.json`, each index once, atomically.
 push, pull, resolve and repair hold the lock (busy, exit 12, after
@@ -325,8 +338,11 @@ results may only gain fields.
 - `ctx_push` and `ctx_pull` run `syncops.Push` / `syncops.Pull` under
   `.sync/lock` and write bases, sidecars and `state.json` only through the
   engines; `ctx_status` runs `syncops.Status` + `FillStatusIdentity`.
-- A push 409 never bumps `page_shas` (it writes a `source: push` sidecar and
-  answers MERGE_REQUIRED); a modified page is never overwritten by `ctx_pull`.
+- A push 409 or a listing conflict never bumps `page_shas` (it writes a
+  `source: push` sidecar and answers MERGE_REQUIRED); a modified page is never
+  overwritten by `ctx_pull`. `resolved=[P]` re-bases onto the sha of this
+  process's last brief for P, else onto the sidecar's `server_sha`, so it
+  also works after an agent restart (L28).
 - `ctx_push` takes `resolved: ["<path>", ...]`, which applies `resolve --ours`
   semantics (re-base onto the server sha the agent was shown in the merge
   brief) before pushing. The MERGE_REQUIRED text tells the agent to write the

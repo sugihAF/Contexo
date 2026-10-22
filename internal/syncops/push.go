@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	stdsync "sync"
 	"time"
 
 	"github.com/sugihAF/contexo/internal/schema"
@@ -60,11 +61,29 @@ var (
 )
 
 // pushEntry is one classified view path. overlay is true when the E9
-// sidecar overlay turned a modified result into a conflict.
+// sidecar overlay turned a modified result into a conflict; kind is the
+// conflict kind of a conflict.
 type pushEntry struct {
 	facts   *syncstate.PathFacts
 	state   contract.PageState
+	kind    contract.ConflictKind
 	overlay bool
+}
+
+// pushSidecar is a conflict sidecar for a path push skipped because the
+// live listing already showed another commit (E10 as extended by L28).
+type pushSidecar struct {
+	rec     syncstate.ConflictRecord
+	content []byte
+}
+
+// pushServerPage is a fetched server version: its sha (empty when the
+// server sent none) and sanitized bytes. gone means the server no longer
+// has the page.
+type pushServerPage struct {
+	sha     string
+	content []byte
+	gone    bool
 }
 
 // pushItem is one file of the batch: the request file, its write kind and
@@ -88,7 +107,8 @@ type pushFilter struct {
 // LoadView + classify (E9 overlay) -> batch -> CheckGuard -> Confirm ->
 // PushPages -> writes. Nothing is sent before the guard passes and Confirm
 // agrees; a dry run, a refusal and a failed send write nothing. A 409 for a
-// path becomes a push sidecar and never moves page_shas or the base. When
+// path becomes a push sidecar and never moves page_shas or the base, and so
+// does a conflict found from the listing (E10 as extended by L28). When
 // conflicts remain the document is returned together with a conflict error.
 func Push(ctx context.Context, env Env, o PushOptions) (*contract.PushDoc, error) {
 	if _, err := RequireHub(env.Root); err != nil {
@@ -210,6 +230,13 @@ func Push(ctx context.Context, env Env, o PushOptions) (*contract.PushDoc, error
 		doc.Message = fmt.Sprintf("ctx push (%d pages)", len(batch))
 	}
 	if len(batch) == 0 {
+		if o.DryRun {
+			return doc, nil
+		}
+		sidecars := pushListingSidecars(ctx, env, entries, doc.Skipped, now())
+		if _, _, err := pushApply(env, view, nil, &sync.PushResponse{}, now(), sidecars); err != nil {
+			return nil, Wrap(err, contract.CodeInternal, "push: the conflict could not be recorded in the local sync state")
+		}
 		return doc, nil
 	}
 	if o.Confirm != nil {
@@ -253,7 +280,8 @@ func Push(ctx context.Context, env Env, o PushOptions) (*contract.PushDoc, error
 	if resp == nil {
 		return nil, New(contract.CodeInternal, "push: the server returned no push result")
 	}
-	pushed, conflicts, err := pushApply(env, view, sent, resp, now())
+	sidecars := pushListingSidecars(ctx, env, entries, doc.Skipped, now())
+	pushed, conflicts, err := pushApply(env, view, sent, resp, now(), sidecars)
 	if err != nil {
 		return nil, Wrap(err, contract.CodeInternal,
 			"push: the server accepted the push but the local sync state could not be fully saved")
@@ -413,7 +441,7 @@ func pushClassify(view *syncstate.View) (map[string]pushEntry, error) {
 			sc = &SidecarFact{ServerSHA: f.Conflict.ServerSHA, Kind: contract.ConflictKind(f.Conflict.Kind)}
 		}
 		res := ApplySidecar(raw, f.Base.SHA, sc)
-		out[rel] = pushEntry{facts: f, state: res.State, overlay: res.State != raw.State}
+		out[rel] = pushEntry{facts: f, state: res.State, kind: res.ConflictKind, overlay: res.State != raw.State}
 	}
 	return out, nil
 }
@@ -611,15 +639,139 @@ func pushConflictError(conflicts []contract.PushConflict) *contract.Error {
 	}
 }
 
+// pushListingSidecars builds the sidecars of the conflicts push found from
+// the live listing (E10 as extended by L28): every skipped conflict the E9
+// overlay did not make, unless its recorded sidecar already holds this
+// server sha, kind and base with content (then it is kept as is, like
+// pull). The server version is fetched as pull fetches it: one
+// PullPages("") for more than pullBatchFallback paths, else ReadPage with at
+// most pullFetchConcurrency in flight. The fetched sha wins over the
+// listing sha, and skipped[].server_sha follows it so the document and the
+// sidecar agree. A page the server no longer has gets no sidecar; any other
+// fetch failure records the listing sha without content.
+func pushListingSidecars(ctx context.Context, env Env, entries map[string]pushEntry, skipped []contract.SkippedPage, now time.Time) []pushSidecar {
+	var idx []int
+	var paths []string
+	for i, s := range skipped {
+		e, ok := entries[s.Path]
+		if !ok || s.Reason != contract.SkipConflict || e.overlay || s.ServerSHA == "" {
+			continue
+		}
+		if rec := e.facts.Conflict; rec != nil && rec.ServerSHA == s.ServerSHA &&
+			rec.Kind == string(e.kind) && rec.BaseSHA == pushSidecarBase(e) && rec.HasContent {
+			continue
+		}
+		idx = append(idx, i)
+		paths = append(paths, s.Path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	fetched := pushFetchServer(ctx, env, paths)
+	var out []pushSidecar
+	for _, i := range idx {
+		s := &skipped[i]
+		got := fetched[s.Path]
+		if got.gone {
+			continue
+		}
+		if got.sha != "" {
+			s.ServerSHA = got.sha
+		}
+		e := entries[s.Path]
+		out = append(out, pushSidecar{
+			rec: syncstate.ConflictRecord{
+				Path:       s.Path,
+				ServerSHA:  s.ServerSHA,
+				BaseSHA:    pushSidecarBase(e),
+				Kind:       string(e.kind),
+				Source:     syncstate.SourcePush,
+				DetectedAt: contract.TimeOf(now),
+			},
+			content: got.content,
+		})
+	}
+	return out
+}
+
+// pushSidecarBase is the base sha a conflict sidecar of e records: none for
+// both_added, as conflicts.json stores it.
+func pushSidecarBase(e pushEntry) string {
+	if e.kind == contract.ConflictBothAdded {
+		return ""
+	}
+	return e.facts.Base.SHA
+}
+
+// pushFetchServer fetches the current server version of paths (sanitized,
+// E6). A path missing from the result could not be fetched.
+func pushFetchServer(ctx context.Context, env Env, paths []string) map[string]pushServerPage {
+	out := make(map[string]pushServerPage, len(paths))
+	if len(paths) > pullBatchFallback {
+		if ctx.Err() != nil {
+			return out
+		}
+		resp, err := env.Remote.PullPages(env.RepoID, "")
+		if err != nil || resp == nil {
+			return out
+		}
+		files := make(map[string]sync.PullFile, len(resp.Files))
+		for _, f := range resp.Files {
+			files[f.Path] = f
+		}
+		// A full batch lists every page at HEAD: what it lacks is gone.
+		for _, p := range paths {
+			if f, ok := files[p]; ok {
+				out[p] = pushServerPage{sha: f.SHA, content: []byte(schema.SanitizeContent(f.Content))}
+			} else {
+				out[p] = pushServerPage{gone: true}
+			}
+		}
+		return out
+	}
+	var mu stdsync.Mutex
+	sem := make(chan struct{}, pullFetchConcurrency)
+	var wg stdsync.WaitGroup
+	for _, p := range paths {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			body, sha, err := env.Remote.ReadPage(env.RepoID, p)
+			var got pushServerPage
+			switch {
+			case err == nil:
+				got = pushServerPage{sha: sha, content: []byte(schema.SanitizeContent(string(body)))}
+			case pullPageGone(err):
+				got = pushServerPage{gone: true}
+			default:
+				return
+			}
+			mu.Lock()
+			out[p] = got
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
 // pushApply records the server's answer (E8, E10) in the write order base
 // files, conflicts/<path> files, bases.json, conflicts.json, state.json,
 // each index written at most once and only when it changed. Only paths
 // that were sent count. A pushed path with a sha gets base = the exact sent
 // bytes, page_shas = sha and its sidecar cleared; a 409 gets a push sidecar
 // with the sanitized server content and never touches page_shas or the
-// base. A write failure does not stop the remaining writes; the first one
-// is returned. pushed and conflicts are sorted by path.
-func pushApply(env Env, view *syncstate.View, sent map[string]*pushItem, resp *sync.PushResponse, now time.Time) ([]contract.PushedPage, []contract.PushConflict, error) {
+// base; so does each listing conflict in sidecars. A write failure does not
+// stop the remaining writes; the first one is returned. pushed and
+// conflicts are sorted by path.
+func pushApply(env Env, view *syncstate.View, sent map[string]*pushItem, resp *sync.PushResponse, now time.Time, sidecars []pushSidecar) ([]contract.PushedPage, []contract.PushConflict, error) {
 	pushed := []contract.PushedPage{}
 	conflicts := []contract.PushConflict{}
 	var firstErr error
@@ -674,6 +826,13 @@ func pushApply(env Env, view *syncstate.View, sent map[string]*pushItem, resp *s
 		}
 		if err := view.Conflicts.Put(rec, []byte(schema.SanitizeContent(string(c.CurrentContent)))); err != nil {
 			keep(fmt.Errorf("conflict sidecar of %s: %w", c.Path, err))
+			continue
+		}
+		conflictsChanged = true
+	}
+	for _, sc := range sidecars {
+		if err := view.Conflicts.Put(sc.rec, sc.content); err != nil {
+			keep(fmt.Errorf("conflict sidecar of %s: %w", sc.rec.Path, err))
 			continue
 		}
 		conflictsChanged = true
