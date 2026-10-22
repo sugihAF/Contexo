@@ -265,6 +265,47 @@ func TestStaleAccess_MintStraddlingRecreateNeverMints(t *testing.T) {
 	wp07WantMembers(t, "mx", rig, s.repo, map[string]string{carol.id: userstore.RoleOwner})
 }
 
+// TestStaleAccess_BodiesReadBeforeCreateRepoMu: JoinRepo and MintInviteKey
+// read their request body before they take createRepoMu. A body read under
+// it would let one client that trickles its body (up to the server's read
+// timeout) stall every creation, push membership check and invite-key
+// request in the process. The body's first Read checks that nothing holds
+// the lock; the request runs on the test goroutine and nothing else takes it.
+func TestStaleAccess_BodiesReadBeforeCreateRepoMu(t *testing.T) {
+	rig := setupRig(t)
+	us := wp07SignIn(t, rig, "alice", "bob")
+	alice, bob := us["alice"], us["bob"]
+	wp07WantCreated(t, "alice creates bodies", wp07Create(t, rig, "bodies", alice.bearer), "bodies")
+	key := wp115Mint(t, rig, "bodies", alice.bearer, "k")
+
+	for _, tc := range []struct {
+		name, path, bearer, payload string
+		status                      int
+	}{
+		{"join", "/v1/repos/join", bob.bearer, `{"key":"` + key + `"}`, http.StatusOK},
+		{"mint", "/v1/repos/bodies/invite-keys", alice.bearer, `{"label":"body"}`, http.StatusCreated},
+	} {
+		body := &wp115HookBody{payload: []byte(tc.payload), hook: func() {
+			if !createRepoMu.TryLock() {
+				t.Errorf("%s read its request body while createRepoMu was held", tc.name)
+				return
+			}
+			createRepoMu.Unlock()
+		}}
+		req := httptest.NewRequest(http.MethodPost, tc.path, body)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tc.bearer)
+		w := httptest.NewRecorder()
+		rig.router.ServeHTTP(w, req)
+		if !body.fired {
+			t.Errorf("%s never read its body (%d %s): the seam is broken", tc.name, w.Code, w.Body.String())
+		}
+		if w.Code != tc.status {
+			t.Errorf("%s: %d %s, want %d", tc.name, w.Code, w.Body.String(), tc.status)
+		}
+	}
+}
+
 // TestStaleAccess_MintWaitsForCreateRepoMu: a mint checks the owner row and
 // inserts the key under createRepoMu. The test holds createRepoMu: a stale
 // owner's mint must wait for it, then be refused by the creation the test
