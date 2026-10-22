@@ -640,3 +640,173 @@ func TestStatusBinary_ExitCodes(t *testing.T) {
 		t.Errorf("offline doc: offline=%v pages=%d", doc.Offline, len(doc.Pages))
 	}
 }
+
+// st11Render runs statusRenderHuman on doc and rr and returns its stdout.
+func st11Render(t *testing.T, doc *contract.StatusDoc, rr *config.Remote) string {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := newStatusCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	statusRenderHuman(cmd, doc, rr)
+	return out.String()
+}
+
+// st11AssertContains fails for each want missing from out.
+func st11AssertContains(t *testing.T, label, out string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("%s: output lacks %q:\n%s", label, w, out)
+		}
+	}
+}
+
+// st11AssertLacks fails for each unwanted string present in out.
+func st11AssertLacks(t *testing.T, label, out string, unwanted ...string) {
+	t.Helper()
+	for _, w := range unwanted {
+		if strings.Contains(out, w) {
+			t.Errorf("%s: output carries %q:\n%s", label, w, out)
+		}
+	}
+}
+
+// The renderer on its own, over a document holding every state.
+func TestStatusHuman_RenderAllStates(t *testing.T) {
+	const tok = "ctxp_render_secret"
+	rr := &config.Remote{
+		ServerURL: "https://kb.acme.dev", URLSource: "credentials", RepoID: "st11-repo",
+		Token: tok, CredsSource: "global",
+		Creds: &config.Credentials{Token: tok, UserName: "Ana", UserEmail: "ana@acme.dev"},
+	}
+	p := func(path string, s contract.PageState) contract.PageEntry {
+		return contract.PageEntry{Path: path, State: s, Tags: []string{}, Notes: []contract.NoteCode{}}
+	}
+	broken := p("wiki/concepts/broken.md", contract.StateInvalid)
+	broken.Invalid = &contract.InvalidInfo{Stage: contract.InvalidParse, Message: "yaml: bad"}
+	moved := p("wiki/concepts/moved.md", contract.StateInvalid)
+	moved.Invalid = &contract.InvalidInfo{Stage: contract.InvalidPathMismatch, Message: "slug elsewhere",
+		ExpectedPath: "wiki/concepts/elsewhere.md"}
+	clash := p("wiki/concepts/clash.md", contract.StateConflict)
+	clash.ConflictKind = contract.ConflictBothModified
+	doc := &contract.StatusDoc{
+		Schema:  contract.SchemaStatus,
+		Project: contract.ProjectInfo{RepoID: "st11-repo", LastPullSHA: "c41b7e09d2f85a36e1b94c07d5a28f6e3b19c0d4"},
+		Server: contract.ServerInfo{URL: "https://kb.acme.dev", URLSource: contract.URLFromCredentials,
+			Version: "0.7.0", CapabilitiesKnown: true, Capabilities: []contract.ServerCapability{}},
+		Auth: contract.AuthInfo{State: contract.AuthAuthenticated, CredentialsSource: "global",
+			TokenKind: "pat", UserName: "Ana", UserEmail: "ana@acme.dev"},
+		Remote: contract.RemoteInfo{Source: contract.RemoteLive, PageCount: 6},
+		Counts: contract.StateCounts{Unchanged: 1, Modified: 1, New: 1, Incoming: 1, IncomingNew: 1,
+			Conflict: 1, DeletedLocal: 1, Invalid: 2, Unverified: 1, Ahead: 2, Behind: 2},
+		Pages: []contract.PageEntry{
+			clash, p("wiki/concepts/mod.md", contract.StateModified), p("wiki/entities/fresh.md", contract.StateNew),
+			p("wiki/concepts/inc.md", contract.StateIncoming), p("wiki/concepts/inc-new.md", contract.StateIncomingNew),
+			broken, moved, p("wiki/concepts/stale.md", contract.StateUnverified),
+			p("wiki/concepts/gone.md", contract.StateDeletedLocal), p("wiki/concepts/same.md", contract.StateUnchanged),
+		},
+		Captures: contract.CaptureInfo{Pending: 2, Fresh: 1, BlocksPush: true, Sessions: []contract.CaptureSession{}},
+		Warnings: []contract.Warning{
+			{Code: contract.WarnServerURLMismatch, Message: "ENGINE-MISMATCH-TEXT", Paths: []string{}},
+			{Code: contract.WarnBaseRepairSkipped, Message: "1 page(s) could not be verified", Paths: []string{"wiki/concepts/stale.md"}},
+			{Code: contract.WarnServerOutdated, Message: "https://kb.acme.dev does not advertise write.path_sha", Paths: []string{}},
+		},
+	}
+	out := st11Render(t, doc, rr)
+	st11AssertContains(t, "all states", out,
+		"REMOTE", "https://kb.acme.dev", "st11-repo", "Ana <ana@acme.dev>", "pat", "KNOWLEDGE",
+		"1 conflict", "1 modified", "1 new", "2 incoming", "2 invalid", "1 unverified",
+		"1 deleted locally", "1 unchanged", "c41b7e0",
+		"2 pending (1 fresh)", "blocks push",
+		"wiki/concepts/clash.md", "both_modified",
+		"ctx resolve wiki/concepts/clash.md --ours", "ctx resolve wiki/concepts/clash.md --theirs",
+		"wiki/concepts/mod.md", "wiki/entities/fresh.md", "ctx push",
+		"wiki/concepts/inc.md", "wiki/concepts/inc-new.md", "ctx pull",
+		"wiki/concepts/broken.md", "parse", "yaml: bad", "wiki/concepts/moved.md", "wiki/concepts/elsewhere.md",
+		"wiki/concepts/stale.md", "ctx repair",
+		"wiki/concepts/gone.md", "ctx resolve wiki/concepts/gone.md --theirs",
+		"does not advertise write.path_sha", "1 page(s) could not be verified",
+	)
+	// The REMOTE block prints the mismatch itself; the token never shows.
+	st11AssertLacks(t, "all states", out, "ENGINE-MISMATCH-TEXT", tok, "ctxp_")
+	if strings.Contains(out, "wiki/concepts/same.md") {
+		t.Errorf("unchanged pages must not be listed:\n%s", out)
+	}
+
+	// Several conflicts: the hint names no single path.
+	clash2 := clash
+	clash2.Path = "wiki/concepts/clash2.md"
+	doc.Pages = append(doc.Pages, clash2)
+	doc.Counts.Conflict = 2
+	st11AssertContains(t, "two conflicts", st11Render(t, doc, rr), "ctx resolve <path> --ours", "ctx resolve <path> --theirs")
+
+	// A remote error, with its advice; nothing to repair.
+	clean := &contract.StatusDoc{
+		Schema: contract.SchemaStatus,
+		Server: contract.ServerInfo{Capabilities: []contract.ServerCapability{}},
+		Auth:   contract.AuthInfo{State: contract.AuthUnchecked, TokenKind: "pat"},
+		Remote: contract.RemoteInfo{Source: contract.RemoteNone, Error: &contract.ErrorBody{
+			Code: contract.CodeNetwork, Message: "status: list pages: dial tcp: no such host",
+			Advice: []string{"ctx auth status"}, Retryable: true}},
+		Pages:    []contract.PageEntry{},
+		Captures: contract.CaptureInfo{Sessions: []contract.CaptureSession{}},
+		Warnings: []contract.Warning{},
+	}
+	out = st11Render(t, clean, rr)
+	st11AssertContains(t, "remote error", out, "server: status: list pages: dial tcp: no such host", "ctx auth status")
+	st11AssertLacks(t, "remote error", out, "ctx repair", "ctx push", "ctx pull", tok)
+
+	// Live and nothing to do: say so.
+	clean.Remote = contract.RemoteInfo{Source: contract.RemoteLive}
+	clean.Auth.State = contract.AuthAuthenticated
+	st11AssertContains(t, "in sync", st11Render(t, clean, rr), "in sync")
+
+	// A nil remote (corrupt config) still renders.
+	st11AssertContains(t, "nil remote", st11Render(t, clean, nil), "REMOTE", "not authenticated")
+}
+
+func TestStatusHuman_Sections(t *testing.T) {
+	trap := st11TrapServer(t)
+	p := testkit.NewProject(t, testkit.ProjectOptions{
+		ServerURL: trap.URL, Key: "st11-key", RepoID: "st11-human",
+	})
+	mod := p.WritePage(testkit.PageSpec{Slug: "mod"})
+	clash := p.WritePage(testkit.PageSpec{Slug: "clash"})
+	const s1 = "1111111111111111111111111111111111111111"
+	const s2 = "2222222222222222222222222222222222222222"
+	st11RecordBases(t, p.HubDir, map[string][]byte{mod: p.Read(mod), clash: p.Read(clash)},
+		map[string]string{mod: s1, clash: s1})
+	p.WritePage(testkit.PageSpec{Slug: "mod", Body: "edited locally"})
+	p.WritePage(testkit.PageSpec{Slug: "clash", Body: "edited locally too"})
+	conflicts, err := syncstate.OpenConflicts(p.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conflicts.Put(syncstate.ConflictRecord{Path: clash, ServerSHA: s2, BaseSHA: s1,
+		Kind: syncstate.KindBothModified, Source: syncstate.SourcePush}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := conflicts.Save(); err != nil {
+		t.Fatal(err)
+	}
+	fresh := p.WritePage(testkit.PageSpec{Type: schema.TypeEntity, Slug: "fresh"})
+	p.WriteRaw("wiki/concepts/broken.md", []byte("---\nschema: [\n---\n"))
+	p.WriteRaw("raw/sessions/_pending/st11-sess.jsonl", []byte("{\"turn\":1}\n{\"turn\":2}\n"))
+
+	code, out, stderr := st11Run(t, "status", "--offline", "--root", p.Root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	st11AssertContains(t, "sections", out,
+		"REMOTE", trap.URL, "st11-human", "KNOWLEDGE", "offline",
+		"1 conflict", "1 modified", "1 new", "1 invalid",
+		clash, mod, fresh, "wiki/concepts/broken.md", "parse",
+		"ctx push", "ctx resolve "+clash+" --ours", "ctx resolve "+clash+" --theirs",
+		"1 pending (1 fresh)",
+	)
+	st11AssertLacks(t, "sections", out, "ctx repair", "st11-key")
+	if n := trap.hits.Load(); n != 0 {
+		t.Errorf("status --offline sent %d request(s)", n)
+	}
+}
