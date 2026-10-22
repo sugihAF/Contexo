@@ -9,6 +9,7 @@ import (
 	"strings"
 	gosync "sync"
 	"testing"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/diff"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -152,6 +153,63 @@ func TestComputePushPreview_CreateSkipsRead(t *testing.T) {
 	want := []string{"/v1/repos/repo/pages/wiki/concepts/old.md"}
 	if !reflect.DeepEqual(hits, want) {
 		t.Errorf("server requests = %q, want only %q (a create file is never read)", hits, want)
+	}
+}
+
+// TestComputePushPreview_ConcurrencyAtMost4 pins E12: every per-page fan-out
+// in ctx, the preview's server reads included, keeps at most 4 requests in
+// flight.
+func TestComputePushPreview_ConcurrencyAtMost4(t *testing.T) {
+	var (
+		mu             gosync.Mutex
+		inFlight, peak int
+	)
+	release := make(chan struct{})
+	arrived := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		arrived <- struct{}{}
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Header().Set("X-Page-SHA", "abc1234")
+		_, _ = w.Write([]byte("---\nslug: p\ntype: concept\n---\nbody\n"))
+	}))
+	defer srv.Close()
+
+	plan := make([]syncops.PushPlanFile, 12)
+	for i := range plan {
+		plan[i] = syncops.PushPlanFile{Kind: contract.WriteUpdate, File: sync.PushFile{
+			Path: "wiki/concepts/p" + string(rune('a'+i)) + ".md", Content: "---\nslug: p\ntype: concept\n---\nnew\n"}}
+	}
+	done := make(chan []pushPreview)
+	go func() { done <- computePushPreview(sync.NewClient(srv.URL, "tok"), "repo", plan) }()
+
+	// Let the first wave arrive, give any extra request time to show up,
+	// then release everything.
+	for i := 0; i < 4; i++ {
+		<-arrived
+	}
+	extra := false
+	select {
+	case <-arrived:
+		extra = true
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if got := len(<-done); got != len(plan) {
+		t.Fatalf("previews = %d, want %d", got, len(plan))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if extra || peak > 4 {
+		t.Fatalf("preview reads in flight peaked at %d (extra=%v), want at most 4 (E12)", peak, extra)
 	}
 }
 

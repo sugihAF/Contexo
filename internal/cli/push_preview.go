@@ -15,7 +15,9 @@ import (
 )
 
 // previewConcurrency bounds in-flight server reads during a push preview.
-const previewConcurrency = 8
+// Every per-page fan-out in ctx stays at 4 or less (E12): the hosted limit
+// is 300 requests/min per IP, shared with agents behind the same NAT.
+const previewConcurrency = 4
 
 // pushPreview describes one file in a push batch alongside how it would
 // change the server-side version (or "new page" if the path isn't there yet).
