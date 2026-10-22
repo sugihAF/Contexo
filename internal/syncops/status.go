@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -540,8 +541,83 @@ func statusCount(c *contract.StateCounts, s contract.PageState) {
 }
 
 // FillStatusIdentity fills the server, project and auth identity of doc from
-// the resolved remote r, and remote.error from unusable (E22).
-func FillStatusIdentity(doc *contract.StatusDoc, r *config.Remote, unusable error) {}
+// the resolved remote r (WP-0.3), and remote.error from unusable, the reason
+// the caller could not use r (E22). r is nil when the config or credentials
+// could not be read (R10). An auth.state or remote.error the engine already
+// set is kept; an auth.state it left empty (no request made, R6) becomes
+// unchecked with a token, else not_authenticated. Callers pass a nil
+// unusable for --offline, which asked for no server.
+func FillStatusIdentity(doc *contract.StatusDoc, r *config.Remote, unusable error) {
+	if doc == nil {
+		return
+	}
+	if r != nil {
+		doc.Server.URL = r.ServerURL
+		doc.Server.URLSource = contract.URLSource(r.URLSource)
+		doc.Project.RepoID = r.RepoID
+		doc.Project.ConfigServerURL = r.ConfiguredServerURL
+		doc.Project.DashboardURL = r.DashboardURL
+		doc.Project.DashboardPageURLTemplate = ""
+		if r.DashboardURL != "" && r.RepoID != "" {
+			doc.Project.DashboardPageURLTemplate = r.DashboardURL + "/repos/" + url.PathEscape(r.RepoID) + "/page/{path}"
+		}
+		if r.Token != "" {
+			doc.Auth.CredentialsSource = r.CredsSource
+			doc.Auth.TokenKind = r.TokenKind()
+			if r.Creds != nil {
+				doc.Auth.UserName, doc.Auth.UserEmail = r.Creds.UserName, r.Creds.UserEmail
+			}
+		}
+		if r.Mismatch {
+			// Identity first (R11).
+			doc.Warnings = statusMergeWarnings(append([]contract.Warning{{
+				Code: contract.WarnServerURLMismatch,
+				Message: fmt.Sprintf("config server_url %s differs from %s, the server your credentials belong to; using %s",
+					r.ConfiguredServerURL, r.ServerURL, r.ServerURL),
+				Paths: []string{},
+			}}, doc.Warnings...))
+		}
+	}
+	if doc.Auth.State == "" {
+		doc.Auth.State = contract.AuthNotAuthenticated
+		if r != nil && r.Token != "" {
+			doc.Auth.State = contract.AuthUnchecked
+		}
+	}
+	// Deviation 14: remote.error only without a live listing.
+	if unusable != nil && doc.Remote.Error == nil && doc.Remote.Source == contract.RemoteNone {
+		body := statusUnusable(r, unusable)
+		doc.Remote.Error = &body
+	}
+}
+
+// statusUnusable is remote.error for a remote that could not be used: the
+// first E22 case r shows, with its fixed advice and unusable's message when
+// unusable names that case; otherwise unusable's own contract error (a
+// corrupt config or credentials file, R10).
+func statusUnusable(r *config.Remote, unusable error) contract.ErrorBody {
+	ce := ui.ToContractError(unusable)
+	if r == nil {
+		return ce.Body()
+	}
+	var code contract.ErrorCode
+	var what, advice string
+	switch {
+	case r.Token == "":
+		code, what, advice = contract.CodeNotAuthenticated, "not authenticated", "ctx auth login"
+	case r.ServerURL == "":
+		code, what, advice = contract.CodeServerUnresolved, "server URL unresolved", "ctx auth login --server <url>"
+	case r.RepoID == "":
+		code, what, advice = contract.CodeRepoNotConfigured, "repo not configured", "ctx remote set-repo <id>"
+	default:
+		return ce.Body()
+	}
+	msg := "status: " + what
+	if ce.Code == code {
+		msg = ce.Message
+	}
+	return contract.New(code, msg, advice).Body()
+}
 
 // statusBlocksPush is E24's captures.blocks_push: the guard requires a
 // distill and CONTEXO_DISTILL_DISABLE does not bypass it. It reads the env

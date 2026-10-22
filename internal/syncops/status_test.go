@@ -27,12 +27,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sugihAF/contexo/internal/config"
 	"github.com/sugihAF/contexo/internal/schema"
 	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
 	"github.com/sugihAF/contexo/internal/syncops/syncopstest"
 	"github.com/sugihAF/contexo/internal/syncstate"
 	"github.com/sugihAF/contexo/internal/testkit"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // st11Now is st11Env's clock: +07:00 with nanoseconds, so every contract
@@ -1532,5 +1534,242 @@ func BenchmarkStatus_Offline2000(b *testing.B) {
 		if err != nil || doc.Counts.Unchanged != 2000 {
 			b.Fatalf("Status: %v, counts %+v", err, doc.Counts)
 		}
+	}
+}
+
+// st11IdentityDoc is an engine document as FillStatusIdentity receives it:
+// an offline status of a project with a last pull and one other warning.
+func st11IdentityDoc(t testing.TB) *contract.StatusDoc {
+	t.Helper()
+	env := st11Env(t, nil)
+	st, _, err := sync.LoadStateOrEmpty(env.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.LastPullSHA = st11SHA(1)
+	if err := sync.SaveState(env.HubDir, st); err != nil {
+		t.Fatal(err)
+	}
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	doc.Warnings = append(doc.Warnings, contract.Warning{Code: contract.WarnCaseCollision, Message: "x", Paths: []string{}})
+	return doc
+}
+
+// st11Remote is a fully usable hosted remote with global PAT credentials.
+func st11Remote() *config.Remote {
+	return &config.Remote{
+		ServerURL:           "https://api.contexo.live",
+		URLSource:           "credentials",
+		ConfiguredServerURL: "https://api.contexo.live",
+		RepoID:              "acme-kb",
+		DashboardURL:        "https://app.contexo.live",
+		Token:               "ctxp_x",
+		Creds:               &config.Credentials{Token: "ctxp_x", UserName: "Ana", UserEmail: "ana@acme.dev"},
+		CredsSource:         "global",
+	}
+}
+
+// st11Unusable is the error cli.openRemote returns for r: RequireAuth's,
+// then RequireRepo's, wrapped and suggested the way openRemote does.
+func st11Unusable(r *config.Remote) error {
+	err := r.RequireAuth()
+	if err == nil {
+		err = r.RequireRepo()
+	}
+	if err == nil {
+		return nil
+	}
+	var re *config.RemoteError
+	if !errors.As(err, &re) {
+		return err
+	}
+	return ui.Suggest(fmt.Errorf("status: %w", err), re.ErrorAdvice()...)
+}
+
+func TestFillStatusIdentity_Mapping(t *testing.T) {
+	doc := st11IdentityDoc(t)
+	doc.Auth.State = contract.AuthAuthenticated // as an online engine sets it
+	FillStatusIdentity(doc, st11Remote(), nil)
+
+	if doc.Server.URL != "https://api.contexo.live" || doc.Server.URLSource != contract.URLFromCredentials {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	wantProject := contract.ProjectInfo{
+		RepoID:                   "acme-kb",
+		ConfigServerURL:          "https://api.contexo.live",
+		DashboardURL:             "https://app.contexo.live",
+		DashboardPageURLTemplate: "https://app.contexo.live/repos/acme-kb/page/{path}",
+		LastPullSHA:              st11SHA(1),
+	}
+	if doc.Project != wantProject {
+		t.Fatalf("project = %+v, want %+v", doc.Project, wantProject)
+	}
+	wantAuth := contract.AuthInfo{State: contract.AuthAuthenticated, CredentialsSource: "global", TokenKind: "pat",
+		UserName: "Ana", UserEmail: "ana@acme.dev"}
+	if doc.Auth != wantAuth {
+		t.Fatalf("auth = %+v, want %+v", doc.Auth, wantAuth)
+	}
+	if doc.Remote.Error != nil || len(doc.Warnings) != 1 {
+		t.Fatalf("remote.error %+v warnings %+v", doc.Remote.Error, doc.Warnings)
+	}
+
+	// A config server_url naming another server: the warning comes first.
+	doc = st11IdentityDoc(t)
+	r := st11Remote()
+	r.ConfiguredServerURL, r.Mismatch = "https://contexo.acme.dev", true
+	FillStatusIdentity(doc, r, nil)
+	want := contract.Warning{
+		Code: contract.WarnServerURLMismatch,
+		Message: "config server_url https://contexo.acme.dev differs from https://api.contexo.live, " +
+			"the server your credentials belong to; using https://api.contexo.live",
+		Paths: []string{},
+	}
+	if len(doc.Warnings) != 2 || !reflect.DeepEqual(doc.Warnings[0], want) || doc.Warnings[1].Code != contract.WarnCaseCollision {
+		t.Fatalf("warnings = %+v, want %+v first", doc.Warnings, want)
+	}
+	if doc.Project.ConfigServerURL != "https://contexo.acme.dev" || doc.Server.URL != "https://api.contexo.live" {
+		t.Fatalf("project %+v server %+v", doc.Project, doc.Server)
+	}
+
+	// R12: the repo id is escaped as one path segment.
+	doc = st11IdentityDoc(t)
+	r = st11Remote()
+	r.RepoID = "acme kb/x"
+	FillStatusIdentity(doc, r, nil)
+	if got := doc.Project.DashboardPageURLTemplate; got != "https://app.contexo.live/repos/acme%20kb%2Fx/page/{path}" {
+		t.Fatalf("template = %q", got)
+	}
+}
+
+func TestFillStatusIdentity_DashboardEmptyOmitsTemplate(t *testing.T) {
+	doc := st11IdentityDoc(t)
+	r := st11Remote()
+	r.ServerURL, r.DashboardURL = "https://contexo.acme.dev", ""
+	FillStatusIdentity(doc, r, nil)
+	if doc.Project.DashboardURL != "" || doc.Project.DashboardPageURLTemplate != "" {
+		t.Fatalf("project = %+v", doc.Project)
+	}
+	var out bytes.Buffer
+	if err := contract.WriteDoc(&out, doc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"dashboard_url": ""`) || strings.Contains(out.String(), "dashboard_page_url_template") {
+		t.Fatalf("E23: dashboard_url must be present and empty, the template absent:\n%s", out.String())
+	}
+
+	doc = st11IdentityDoc(t)
+	r = st11Remote()
+	r.RepoID = ""
+	FillStatusIdentity(doc, r, nil)
+	if doc.Project.DashboardURL != "https://app.contexo.live" || doc.Project.DashboardPageURLTemplate != "" {
+		t.Fatalf("no repo id: project = %+v", doc.Project)
+	}
+}
+
+func TestFillStatusIdentity_RemoteUnusablePrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		edit   func(*config.Remote)
+		code   contract.ErrorCode
+		advice string
+		auth   contract.AuthState
+	}{
+		{"no token, server or repo", func(r *config.Remote) {
+			r.Token, r.ServerURL, r.URLSource, r.RepoID = "", "", "", ""
+			r.Creds = &config.Credentials{UserName: "Ana", UserEmail: "ana@acme.dev"}
+		}, contract.CodeNotAuthenticated, "ctx auth login", contract.AuthNotAuthenticated},
+		{"no token", func(r *config.Remote) {
+			r.Token, r.Creds, r.CredsSource = "", nil, ""
+		}, contract.CodeNotAuthenticated, "ctx auth login", contract.AuthNotAuthenticated},
+		{"token, no server or repo", func(r *config.Remote) {
+			r.ServerURL, r.URLSource, r.RepoID = "", "", ""
+		}, contract.CodeServerUnresolved, "ctx auth login --server <url>", contract.AuthUnchecked},
+		{"token and server, no repo", func(r *config.Remote) {
+			r.RepoID = ""
+		}, contract.CodeRepoNotConfigured, "ctx remote set-repo <id>", contract.AuthUnchecked},
+	} {
+		r := st11Remote()
+		tc.edit(r)
+		unusable := st11Unusable(r)
+		doc := st11IdentityDoc(t)
+		FillStatusIdentity(doc, r, unusable)
+
+		want := ui.ToContractError(unusable).Message
+		e := doc.Remote.Error
+		if e == nil || e.Code != tc.code || !reflect.DeepEqual(e.Advice, []string{tc.advice}) || e.Retryable ||
+			e.Message != want || e.HTTPStatus != 0 {
+			t.Fatalf("%s: remote.error = %+v, want code %s message %q advice [%s]", tc.name, e, tc.code, want, tc.advice)
+		}
+		if doc.Auth.State != tc.auth || doc.Remote.Source != contract.RemoteNone {
+			t.Fatalf("%s: auth %q remote %+v", tc.name, doc.Auth.State, doc.Remote)
+		}
+		if r.Token == "" && doc.Auth != (contract.AuthInfo{State: contract.AuthNotAuthenticated}) {
+			t.Fatalf("%s: credentials fields without a token: %+v", tc.name, doc.Auth)
+		}
+	}
+
+	// The case comes from the remote itself: a missing token outranks the
+	// repo error the caller passed, and the message is then status's own.
+	r := st11Remote()
+	r.Token, r.RepoID = "", ""
+	doc := st11IdentityDoc(t)
+	FillStatusIdentity(doc, r, st11Unusable(&config.Remote{ServerURL: "https://x.dev", Token: "ctxp_y"}))
+	if e := doc.Remote.Error; e == nil || e.Code != contract.CodeNotAuthenticated || e.Message != "status: not authenticated" ||
+		!reflect.DeepEqual(e.Advice, []string{"ctx auth login"}) {
+		t.Fatalf("remote.error = %+v", e)
+	}
+}
+
+func TestFillStatusIdentity_NeverOverwritesEngineAuth(t *testing.T) {
+	for _, s := range []contract.AuthState{contract.AuthAuthenticated, contract.AuthRejected, contract.AuthUnchecked} {
+		doc := st11IdentityDoc(t)
+		doc.Auth.State = s
+		FillStatusIdentity(doc, st11Remote(), nil)
+		if doc.Auth.State != s {
+			t.Errorf("engine auth.state %q became %q", s, doc.Auth.State)
+		}
+	}
+	doc := st11IdentityDoc(t)
+	FillStatusIdentity(doc, st11Remote(), nil)
+	if doc.Auth.State != contract.AuthUnchecked || doc.Remote.Error != nil {
+		t.Fatalf("token, no request: auth %q remote.error %+v", doc.Auth.State, doc.Remote.Error)
+	}
+	r := st11Remote()
+	r.Token, r.Creds = "", nil
+	doc = st11IdentityDoc(t)
+	FillStatusIdentity(doc, r, nil) // --offline passes no error
+	if doc.Auth.State != contract.AuthNotAuthenticated || doc.Remote.Error != nil {
+		t.Fatalf("no token, offline: auth %q remote.error %+v", doc.Auth.State, doc.Remote.Error)
+	}
+
+	// An engine remote.error (a failed listing) is never replaced.
+	doc = st11IdentityDoc(t)
+	doc.Auth.State = contract.AuthUnchecked
+	netErr := contract.New(contract.CodeNetwork, "sync: list pages: offline").Body()
+	doc.Remote.Error = &netErr
+	FillStatusIdentity(doc, st11Remote(), errors.New("unexpected"))
+	if doc.Remote.Error != &netErr || doc.Remote.Error.Code != contract.CodeNetwork {
+		t.Fatalf("remote.error = %+v", doc.Remote.Error)
+	}
+}
+
+func TestFillStatusIdentity_NilRemote(t *testing.T) {
+	doc := st11IdentityDoc(t)
+	FillStatusIdentity(doc, nil, errors.New("config: parse: bad"))
+	want := &contract.ErrorBody{Code: contract.CodeInternal, Message: "config: parse: bad", Advice: []string{}}
+	if !reflect.DeepEqual(doc.Remote.Error, want) {
+		t.Fatalf("remote.error = %+v, want %+v", doc.Remote.Error, want)
+	}
+	if doc.Auth != (contract.AuthInfo{State: contract.AuthNotAuthenticated}) {
+		t.Fatalf("auth = %+v", doc.Auth)
+	}
+	if doc.Project.RepoID != "acme-kb" || doc.Server.URL != "https://kb.acme.dev" || doc.Project.LastPullSHA != st11SHA(1) {
+		t.Fatalf("engine identity lost: project %+v server %+v", doc.Project, doc.Server)
+	}
+
+	doc = st11IdentityDoc(t)
+	FillStatusIdentity(doc, nil, nil)
+	if doc.Auth.State != contract.AuthNotAuthenticated || doc.Remote.Error != nil {
+		t.Fatalf("auth %q remote.error %+v", doc.Auth.State, doc.Remote.Error)
 	}
 }
