@@ -1,0 +1,140 @@
+{
+  "contract_version": 1,
+  "generated_by": "go test ./internal/e2e -run TestGolden -update",
+  "fixtures": [
+    {
+      "file": "status.all-states.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "107ade7d73c2314a5bbd61e6046001103cd928abe3ba65a51b19844cac1c2ff0"
+    },
+    {
+      "file": "status.auth-rejected.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "270941950492145c636e5959ffc714cdaf31cfe5c704ffa9b7902232eaf60eb8"
+    },
+    {
+      "file": "status.captures-blocking.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f0b936770500c042978ce36afcf3aa0e8d7cb758ceafa94896107934efc8d417"
+    },
+    {
+      "file": "status.empty.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "31f5df01ef41a4d97249419fb187afb2bd48caaf3eae7fbc8059bb630ef72a83"
+    },
+    {
+      "file": "status.network-error.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "0a8944812565174979799c9b121968d1b3544ddbf9b2e1d15daa6bf41bc505ee"
+    },
+    {
+      "file": "status.not-authenticated.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "777138d689b756419f05e750b2d5051fdc0e34fb349f821b1be7700b07f7ed4a"
+    },
+    {
+      "file": "status.offline-nocache.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json",
+        "--offline"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "20627ba119ac0c9d67fb290795038b616b24e8be05a7445f77188c489f0b447f"
+    },
+    {
+      "file": "status.offline-sidecar.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json",
+        "--offline"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f15b614746b22931d9f93e22ae2b069350a5358ac010a432d051949b3b34817b"
+    },
+    {
+      "file": "status.old-server.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "e845f2e40550fb65774723d2e712b8c7388d7b056d78d853675bae27b6407c0c"
+    },
+    {
+      "file": "status.repo-missing.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "d3304e52b2cff61b675c5d5a608d8b90cd293f2160805886cb431d3e939878e9"
+    },
+    {
+      "file": "status.url-mismatch.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "52ac795e53eeed6ed2b63514810d494897f7045a1088df873321a022b35b5515"
+    },
+    {
+      "file": "version.dev.json",
+      "schema": "ctx.version.v1",
+      "command": [
+        "version",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "7c096623213392026a4a1244d251090af65ee79ab04b82f56e857d30b7104c9b"
+    }
+  ]
+}

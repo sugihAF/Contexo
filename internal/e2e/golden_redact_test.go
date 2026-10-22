@@ -73,7 +73,22 @@ func (r *redactor) addURL(u string) {
 	}
 }
 
-func (r *redactor) redact(in []byte) []byte {
+// redactSession redacts the parts of one golden file (its content, then its
+// manifest command) with one sha numbering.
+type redactSession struct {
+	r    *redactor
+	seen map[string]string
+}
+
+func (r *redactor) session() *redactSession {
+	return &redactSession{r: r, seen: map[string]string{}}
+}
+
+// redact redacts b as a file of its own (sha numbering starts at 1).
+func (r *redactor) redact(in []byte) []byte { return r.session().redact(in) }
+
+func (s *redactSession) redact(in []byte) []byte {
+	r := s.r
 	b := append([]byte(nil), in...)
 	b = r.redactRoots(b)
 	b = r.redactURLs(b)
@@ -94,7 +109,7 @@ func (r *redactor) redact(in []byte) []byte {
 		b = regexp.MustCompile(`("arch"\s*:\s*)"`+regexp.QuoteMeta(r.goarch)+`"`).
 			ReplaceAll(b, []byte(`${1}"`+redactedArch+`"`))
 	}
-	seen := map[string]string{}
+	seen := s.seen
 	b = reSHA.ReplaceAllFunc(b, func(m []byte) []byte {
 		k := string(m)
 		if p, ok := seen[k]; ok {

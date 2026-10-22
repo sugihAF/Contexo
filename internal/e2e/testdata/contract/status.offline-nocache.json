@@ -1,0 +1,150 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": true,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "capabilities_known": false,
+    "capabilities": []
+  },
+  "auth": {
+    "state": "unchecked",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "none",
+    "page_count": 0
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 1,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 1,
+    "invalid": 1,
+    "unverified": 1,
+    "ahead": 2,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/broken-parse.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/concepts/broken-parse.md"
+      },
+      "invalid": {
+        "stage": "parse",
+        "message": "page: parse frontmatter: yaml: line 1: did not find expected ',' or ']'"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "ledger-reconciliation",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/refund-retries.md",
+      "state": "new",
+      "type": "concept",
+      "slug": "refund-retries",
+      "title": "refund-retries",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/refund-retries.md",
+        "hash": "sha256:0f9e0225d55ac54ae472e3657154b785b85c984560cb19aa208f0cc5e70c5aaa"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "state": "unverified",
+      "type": "concept",
+      "slug": "settlement-windows",
+      "title": "settlement-windows",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/settlement-windows.md",
+        "hash": "sha256:a38acdcb6d635ac62c1084fd8f4302589d9d2fec8042b9f98e0b1932b5d72a30"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000002",
+        "stale": true
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/fraud-service.md",
+      "state": "deleted_local",
+      "tags": [],
+      "base": {
+        "sha": "0000000000000000000000000000000000000003",
+        "hash": "sha256:50f80378d33f1e7ce674054e819bd2a7603fad600b08145db0f7317896d3b0c2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:fceb9da10ab271d40ea6c78c7a58b2ff0bbe563ecbdfc972744ea7e777cd80c8"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000004",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

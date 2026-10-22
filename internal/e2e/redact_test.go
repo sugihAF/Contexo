@@ -32,6 +32,18 @@ func TestRedact_PlaceholdersArePerCall(t *testing.T) {
 	}
 }
 
+func TestRedact_SessionSharesNumbering(t *testing.T) {
+	a := strings.Repeat("ab", 20)
+	b := strings.Repeat("cd", 20)
+	s := newRedactor().session()
+	_ = s.redact([]byte(`"` + a + `"`))
+	got := string(s.redact([]byte(`["show","p.md","--at","` + b + `","` + a + `"]`)))
+	want := `["show","p.md","--at","0000000000000000000000000000000000000002","0000000000000000000000000000000000000001"]`
+	if got != want {
+		t.Fatalf("a file's command must continue the file's numbering:\n got %s\nwant %s", got, want)
+	}
+}
+
 func TestRedact_ContentHashesAndOtherHexKept(t *testing.T) {
 	h64 := "sha256:" + strings.Repeat("0123456789abcdef", 4)
 	h41 := strings.Repeat("a", 41)

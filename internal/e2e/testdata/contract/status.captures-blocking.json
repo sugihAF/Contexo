@@ -1,0 +1,119 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "version": "dev",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2000-01-01T00:00:00Z",
+    "repo_exists": true,
+    "page_count": 2
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 0,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 1,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "state": "modified",
+      "type": "concept",
+      "slug": "settlement-windows",
+      "title": "settlement-windows",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/settlement-windows.md",
+        "hash": "sha256:fce871f2901040f23d88ddf43891c129f9738649c14302520995f7feb706b60e"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "hash": "sha256:a38acdcb6d635ac62c1084fd8f4302589d9d2fec8042b9f98e0b1932b5d72a30",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000001",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (2 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "unchanged",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000002",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000002",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (2 pages)"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 1,
+    "fresh": 1,
+    "blocks_push": true,
+    "sessions": [
+      {
+        "session_id": "5d0c6a3e-1f2b-4c7d-9e8f-0a1b2c3d4e5f",
+        "turns": 14,
+        "updated_at": "2000-01-01T00:00:00Z",
+        "fresh": true
+      }
+    ]
+  },
+  "warnings": []
+}
