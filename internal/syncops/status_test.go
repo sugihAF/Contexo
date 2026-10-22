@@ -1,22 +1,527 @@
 package syncops
 
-// Owner: WP-1.1. This file holds the wave-0 stub assertion for Status; the
-// owner replaces it when Status is implemented. Tests here may
-// use syncopstest.FakeRemote together with unexported seams (syncopstest
-// never imports syncops).
+// Owner: WP-1.1. Engine tests for Status and FillStatusIdentity, on
+// syncopstest.FakeRemote (package syncops, so the unexported seams are
+// reachable). Tests that override statusEnsureBase or statusCheckGuard never
+// run in parallel. Every scenario holds with the wave-0 stubs and with
+// WP-1.5's real EnsureBase / WP-1.2's real CheckGuard: unverified pages are
+// unrepairable (old server, listing sha != page_shas sha, no older base
+// record) or the seam is overridden, and capture batches hold no concept or
+// analysis page.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/sugihAF/contexo/internal/schema"
+	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/syncops/syncopstest"
+	"github.com/sugihAF/contexo/internal/syncstate"
+	"github.com/sugihAF/contexo/internal/testkit"
 )
 
-func TestStatusStubNotImplemented(t *testing.T) {
-	env := wp01StubEnv(t)
-	for _, o := range []StatusOptions{{}, {Offline: true}} {
-		doc, err := Status(context.Background(), env, o)
-		wp01AssertNotImplemented(t, err, "status")
+// st11Now is st11Env's clock: +07:00 with nanoseconds, so every contract
+// time must come out in UTC whole seconds.
+var st11Now = time.Date(2026, 11, 3, 9, 14, 7, 123456789, time.FixedZone("+0700", 7*60*60))
+
+// st11Env is an Env over a fresh temp root holding an empty .contexo, with
+// HOME and USERPROFILE isolated and Now fixed to st11Now.
+func st11Env(t testing.TB, remote Remote) Env {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// Resolve symlinks (macOS /var -> /private/var) so doc.Root compares
+	// equal to an absolute path.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".contexo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := NewEnv(root, "acme-kb", "https://kb.acme.dev", Author{Name: "Ana", Email: "ana@acme.dev"}, remote)
+	env.Now = func() time.Time { return st11Now }
+	return env
+}
+
+// st11Write writes data at rel ('/'-separated, relative to the hub).
+func st11Write(t testing.TB, env Env, rel string, data []byte) {
+	t.Helper()
+	path := filepath.Join(env.HubDir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// st11Page is a valid page for spec (testkit.PageBytes).
+func st11Page(spec testkit.PageSpec) []byte { return testkit.PageBytes(spec) }
+
+// st11SeedBase records content verbatim as rel's base for sha (bases.json +
+// base file) and sets page_shas[rel] = sha, as a push or pull leaves it.
+func st11SeedBase(t testing.TB, env Env, rel string, content []byte, sha string) {
+	t.Helper()
+	bases, err := syncstate.OpenBases(env.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bases.Put(rel, content, sha, env.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := bases.Save(); err != nil {
+		t.Fatal(err)
+	}
+	st11SetPageSHA(t, env, rel, sha)
+}
+
+// st11SetPageSHA sets page_shas[rel] = sha in state.json only.
+func st11SetPageSHA(t testing.TB, env Env, rel, sha string) {
+	t.Helper()
+	st, _, err := sync.LoadStateOrEmpty(env.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.PageSHAs[rel] = sha
+	if err := sync.SaveState(env.HubDir, st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// st11SHA is a deterministic 40-hex sha that no FakeRemote commit has.
+func st11SHA(n int) string {
+	sum := sha256.Sum256([]byte{byte(n), 's', 't', '1', '1'})
+	return hex.EncodeToString(sum[:20])
+}
+
+// st11TreeSum hashes every path under dir with its type and bytes.
+func st11TreeSum(t testing.TB, dir string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		h.Write([]byte(filepath.ToSlash(rel) + "\x00" + d.Type().String() + "\x00"))
+		if d.Type().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			h.Write(data)
+		}
+		h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// st11Entry returns doc's entry for path, failing the test when absent.
+func st11Entry(t testing.TB, doc *contract.StatusDoc, path string) *contract.PageEntry {
+	t.Helper()
+	for i := range doc.Pages {
+		if doc.Pages[i].Path == path {
+			return &doc.Pages[i]
+		}
+	}
+	t.Fatalf("no entry for %s in %v", path, st11Paths(doc))
+	return nil
+}
+
+func st11Paths(doc *contract.StatusDoc) []string {
+	out := []string{}
+	for _, p := range doc.Pages {
+		out = append(out, p.Path+"="+string(p.State))
+	}
+	return out
+}
+
+// st11Warning returns doc's warning with code, or nil.
+func st11Warning(doc *contract.StatusDoc, code contract.WarningCode) *contract.Warning {
+	for i := range doc.Warnings {
+		if doc.Warnings[i].Code == code {
+			return &doc.Warnings[i]
+		}
+	}
+	return nil
+}
+
+// st11Status runs Status and fails the test on an error.
+func st11Status(t testing.TB, env Env, o StatusOptions) *contract.StatusDoc {
+	t.Helper()
+	doc, err := Status(context.Background(), env, o)
+	if err != nil {
+		t.Fatalf("Status(%+v): %v", o, err)
+	}
+	st11CheckDoc(t, doc)
+	return doc
+}
+
+// st11CheckTime asserts a contract time is UTC whole seconds.
+func st11CheckTime(t testing.TB, what string, v *contract.Time) {
+	t.Helper()
+	if v != nil && (v.Location() != time.UTC || v.Nanosecond() != 0) {
+		t.Errorf("%s = %v, want UTC whole seconds", what, *v)
+	}
+}
+
+// st11CheckDoc asserts the document invariants of CONTRACT.md deviation 14
+// and the status shape rules: never-null arrays, counts equal to the
+// tally, sorted unique paths, conflict_kind iff conflict, invalid iff
+// invalid, source none carries no listing facts, remote.error implies
+// source none, authenticated implies live, offline implies unknown
+// capabilities, server_outdated iff E13, base_repair_skipped only online
+// and naming every unverified page (deviation 13), times UTC whole seconds.
+func st11CheckDoc(t testing.TB, doc *contract.StatusDoc) {
+	t.Helper()
+	if doc == nil {
+		t.Fatal("nil status document")
+	}
+	if doc.Schema != contract.SchemaStatus {
+		t.Errorf("schema = %q", doc.Schema)
+	}
+	if doc.Pages == nil || doc.Warnings == nil || doc.Captures.Sessions == nil || doc.Server.Capabilities == nil {
+		t.Errorf("null array: pages %v warnings %v sessions %v capabilities %v",
+			doc.Pages == nil, doc.Warnings == nil, doc.Captures.Sessions == nil, doc.Server.Capabilities == nil)
+	}
+	if !filepath.IsAbs(doc.Root) || !filepath.IsAbs(doc.ContexoDir) {
+		t.Errorf("root %q / contexo_dir %q not absolute", doc.Root, doc.ContexoDir)
+	}
+	live := doc.Remote.Source == contract.RemoteLive
+	var tally contract.StateCounts
+	unverified := []string{}
+	for i, p := range doc.Pages {
+		if i > 0 && doc.Pages[i-1].Path >= p.Path {
+			t.Errorf("pages not sorted and unique at %q", p.Path)
+		}
+		if p.Tags == nil || p.Notes == nil {
+			t.Errorf("%s: null tags or notes", p.Path)
+		}
+		if (p.ConflictKind != "") != (p.State == contract.StateConflict) {
+			t.Errorf("%s: state %s with conflict_kind %q", p.Path, p.State, p.ConflictKind)
+		}
+		if (p.Invalid != nil) != (p.State == contract.StateInvalid) {
+			t.Errorf("%s: state %s with invalid %+v", p.Path, p.State, p.Invalid)
+		}
+		if p.Local != nil {
+			if p.Local.File != p.Path {
+				t.Errorf("%s: local.file %q", p.Path, p.Local.File)
+			}
+			if (p.Local.Hash != "") == (p.State == contract.StateInvalid) {
+				t.Errorf("%s: state %s with local.hash %q", p.Path, p.State, p.Local.Hash)
+			}
+		}
+		if p.Base != nil && p.Base.Stale && (p.Base.Hash != "" || p.Base.SyncedAt != nil) {
+			t.Errorf("%s: stale base carries hash/synced_at: %+v", p.Path, p.Base)
+		}
+		if r := p.Remote; r != nil && !live && (r.Author != "" || r.Email != "" || r.Time != nil || r.Message != "") {
+			t.Errorf("%s: remote side without a live listing is not sha-only: %+v", p.Path, r)
+		}
+		if p.State == contract.StateUnverified {
+			unverified = append(unverified, p.Path)
+		}
+		st11Tally(t, &tally, p)
+		st11CheckTime(t, p.Path+" updated", p.Updated)
+		if p.Base != nil {
+			st11CheckTime(t, p.Path+" base.synced_at", p.Base.SyncedAt)
+		}
+		if p.Remote != nil {
+			st11CheckTime(t, p.Path+" remote.time", p.Remote.Time)
+		}
+	}
+	tally.Ahead = tally.Modified + tally.New
+	tally.Behind = tally.Incoming + tally.IncomingNew
+	if doc.Counts != tally {
+		t.Errorf("counts = %+v, tally = %+v", doc.Counts, tally)
+	}
+
+	switch doc.Remote.Source {
+	case contract.RemoteLive:
+		if doc.Remote.FetchedAt == nil || doc.Remote.RepoExists == nil || doc.Remote.Error != nil {
+			t.Errorf("live remote = %+v", doc.Remote)
+		}
+	case contract.RemoteNone:
+		if doc.Remote.FetchedAt != nil || doc.Remote.RepoExists != nil || doc.Remote.Head != "" || doc.Remote.PageCount != 0 {
+			t.Errorf("source none carries listing facts: %+v", doc.Remote)
+		}
+	default:
+		t.Errorf("remote.source = %q", doc.Remote.Source)
+	}
+	if doc.Offline && doc.Server.CapabilitiesKnown {
+		t.Error("offline document with capabilities_known true")
+	}
+	if doc.Auth.State == contract.AuthAuthenticated && !live {
+		t.Error("auth authenticated without a live listing")
+	}
+
+	codes := map[contract.WarningCode]bool{}
+	for _, w := range doc.Warnings {
+		if w.Paths == nil {
+			t.Errorf("warning %s: null paths", w.Code)
+		}
+		if !slices.IsSorted(w.Paths) {
+			t.Errorf("warning %s: paths not sorted: %v", w.Code, w.Paths)
+		}
+		if codes[w.Code] {
+			t.Errorf("warning %s emitted twice", w.Code)
+		}
+		codes[w.Code] = true
+		if w.Code == contract.WarnRemoteStale {
+			t.Error("reserved warning remote_stale emitted")
+		}
+	}
+	missing := false
+	for _, c := range []contract.ServerCapability{contract.SrvPagesAt, contract.SrvExpectAbsent, contract.SrvWritePathSHA} {
+		missing = missing || !slices.Contains(doc.Server.Capabilities, c)
+	}
+	if want := doc.Server.CapabilitiesKnown && missing; codes[contract.WarnServerOutdated] != want {
+		t.Errorf("server_outdated = %v, want %v (known %v, caps %v)",
+			codes[contract.WarnServerOutdated], want, doc.Server.CapabilitiesKnown, doc.Server.Capabilities)
+	}
+	if slices.Contains(doc.Server.Capabilities, contract.SrvPagesETag) {
+		t.Error("reserved capability pages.etag emitted")
+	}
+	brs := st11Warning(doc, contract.WarnBaseRepairSkipped)
+	if brs != nil && !live {
+		t.Errorf("base_repair_skipped without a live listing: %+v", brs)
+	}
+	if live && len(unverified) > 0 {
+		for _, p := range unverified {
+			if brs == nil || !slices.Contains(brs.Paths, p) {
+				t.Errorf("unverified %s not named by base_repair_skipped %+v", p, brs)
+			}
+		}
+	}
+
+	st11CheckTime(t, "generated_at", &doc.GeneratedAt)
+	st11CheckTime(t, "remote.fetched_at", doc.Remote.FetchedAt)
+	for _, s := range doc.Captures.Sessions {
+		st11CheckTime(t, "session "+s.SessionID, &s.UpdatedAt)
+	}
+}
+
+func st11Tally(t testing.TB, c *contract.StateCounts, p contract.PageEntry) {
+	t.Helper()
+	switch p.State {
+	case contract.StateUnchanged:
+		c.Unchanged++
+	case contract.StateModified:
+		c.Modified++
+	case contract.StateNew:
+		c.New++
+	case contract.StateIncoming:
+		c.Incoming++
+	case contract.StateIncomingNew:
+		c.IncomingNew++
+	case contract.StateConflict:
+		c.Conflict++
+	case contract.StateDeletedLocal:
+		c.DeletedLocal++
+	case contract.StateInvalid:
+		c.Invalid++
+	case contract.StateUnverified:
+		c.Unverified++
+	default:
+		t.Errorf("%s: unknown state %q", p.Path, p.State)
+	}
+}
+
+// st11Exists reports whether path exists.
+func st11Exists(t testing.TB, path string) bool {
+	t.Helper()
+	_, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return err == nil
+}
+
+func TestStatus_Offline_ClassifiesLocal(t *testing.T) {
+	env := st11Env(t, nil)
+	const (
+		same     = "wiki/concepts/same.md"
+		edited   = "wiki/concepts/edited.md"
+		fresh    = "wiki/entities/fresh.md"
+		broken   = "wiki/concepts/broken.md"
+		noauthor = "wiki/concepts/noauthor.md"
+		moved    = "wiki/concepts/moved.md"
+		gone     = "wiki/concepts/gone.md"
+	)
+	sameBytes := st11Page(testkit.PageSpec{Slug: "same", Title: "Same page", Tags: []string{"retry", "api"}})
+	st11Write(t, env, same, sameBytes)
+	st11SeedBase(t, env, same, sameBytes, st11SHA(1))
+
+	st11SeedBase(t, env, edited, st11Page(testkit.PageSpec{Slug: "edited", Body: "v1"}), st11SHA(2))
+	editedBytes := st11Page(testkit.PageSpec{Slug: "edited", Body: "v2"})
+	st11Write(t, env, edited, editedBytes)
+
+	st11Write(t, env, fresh, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "fresh"}))
+	st11Write(t, env, broken, []byte("---\nschema: [\n---\n"))
+	na, err := schema.SerializePage(&schema.Page{
+		Frontmatter: schema.PageFrontmatter{
+			Schema: schema.PageSchemaV1, Slug: "noauthor", Type: schema.TypeConcept,
+			Created: st11Now, Updated: st11Now,
+		},
+		Body: "# No author\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st11Write(t, env, noauthor, na)
+	st11Write(t, env, moved, st11Page(testkit.PageSpec{Slug: "elsewhere"}))
+	goneBytes := st11Page(testkit.PageSpec{Slug: "gone"})
+	st11SeedBase(t, env, gone, goneBytes, st11SHA(3))
+
+	before := st11TreeSum(t, env.HubDir)
+	lockExisted := st11Exists(t, syncstate.LockPath(env.HubDir))
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	if after := st11TreeSum(t, env.HubDir); after != before {
+		t.Fatal("offline status changed the .contexo tree")
+	}
+	if !lockExisted && st11Exists(t, syncstate.LockPath(env.HubDir)) {
+		t.Fatal("offline status left .sync/lock")
+	}
+
+	if !doc.Offline || doc.Remote.Source != contract.RemoteNone || doc.Remote.Error != nil {
+		t.Fatalf("offline = %v, remote = %+v", doc.Offline, doc.Remote)
+	}
+	if doc.Server.CapabilitiesKnown || len(doc.Server.Capabilities) != 0 || doc.Server.Version != "" {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	if doc.Auth.State != "" {
+		t.Fatalf("auth.state = %q, want \"\" (no request made; FillStatusIdentity decides)", doc.Auth.State)
+	}
+	if doc.Root != env.Root || doc.ContexoDir != filepath.Join(env.Root, ".contexo") {
+		t.Fatalf("root %q contexo_dir %q", doc.Root, doc.ContexoDir)
+	}
+	if doc.Project.RepoID != "acme-kb" || !doc.GeneratedAt.Equal(contract.TimeOf(st11Now)) {
+		t.Fatalf("repo_id %q generated_at %v", doc.Project.RepoID, doc.GeneratedAt)
+	}
+	want := map[string]contract.PageState{
+		same: contract.StateUnchanged, edited: contract.StateModified, fresh: contract.StateNew,
+		broken: contract.StateInvalid, noauthor: contract.StateInvalid, moved: contract.StateInvalid,
+		gone: contract.StateDeletedLocal,
+	}
+	if len(doc.Pages) != len(want) {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+	for path, state := range want {
+		if got := st11Entry(t, doc, path).State; got != state {
+			t.Errorf("%s: state %s, want %s", path, got, state)
+		}
+	}
+	wantCounts := contract.StateCounts{Unchanged: 1, Modified: 1, New: 1, DeletedLocal: 1, Invalid: 3, Ahead: 2}
+	if doc.Counts != wantCounts {
+		t.Errorf("counts = %+v, want %+v", doc.Counts, wantCounts)
+	}
+
+	e := st11Entry(t, doc, same)
+	syncedAt := contract.TimeOf(st11Now)
+	if e.Type != "concept" || e.Slug != "same" || e.Title != "Same page" || e.Author != "testkit" ||
+		!reflect.DeepEqual(e.Tags, []string{"retry", "api"}) {
+		t.Errorf("same frontmatter fields = %+v", e)
+	}
+	if e.Updated == nil || !e.Updated.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("same updated = %v", e.Updated)
+	}
+	if e.Local == nil || *e.Local != (contract.LocalSide{File: same, Hash: syncstate.Hash(sameBytes)}) {
+		t.Errorf("same local = %+v", e.Local)
+	}
+	if e.Base == nil || e.Base.SHA != st11SHA(1) || e.Base.Hash != syncstate.Hash(sameBytes) ||
+		e.Base.Stale || e.Base.SyncedAt == nil || !e.Base.SyncedAt.Equal(syncedAt) {
+		t.Errorf("same base = %+v", e.Base)
+	}
+	if e.Remote != nil || len(e.Notes) != 0 {
+		t.Errorf("same remote %+v notes %v", e.Remote, e.Notes)
+	}
+
+	e = st11Entry(t, doc, edited)
+	if e.Local == nil || e.Local.Hash != syncstate.Hash(editedBytes) || e.Base == nil || e.Base.Hash == e.Local.Hash {
+		t.Errorf("edited local %+v base %+v", e.Local, e.Base)
+	}
+	e = st11Entry(t, doc, fresh)
+	if e.Type != "entity" || e.Title != "fresh" || e.Tags == nil || len(e.Tags) != 0 || e.Base != nil {
+		t.Errorf("fresh = %+v", e)
+	}
+
+	for path, stage := range map[string]contract.InvalidStage{
+		broken: contract.InvalidParse, noauthor: contract.InvalidValidate, moved: contract.InvalidPathMismatch,
+	} {
+		e := st11Entry(t, doc, path)
+		if e.Invalid == nil || e.Invalid.Stage != stage || e.Invalid.Message == "" {
+			t.Errorf("%s invalid = %+v, want stage %s", path, e.Invalid, stage)
+			continue
+		}
+		if e.Local == nil || e.Local.Hash != "" || e.Type != "" || e.Slug != "" || e.Title != "" {
+			t.Errorf("%s: invalid entry carries frontmatter or hash: %+v", path, e)
+		}
+	}
+	if got := st11Entry(t, doc, moved).Invalid.ExpectedPath; got != "wiki/concepts/elsewhere.md" {
+		t.Errorf("moved expected_path = %q", got)
+	}
+	if got := st11Entry(t, doc, broken).Invalid.ExpectedPath; got != "" {
+		t.Errorf("broken expected_path = %q, want none", got)
+	}
+
+	e = st11Entry(t, doc, gone)
+	if e.Local != nil || e.Base == nil || e.Base.SHA != st11SHA(3) || e.Remote != nil || len(e.Notes) != 0 {
+		t.Errorf("gone = %+v", e)
+	}
+
+	// Without any base, offline status must not create .sync at all (no
+	// .gitignore, no lock).
+	env2 := st11Env(t, nil)
+	st11Write(t, env2, fresh, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "fresh"}))
+	st11Write(t, env2, broken, []byte("---\nschema: [\n---\n"))
+	before = st11TreeSum(t, env2.HubDir)
+	doc = st11Status(t, env2, StatusOptions{Offline: true})
+	if st11Exists(t, syncstate.SyncDir(env2.HubDir)) {
+		t.Fatal("offline status created .sync")
+	}
+	if st11TreeSum(t, env2.HubDir) != before {
+		t.Fatal("offline status changed the .contexo tree")
+	}
+	if doc.Counts.New != 1 || doc.Counts.Invalid != 1 {
+		t.Fatalf("counts = %+v", doc.Counts)
+	}
+}
+
+func TestStatus_NotInitialized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	root := t.TempDir()
+	for _, offline := range []bool{true, false} {
+		fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+		env := NewEnv(root, "acme-kb", "https://kb.acme.dev", Author{}, fr)
+		doc, err := Status(context.Background(), env, StatusOptions{Offline: offline})
 		if doc != nil {
-			t.Fatalf("Status(%+v) returned a document with the stub error: %+v", o, doc)
+			t.Fatalf("offline=%v: document returned with the error: %+v", offline, doc)
+		}
+		ce := wp01ContractError(t, err)
+		if ce.Code != contract.CodeNotInitialized || !reflect.DeepEqual(ce.Advice, []string{"ctx init"}) ||
+			!strings.HasPrefix(ce.Message, "status: ") {
+			t.Fatalf("offline=%v: error = %+v", offline, ce)
+		}
+		if n := len(fr.Requests()); n != 0 {
+			t.Fatalf("offline=%v: %d requests before the hub check", offline, n)
 		}
 	}
 }

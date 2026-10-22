@@ -3,9 +3,14 @@ package syncops
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/syncstate"
 )
 
 // Owner: WP-1.1. Fields may be added, never renamed or removed.
@@ -22,9 +27,167 @@ var statusEnsureBase = EnsureBase
 // statusCheckGuard is the CheckGuard seam behind captures.blocks_push.
 var statusCheckGuard = CheckGuard
 
-// Status builds the `ctx status --json` document.
+// Status builds the `ctx status --json` document. Offline (o.Offline or no
+// Remote) it reads only local files and writes nothing; remote.source is
+// none and R follows the E9 sidecar rule.
+//
+// It fails only when the project is not initialized (not_initialized) or the
+// local state cannot be read (internal).
 func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc, error) {
-	return nil, NotImplemented("status")
+	hub, err := RequireHub(env.Root)
+	if err != nil {
+		return nil, Wrap(err, contract.CodeNotInitialized, "status", "ctx init")
+	}
+	now := time.Now()
+	if env.Now != nil {
+		now = env.Now()
+	}
+	doc := statusNewDoc(env, now, o.Offline)
+
+	var remote map[string]string // nil: no live listing (E9 offline rule)
+	var meta map[string]sync.PageMeta
+	view, err := syncstate.LoadView(hub, remote)
+	if err != nil {
+		return nil, Wrap(err, contract.CodeInternal, "status")
+	}
+	doc.Project.LastPullSHA = view.State.LastPullSHA
+
+	for _, rel := range view.Paths {
+		f := view.Facts[rel]
+		res, err := contract.ClassifySides(contract.Side(f.Local), contract.Side(f.Base), contract.Side(f.Remote))
+		if err != nil {
+			return nil, Wrap(err, contract.CodeInternal, "status")
+		}
+		if f.Conflict != nil {
+			res = ApplySidecar(res, f.Base.SHA, &SidecarFact{
+				ServerSHA: f.Conflict.ServerSHA, Kind: contract.ConflictKind(f.Conflict.Kind)})
+		}
+		if res.State == "" {
+			continue
+		}
+		doc.Pages = append(doc.Pages, statusEntry(f, res, meta))
+		statusCount(&doc.Counts, res.State)
+	}
+	doc.Counts.Ahead = doc.Counts.Modified + doc.Counts.New
+	doc.Counts.Behind = doc.Counts.Incoming + doc.Counts.IncomingNew
+	return doc, nil
+}
+
+// statusNewDoc is the document skeleton: every array non-nil, the remote
+// unknown (source none) until a live listing says otherwise. auth.state
+// stays "" while no request is made; FillStatusIdentity decides it then.
+func statusNewDoc(env Env, now time.Time, offline bool) *contract.StatusDoc {
+	root, err := filepath.Abs(env.Root)
+	if err != nil {
+		root = env.Root
+	}
+	return &contract.StatusDoc{
+		Schema:      contract.SchemaStatus,
+		GeneratedAt: contract.TimeOf(now),
+		Offline:     offline,
+		Root:        root,
+		ContexoDir:  filepath.Join(root, hubDirName),
+		Project:     contract.ProjectInfo{RepoID: env.RepoID},
+		Server: contract.ServerInfo{
+			URL:          env.ServerURL,
+			Capabilities: []contract.ServerCapability{},
+		},
+		Remote:   contract.RemoteInfo{Source: contract.RemoteNone},
+		Pages:    []contract.PageEntry{},
+		Captures: contract.CaptureInfo{Sessions: []contract.CaptureSession{}},
+		Warnings: []contract.Warning{},
+	}
+}
+
+// statusEntry builds the PageEntry of one classified path. Frontmatter
+// fields come only from a valid working file; a remote side from a sidecar
+// (or without a listing entry) carries only its sha (E9).
+func statusEntry(f *syncstate.PathFacts, res contract.ClassifyResult, meta map[string]sync.PageMeta) contract.PageEntry {
+	e := contract.PageEntry{
+		Path:         f.Path,
+		State:        res.State,
+		ConflictKind: res.ConflictKind,
+		Tags:         []string{},
+		Notes:        res.Notes,
+	}
+	if e.Notes == nil {
+		e.Notes = []contract.NoteCode{}
+	}
+	if lf := f.File; lf != nil {
+		e.Local = &contract.LocalSide{File: lf.Path, Hash: lf.Hash}
+		if inv := lf.Invalid; inv != nil {
+			e.Invalid = &contract.InvalidInfo{
+				Stage:        contract.InvalidStage(inv.Stage),
+				Message:      inv.Message,
+				ExpectedPath: inv.ExpectedPath,
+			}
+		} else if lf.Page != nil {
+			fm := lf.Page.Frontmatter
+			e.Type = string(fm.Type)
+			e.Slug = fm.Slug
+			e.Title = statusTitle(lf.Page.Body)
+			e.Tags = append(e.Tags, fm.Tags...)
+			e.Author = fm.Author
+			e.Agent = fm.Agent
+			if !fm.Updated.IsZero() {
+				e.Updated = contract.TimePtr(fm.Updated)
+			}
+			e.ReasoningSummary = fm.ReasoningSummary
+		}
+	}
+	switch f.Base.Kind {
+	case syncstate.BaseValid:
+		e.Base = &contract.BaseSide{SHA: f.Base.SHA, Hash: f.Base.Hash}
+		if f.BaseRecord != nil && !f.BaseRecord.SyncedAt.IsZero() {
+			e.Base.SyncedAt = contract.TimePtr(f.BaseRecord.SyncedAt)
+		}
+	case syncstate.BaseStale:
+		e.Base = &contract.BaseSide{SHA: f.Base.SHA, Stale: true}
+	}
+	if f.Remote.Kind == syncstate.RemotePresent {
+		e.Remote = &contract.RemoteSide{SHA: f.Remote.SHA}
+		if m, ok := meta[f.Path]; ok && !f.RemoteFromSidecar {
+			e.Remote.Author, e.Remote.Email, e.Remote.Message = m.Author, m.Email, m.Message
+			if !m.Time.IsZero() {
+				e.Remote.Time = contract.TimePtr(m.Time)
+			}
+		}
+	}
+	return e
+}
+
+// statusTitle is the text of the body's first "# " line, or "".
+func statusTitle(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if t, ok := strings.CutPrefix(line, "# "); ok {
+			return strings.TrimSpace(t)
+		}
+	}
+	return ""
+}
+
+// statusCount adds one page of state s to c.
+func statusCount(c *contract.StateCounts, s contract.PageState) {
+	switch s {
+	case contract.StateUnchanged:
+		c.Unchanged++
+	case contract.StateModified:
+		c.Modified++
+	case contract.StateNew:
+		c.New++
+	case contract.StateIncoming:
+		c.Incoming++
+	case contract.StateIncomingNew:
+		c.IncomingNew++
+	case contract.StateConflict:
+		c.Conflict++
+	case contract.StateDeletedLocal:
+		c.DeletedLocal++
+	case contract.StateInvalid:
+		c.Invalid++
+	case contract.StateUnverified:
+		c.Unverified++
+	}
 }
 
 // FillStatusIdentity fills the server, project and auth identity of doc from
