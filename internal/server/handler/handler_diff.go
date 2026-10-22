@@ -21,6 +21,10 @@ import (
 // Returns 400 if a sha doesn't resolve or if `from` defaults are impossible
 // (e.g. the page only has one commit, so there is no parent). Returns 404 if
 // the path doesn't exist at either side.
+//
+// The answer is computed first and written only after memberAfterRead, so
+// nothing a read found (content, or which paths and commits exist) reaches a
+// former member whose row a re-create purged during the read.
 func (h *Handler) Diff(c *gin.Context) {
 	repoID := c.Param("id")
 	if !h.requireMember(c, repoID) {
@@ -31,23 +35,25 @@ func (h *Handler) Diff(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing path"})
 		return
 	}
+	status, body := h.diff(repoID, path, strings.TrimSpace(c.Query("from")), strings.TrimSpace(c.Query("to")), c.Query("blame") == "true")
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
+	c.JSON(status, body)
+}
 
-	fromSHA := strings.TrimSpace(c.Query("from"))
-	toSHA := strings.TrimSpace(c.Query("to"))
-
+// diff computes Diff's answer, its status and JSON body, without writing it.
+func (h *Handler) diff(repoID, path, fromSHA, toSHA string, blame bool) (int, any) {
 	if toSHA == "" {
 		head, err := h.store.HeadSHAForPath(repoID, path)
 		if err != nil {
 			if errors.Is(err, gitstore.ErrRepoNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-				return
+				return http.StatusNotFound, gin.H{"error": "repo not found"}
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			return http.StatusInternalServerError, gin.H{"error": err.Error()}
 		}
 		if head == "" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "path not present in repo"})
-			return
+			return http.StatusNotFound, gin.H{"error": "path not present in repo"}
 		}
 		toSHA = head
 	}
@@ -56,15 +62,12 @@ func (h *Handler) Diff(c *gin.Context) {
 		parent, err := h.store.ResolveParentSHAForPath(repoID, path, toSHA)
 		if err != nil {
 			if errors.Is(err, gitstore.ErrUnknownSHA) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sha: " + toSHA})
-				return
+				return http.StatusBadRequest, gin.H{"error": "unknown sha: " + toSHA}
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			return http.StatusInternalServerError, gin.H{"error": err.Error()}
 		}
 		if parent == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no parent commit for this path; pass ?from explicitly"})
-			return
+			return http.StatusBadRequest, gin.H{"error": "no parent commit for this path; pass ?from explicitly"}
 		}
 		fromSHA = parent
 	}
@@ -75,28 +78,25 @@ func (h *Handler) Diff(c *gin.Context) {
 	// path (the file genuinely never existed in either revision).
 	fromBytes, fromPathOK, err := readAtShaTolerant(h, repoID, path, fromSHA)
 	if err != nil {
-		writeReadAtShaError(c, err, fromSHA)
-		return
+		return readAtShaError(err, fromSHA)
 	}
 	toBytes, toPathOK, err := readAtShaTolerant(h, repoID, path, toSHA)
 	if err != nil {
-		writeReadAtShaError(c, err, toSHA)
-		return
+		return readAtShaError(err, toSHA)
 	}
 	if !fromPathOK && !toPathOK {
-		c.JSON(http.StatusNotFound, gin.H{"error": "path not present at either sha"})
-		return
+		return http.StatusNotFound, gin.H{"error": "path not present at either sha"}
 	}
 
 	d := diff.PageSections(fromBytes, toBytes, fromSHA, toSHA)
 
-	if c.Query("blame") == "true" {
+	if blame {
 		// Blame is best-effort; silently skip on failure rather than fail the
 		// whole diff response. The base SectionDiff is still useful.
 		_ = annotateBlame(h, repoID, path, &d)
 	}
 
-	c.JSON(http.StatusOK, d)
+	return http.StatusOK, d
 }
 
 // annotateBlame walks the page's commit history oldest→newest and records the
@@ -159,13 +159,15 @@ func readAtShaTolerant(h *Handler, repoID, path, sha string) ([]byte, bool, erro
 	return nil, false, err
 }
 
-func writeReadAtShaError(c *gin.Context, err error, sha string) {
+// readAtShaError is the status and JSON body Diff answers for a ReadAtSha
+// error.
+func readAtShaError(err error, sha string) (int, any) {
 	switch {
 	case errors.Is(err, gitstore.ErrUnknownSHA):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown sha: " + sha})
+		return http.StatusBadRequest, gin.H{"error": "unknown sha: " + sha}
 	case errors.Is(err, gitstore.ErrRepoNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		return http.StatusNotFound, gin.H{"error": "repo not found"}
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return http.StatusInternalServerError, gin.H{"error": err.Error()}
 	}
 }

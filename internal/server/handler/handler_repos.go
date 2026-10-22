@@ -116,19 +116,28 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 // and Create, h.enforceRepoQuota, PurgeRepo, AddMemberIfAbsent and the
 // os.Stat calls of repoAliases run under it, never another holder of it
 // (createLegacyRepo, isMemberAfterCreate and so requireMemberAfterCreate,
-// JoinRepo, MintInviteKey, ListInviteKeys, DeleteInviteKey), nor
+// JoinRepo, MintInviteKey, ListInviteKeys, DeleteInviteKey, RemoveMember), nor
 // createOwnedRepo, which is this function. The lock order is createRepoMu,
 // then the gitstore repo lock (inside Create), then SQLite.
 //
-// The stale rows cannot reach the new repo around the purge either: every
-// decision a creation can invalidate is made under createRepoMu. The
-// invite-key routes check the key or the owner row and write under it, so a
-// read of a stale row can no longer be followed by an insert that lands
-// right after the purge (in WAL mode the read saw the rows while the purge
-// was open, and a client that kept retrying won on every re-create). A push
-// or deprecated create decides membership under it (isMemberAfterCreate),
-// so a former member's push that sees .git before step 6 waits for the purge
-// and is refused. And the legacy-key creates (createLegacyRepo) purge too.
+// Around the purge, the decisions that write, list or delete access rows,
+// or write content, are made under createRepoMu. The invite-key routes check
+// the key or the owner row and act under it, so a read of a stale row can no
+// longer be followed by an insert that lands right after the purge (in WAL
+// mode the read saw the rows while the purge was open, and a client that
+// kept retrying won on every re-create). A push or deprecated create decides
+// membership under it (isMemberAfterCreate), so a former member's push that
+// sees .git before step 6 waits for the purge and is refused. And the
+// legacy-key creates (createLegacyRepo) purge too.
+//
+// The read routes check membership without createRepoMu (requireMember) and
+// read afterwards, so a former member's check can see its stale row just
+// before the purge commits while the read runs after the new owner's row or
+// first push. They decide again from what they read instead: the member list
+// answers only a caller it lists itself, and the other reads (pages, pull,
+// timeline, history, activity, diff, evolution) re-check membership after
+// the read and before answering (memberAfterRead). The removal of a member
+// decides under createRepoMu, like the invite-key routes.
 func (h *Handler) createRepoAsOwner(c *gin.Context, repoID, uid string) (created, ok bool) {
 	if !repoIDPattern.MatchString(repoID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})

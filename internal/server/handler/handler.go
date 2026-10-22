@@ -119,6 +119,37 @@ func (h *Handler) requireMember(c *gin.Context, repoID string) bool {
 	return true
 }
 
+// memberAfterRead is the second half of requireMember for a route that reads
+// the repo after its membership check: it checks again, after the read and
+// before anything is written, and answers as requireMember does for a
+// non-member (403) when the caller's row is gone.
+//
+// requireMember checks without createRepoMu, so a former member of an
+// operator-deleted repo can pass on a stale row a moment before a re-create
+// of the id purges it, and read the new repo once its owner row and first
+// push are in. A creation commits its purge before the new repo has any row
+// or content of its own, and a purged row never comes back (a later join or
+// create adds a new, legitimate one). So a row still there after the read
+// proves the read saw nothing of a re-created repo. Legacy auth passes, as
+// in requireMember; without a user store requireMember already refused
+// every user.
+func (h *Handler) memberAfterRead(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) || h.users == nil {
+		return true
+	}
+	ok, err := h.users.IsMember(repoID, uid)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+		return false
+	}
+	return true
+}
+
 // requireOwner is like requireMember but also checks role=owner.
 func (h *Handler) requireOwner(c *gin.Context, repoID string) bool {
 	uid := h.userID(c)
@@ -188,6 +219,9 @@ func (h *Handler) ListPages(c *gin.Context) {
 		return
 	}
 	pages, err := h.store.ListPages(repoID)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -246,8 +280,9 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 }
 
 // createRepoMu serializes, across every Handler in the process (tests build
-// several over one store), each repo creation with the access decisions a
-// creation can invalidate.
+// several over one store), each repo creation with the write-side access
+// decisions a creation can invalidate. The read routes decide from what they
+// read instead (memberAfterRead, ListMembers).
 //
 // The creations are createRepoAsOwner (POST /v1/repos, and through
 // createOwnedRepo a signed-in first push and the deprecated create) and
@@ -255,17 +290,24 @@ func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, 
 // holds createRepoMu from its last existence check through gitstore.Create,
 // the purge of the stale rows of the id and, for a signed-in creator, the
 // owner row. The decisions are isMemberAfterCreate (push, the deprecated
-// create) and the invite-key routes JoinRepo, MintInviteKey, ListInviteKeys
-// and DeleteInviteKey, which hold it from their membership or key check
-// through the rows they act on (insert, list, delete). A decision therefore
-// runs either wholly before a creation of its repo, whose purge then removes
-// what it wrote, or after the creation's purge and owner row, and sees only
-// the new repo's rows.
+// create), the invite-key routes JoinRepo, MintInviteKey, ListInviteKeys
+// and DeleteInviteKey, and RemoveMember, which hold it from their membership
+// or key check through the rows they act on (insert, list, delete). A
+// decision therefore runs either wholly before a creation of its repo, whose
+// purge then removes what it wrote, or after the creation's purge and owner
+// row, and sees only the new repo's rows.
 //
 // Each of these takes it once, directly, and none calls another of them
 // while holding it: it is not reentrant. It is never held while a request
 // body is read, so a slow client cannot stall every creation. The lock order
 // is createRepoMu, then the gitstore repo lock (inside Create), then SQLite.
+//
+// The lock is process-wide, not per repo: every signed-in push or deprecated
+// create to an existing repo, and every invite-key request, waits for any
+// creation in flight (git init, the purge, the owner row), not only one of
+// its own repo. Creations are rare and short; a creation that waits for the
+// gitstore lock of a case sibling ("team" while "Team" commits a large page,
+// on a case-sensitive filesystem) holds it longer.
 var createRepoMu gosync.Mutex
 
 // isMemberAfterCreate reports whether uid is a member of repoID, checked
@@ -416,6 +458,9 @@ func (h *Handler) ReadPage(c *gin.Context) {
 			return
 		}
 		content, pathSHA, err := h.store.ReadPageAt(repoID, path, at)
+		if !h.memberAfterRead(c, repoID) {
+			return
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, gitstore.ErrRepoNotFound):
@@ -438,6 +483,9 @@ func (h *Handler) ReadPage(c *gin.Context) {
 	}
 
 	content, sha, err := h.store.Read(repoID, path)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, gitstore.ErrRepoNotFound):
@@ -655,6 +703,21 @@ func (h *Handler) Pull(c *gin.Context) {
 	since := c.Query("since")
 
 	paths, head, err := h.store.ChangedSince(repoID, since)
+	var files []sync.PullFile
+	if err == nil {
+		files = make([]sync.PullFile, 0, len(paths))
+		for _, p := range paths {
+			content, sha, err := h.store.Read(repoID, p)
+			if err != nil {
+				continue
+			}
+			files = append(files, sync.PullFile{Path: p, Content: string(content), SHA: sha})
+		}
+	}
+	// After every read, before the activity row and the answer.
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -662,15 +725,6 @@ func (h *Handler) Pull(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-
-	files := make([]sync.PullFile, 0, len(paths))
-	for _, p := range paths {
-		content, sha, err := h.store.Read(repoID, p)
-		if err != nil {
-			continue
-		}
-		files = append(files, sync.PullFile{Path: p, Content: string(content), SHA: sha})
 	}
 
 	// Record a "pull" only when pages were actually received, so no-op
@@ -692,6 +746,9 @@ func (h *Handler) Timeline(c *gin.Context) {
 		limit = l
 	}
 	commits, err := h.store.Log(repoID, limit)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -719,6 +776,9 @@ func (h *Handler) History(c *gin.Context) {
 		limit = l
 	}
 	commits, err := h.store.LogPath(repoID, path, limit)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, gitstore.ErrRepoNotFound):
