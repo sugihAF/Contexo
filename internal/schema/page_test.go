@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,86 @@ func TestValidateRequiredFields(t *testing.T) {
 		if !c.ok && err == nil {
 			t.Errorf("%s: expected error, got nil", c.name)
 		}
+	}
+}
+
+// wp16Page is a valid concept page whose frontmatter sets every schema key,
+// followed by the YAML lines extra ("" for none).
+func wp16Page(extra string) []byte {
+	return []byte("---\nschema: ctx.page.v1\nslug: x\ntype: concept\nauthor: a\nagent: claude\n" +
+		"created: 2026-01-01T00:00:00Z\nupdated: 2026-01-02T00:00:00Z\n" +
+		"parent_sha: 3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f\nsources: [s]\nrelated: [r]\n" +
+		"tags: [t1, t2]\nreasoning_summary: why\n" + extra + "---\n# X\n")
+}
+
+func TestValidate_IgnoresExtra(t *testing.T) {
+	valid := PageFrontmatter{Schema: PageSchemaV1, Slug: "x", Type: TypeConcept, Author: "a",
+		Created: time.Now(), Extra: map[string]any{"title": "T", "type": "weird", "slug": "../x"}}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("Validate with Extra: %v", err)
+	}
+	if got := valid.RelPath(); got != "wiki/concepts/x.md" {
+		t.Errorf("RelPath with Extra = %q", got)
+	}
+	invalid := valid
+	invalid.Author = ""
+	if err := invalid.Validate(); err == nil {
+		t.Error("Validate passed a page without author because Extra is set")
+	}
+}
+
+func TestExtra_KnownKeyNeverInExtra(t *testing.T) {
+	p, err := ParsePage(wp16Page("title: T\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := p.Frontmatter
+	if !reflect.DeepEqual(fm.Extra, map[string]any{"title": "T"}) {
+		t.Errorf("Extra = %#v, want only title", fm.Extra)
+	}
+	if fm.Slug != "x" || !reflect.DeepEqual(fm.Tags, []string{"t1", "t2"}) ||
+		fm.ParentSHA != "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f" {
+		t.Errorf("schema keys not in the struct: %+v", fm)
+	}
+	// No yaml key of a PageFrontmatter field ever lands in Extra.
+	ft := reflect.TypeOf(fm)
+	for i := 0; i < ft.NumField(); i++ {
+		name, _, _ := strings.Cut(ft.Field(i).Tag.Get("yaml"), ",")
+		if _, ok := fm.Extra[name]; ok && name != "" {
+			t.Errorf("schema key %q is in Extra", name)
+		}
+	}
+}
+
+func TestExtra_NilWhenNoUnknownKeys(t *testing.T) {
+	a, err := ParsePage(wp16Page(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Frontmatter.Extra != nil {
+		t.Errorf("Extra = %#v, want nil", a.Frontmatter.Extra)
+	}
+	data, err := SerializePage(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ParsePage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Errorf("parsed pages differ:\n%#v\n%#v", a, b)
+	}
+	literal := &Page{Frontmatter: PageFrontmatter{
+		Schema: PageSchemaV1, Slug: "x", Type: TypeConcept, Author: "a", Agent: "claude",
+		Created:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Updated:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		ParentSHA: "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+		Sources:   []string{"s"}, Related: []string{"r"}, Tags: []string{"t1", "t2"},
+		ReasoningSummary: "why",
+	}, Body: "# X\n"}
+	if !reflect.DeepEqual(a, literal) {
+		t.Errorf("parsed page != literal page:\n%#v\n%#v", a, literal)
 	}
 }
 
