@@ -9,6 +9,8 @@ import (
 
 	"github.com/sugihAF/contexo/internal/diff"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/syncops"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
 	"github.com/sugihAF/contexo/internal/ui"
 )
 
@@ -34,20 +36,29 @@ const (
 	pushStatusError
 )
 
-// computePushPreview fetches each file's current server content and diffs it
-// against the to-be-pushed bytes. Failures to read are surfaced as
-// pushStatusError, not fatal — the user still sees they tried to push that
-// file (the actual push will succeed or 409 as before).
+// computePushPreview previews the batch syncops.Push is about to send. A
+// create file has no server version, so it is NEW without a request; every
+// update file's current server content is fetched and diffed against the
+// to-be-pushed bytes. Failures to read are surfaced as pushStatusError, not
+// fatal — the user still sees they tried to push that file (the actual push
+// will succeed or 409 as before).
 // Reads run concurrently: this used to be one blocking round trip per file,
 // so a 40-page push waited on 40 sequential requests. Results are written to
-// their own index rather than appended, so the output order stays the file
+// their own index rather than appended, so the output order stays the plan
 // order regardless of which response lands first.
-func computePushPreview(client *sync.Client, repoID string, files []sync.PushFile) []pushPreview {
-	out := make([]pushPreview, len(files))
+func computePushPreview(client *sync.Client, repoID string, plan []syncops.PushPlanFile) []pushPreview {
+	out := make([]pushPreview, len(plan))
 	sem := make(chan struct{}, previewConcurrency)
 	var wg goSync.WaitGroup
 
-	for i, f := range files {
+	for i, pf := range plan {
+		f := pf.File
+		if pf.Kind == contract.WriteCreate {
+			item := pushPreview{Path: f.Path, Status: pushStatusNew}
+			item.LineHint = renderPreviewLine(item)
+			out[i] = item
+			continue
+		}
 		wg.Add(1)
 		go func(i int, f sync.PushFile) {
 			defer wg.Done()
