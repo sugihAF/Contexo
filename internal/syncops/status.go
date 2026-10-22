@@ -1,9 +1,24 @@
 package syncops
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
 
+	"github.com/sugihAF/contexo/internal/capture"
+	"github.com/sugihAF/contexo/internal/config"
+	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/syncstate"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // Owner: WP-1.1. Fields may be added, never renamed or removed.
@@ -13,7 +28,610 @@ type StatusOptions struct {
 	Offline bool
 }
 
-// Status builds the `ctx status --json` document.
+// statusEnsureBase is the EnsureBase seam: tests override it to observe the
+// options status passes and to simulate a repair.
+var statusEnsureBase = EnsureBase
+
+// statusCheckGuard is the CheckGuard seam behind captures.blocks_push.
+var statusCheckGuard = CheckGuard
+
+// Status builds the `ctx status --json` document. Offline (o.Offline or no
+// Remote) it reads only local files and writes nothing; remote.source is
+// none and R follows the E9 sidecar rule. Online it makes one ListPages
+// call and runs EnsureBase over that listing (E5); a failed listing goes
+// into remote.error and never fails status. Callers then fill the identity
+// with FillStatusIdentity.
+//
+// It fails only when the project is not initialized (not_initialized) or the
+// local state cannot be read (internal).
 func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc, error) {
-	return nil, NotImplemented("status")
+	hub, err := RequireHub(env.Root)
+	if err != nil {
+		return nil, Wrap(err, contract.CodeNotInitialized, "status", "ctx init")
+	}
+	now := time.Now()
+	if env.Now != nil {
+		now = env.Now()
+	}
+	doc := statusNewDoc(env, now, o.Offline)
+
+	var live statusLive // zero: no live listing (E9 offline rule)
+	if !o.Offline && env.Online() {
+		live = statusOnline(ctx, env, doc, now)
+	}
+	if w, ok := statusServerOutdated(env.ServerURL, doc.Server); ok {
+		doc.Warnings = append(doc.Warnings, w)
+	}
+	doc.Warnings = append(doc.Warnings, live.warnings...)
+
+	// Read the local state only now: EnsureBase may have rewritten
+	// state.json, bases.json and conflicts.json (E5 step 4).
+	view, err := syncstate.LoadView(hub, live.remote)
+	if err != nil {
+		return nil, Wrap(err, contract.CodeInternal, "status")
+	}
+	doc.Project.LastPullSHA = view.State.LastPullSHA
+
+	unverified := []string{}
+	for _, rel := range view.Paths {
+		f := view.Facts[rel]
+		res, err := contract.ClassifySides(contract.Side(f.Local), contract.Side(f.Base), contract.Side(f.Remote))
+		if err != nil {
+			return nil, Wrap(err, contract.CodeInternal, "status")
+		}
+		if f.Conflict != nil {
+			res = ApplySidecar(res, f.Base.SHA, &SidecarFact{
+				ServerSHA: f.Conflict.ServerSHA, Kind: contract.ConflictKind(f.Conflict.Kind)})
+		}
+		if res.State == "" {
+			continue
+		}
+		if res.State == contract.StateUnverified {
+			unverified = append(unverified, rel)
+		}
+		doc.Pages = append(doc.Pages, statusEntry(f, res, live.meta))
+		statusCount(&doc.Counts, res.State)
+	}
+	doc.Counts.Ahead = doc.Counts.Modified + doc.Counts.New
+	doc.Counts.Behind = doc.Counts.Incoming + doc.Counts.IncomingNew
+
+	doc.Captures = statusCaptures(hub, now)
+	doc.Captures.BlocksPush = statusGuardBlocks(env, doc.Pages)
+
+	// Deviation 13: online, every page left unverified is named, also when
+	// EnsureBase failed or said nothing. Merging below keeps EnsureBase's
+	// own message.
+	if doc.Remote.Source == contract.RemoteLive && (len(unverified) > 0 || live.ensureErr != nil) {
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code:    contract.WarnBaseRepairSkipped,
+			Message: statusRepairMessage(len(unverified), live.ensureErr),
+			Paths:   unverified,
+		})
+	}
+	if paths := statusCaseCollisions(doc.Pages); len(paths) > 0 {
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code: contract.WarnCaseCollision,
+			Message: fmt.Sprintf("%d paths differ only by letter case; "+
+				"pull skips them until all but one of each are renamed", len(paths)),
+			Paths: paths,
+		})
+	}
+	if len(view.Corrupt) > 0 {
+		// R7: the paths stay empty, so the extension never opens .sync files.
+		files := make([]string, len(view.Corrupt))
+		for i, name := range view.Corrupt {
+			files[i] = ".sync/" + name
+		}
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code:    contract.WarnStateUnreadable,
+			Message: "could not read " + strings.Join(files, ", ") + "; treated as empty",
+			Paths:   []string{},
+		})
+	}
+	doc.Warnings = statusMergeWarnings(doc.Warnings)
+	return doc, nil
+}
+
+// statusFreshWindow is the distill window: a pending buffer with a turn
+// modified within it is fresh.
+const statusFreshWindow = 6 * time.Hour
+
+// statusCaptures summarizes the pending capture buffers, newest first. Turns
+// are the non-blank lines (the buffers are not decoded). Captures never fail
+// status (R8): an unlistable pending directory gives none, and a buffer that
+// cannot be read (one archived meanwhile) is skipped.
+func statusCaptures(hub string, now time.Time) contract.CaptureInfo {
+	info := contract.CaptureInfo{Sessions: []contract.CaptureSession{}}
+	bufs, err := capture.List(hub)
+	if err != nil {
+		return info
+	}
+	type session struct {
+		s   contract.CaptureSession
+		mod time.Time
+	}
+	var all []session
+	for _, b := range bufs {
+		fi, err := os.Stat(b.Path())
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(b.Path())
+		if err != nil {
+			continue
+		}
+		turns := statusTurns(data)
+		all = append(all, session{mod: fi.ModTime(), s: contract.CaptureSession{
+			SessionID: b.SessionID,
+			Turns:     turns,
+			UpdatedAt: contract.TimeOf(fi.ModTime()),
+			Fresh:     turns > 0 && !fi.ModTime().Before(now.Add(-statusFreshWindow)),
+		}})
+	}
+	slices.SortStableFunc(all, func(a, b session) int {
+		if c := b.mod.Compare(a.mod); c != 0 {
+			return c
+		}
+		return strings.Compare(a.s.SessionID, b.s.SessionID)
+	})
+	for _, s := range all {
+		info.Pending++
+		if s.s.Fresh {
+			info.Fresh++
+		}
+		info.Sessions = append(info.Sessions, s.s)
+	}
+	return info
+}
+
+// statusTurns counts the non-blank lines of a capture buffer.
+func statusTurns(data []byte) int {
+	n := 0
+	for len(data) > 0 {
+		line := data
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			data = nil
+		}
+		if len(bytes.TrimSpace(line)) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// statusGuardBlocks is captures.blocks_push (E24): the distill guard over
+// the pages a push would send (modified ∪ new, sorted). A guard error
+// blocks nothing; push runs the guard again and reports it.
+func statusGuardBlocks(env Env, pages []contract.PageEntry) bool {
+	batch := []string{}
+	for _, p := range pages {
+		if p.State == contract.StateModified || p.State == contract.StateNew {
+			batch = append(batch, p.Path)
+		}
+	}
+	g, err := statusCheckGuard(env, batch)
+	if err != nil {
+		return false
+	}
+	return statusBlocksPush(g)
+}
+
+// statusCaseCollisions adds note case_collision to every entry whose path
+// equals another entry's under strings.EqualFold, and returns those paths
+// sorted (none when there is no collision).
+func statusCaseCollisions(pages []contract.PageEntry) []string {
+	groups := map[string][]int{}
+	for i, p := range pages {
+		k := statusFoldKey(p.Path)
+		groups[k] = append(groups[k], i)
+	}
+	var paths []string
+	for _, idx := range groups {
+		if len(idx) < 2 {
+			continue
+		}
+		for _, i := range idx {
+			pages[i].Notes = append(pages[i].Notes, contract.NoteCaseCollision)
+			paths = append(paths, pages[i].Path)
+		}
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// statusFoldKey maps s to a key shared exactly by the strings EqualFold to
+// it: each rune becomes the smallest rune of its unicode.SimpleFold orbit.
+func statusFoldKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			low = min(low, f)
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
+}
+
+// statusNewDoc is the document skeleton: every array non-nil, the remote
+// unknown (source none) until a live listing says otherwise. auth.state
+// stays "" while no request is made; FillStatusIdentity decides it then.
+func statusNewDoc(env Env, now time.Time, offline bool) *contract.StatusDoc {
+	root, err := filepath.Abs(env.Root)
+	if err != nil {
+		root = env.Root
+	}
+	return &contract.StatusDoc{
+		Schema:      contract.SchemaStatus,
+		GeneratedAt: contract.TimeOf(now),
+		Offline:     offline,
+		Root:        root,
+		ContexoDir:  filepath.Join(root, hubDirName),
+		Project:     contract.ProjectInfo{RepoID: env.RepoID},
+		Server: contract.ServerInfo{
+			URL:          env.ServerURL,
+			Capabilities: []contract.ServerCapability{},
+		},
+		Remote:   contract.RemoteInfo{Source: contract.RemoteNone},
+		Pages:    []contract.PageEntry{},
+		Captures: contract.CaptureInfo{Sessions: []contract.CaptureSession{}},
+		Warnings: []contract.Warning{},
+	}
+}
+
+// statusEnsureBaseBudget caps the whole EnsureBase inside status (E12), well
+// under the extension's 30 s status timeout; pages it leaves stale stay
+// unverified.
+const statusEnsureBaseBudget = 20 * time.Second
+
+// statusLive is what the live listing contributed to a status run.
+type statusLive struct {
+	remote    map[string]string // path -> sha; nil without a live listing
+	meta      map[string]sync.PageMeta
+	warnings  []contract.Warning // EnsureBase's
+	ensureErr error              // EnsureBase's failure (base_repair_skipped)
+}
+
+// statusOnline makes status's one ListPages call and reads ServerInfo right
+// after it, before EnsureBase's requests can change what it reports
+// (deviation 14). On success it fills server, auth and remote and runs
+// EnsureBase over the live listing (E5 step 3). A failed listing never
+// fails status: statusRemoteFailure reports it.
+func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now time.Time) statusLive {
+	listing, lerr := env.Remote.ListPages(env.RepoID)
+	ver, caps, known := env.Remote.ServerInfo()
+	doc.Server.Version = ver
+	doc.Server.CapabilitiesKnown = known
+	doc.Server.Capabilities = append([]contract.ServerCapability{}, caps...)
+	if lerr != nil {
+		return statusRemoteFailure(doc, lerr, now)
+	}
+
+	if listing == nil {
+		listing = []sync.PageMeta{}
+	}
+	live := statusLive{
+		remote: make(map[string]string, len(listing)),
+		meta:   make(map[string]sync.PageMeta, len(listing)),
+	}
+	for _, m := range listing {
+		live.remote[m.Path] = m.SHA
+		live.meta[m.Path] = m
+	}
+	exists := true
+	doc.Auth.State = contract.AuthAuthenticated
+	doc.Remote = contract.RemoteInfo{
+		Source:     contract.RemoteLive,
+		FetchedAt:  contract.TimePtr(now),
+		RepoExists: &exists,
+		Head:       statusHead(listing),
+		PageCount:  len(listing),
+	}
+	ebCtx, cancel := context.WithTimeout(ctx, statusEnsureBaseBudget)
+	defer cancel()
+	res, err := statusEnsureBase(ebCtx, env, EnsureBaseOptions{Listing: listing, Locked: false})
+	if res != nil {
+		live.warnings = res.Warnings
+	}
+	live.ensureErr = err
+	return live
+}
+
+// statusRemoteFailure records a failed listing and returns the remote view
+// status continues with. A missing repo is a live answer (R2): every path
+// is absent and, with nothing on the server to repair from, EnsureBase is
+// not called. Any other failure becomes remote.error with the E9 offline
+// rule and no EnsureBase: a 401 rejects the credentials (R4), a server_error
+// may be a proxy page without Contexo headers, so the capabilities become
+// unknown (R3), and the rest leave auth unchecked (R5).
+func statusRemoteFailure(doc *contract.StatusDoc, lerr error, now time.Time) statusLive {
+	if errors.Is(lerr, sync.ErrRepoNotFound) {
+		exists := false
+		doc.Auth.State = contract.AuthAuthenticated
+		doc.Remote = contract.RemoteInfo{
+			Source:     contract.RemoteLive,
+			FetchedAt:  contract.TimePtr(now),
+			RepoExists: &exists,
+		}
+		return statusLive{remote: map[string]string{}, meta: map[string]sync.PageMeta{}}
+	}
+
+	ce := ui.ToContractError(lerr)
+	doc.Auth.State = contract.AuthUnchecked
+	switch ce.Code {
+	case contract.CodeAuthRejected:
+		doc.Auth.State = contract.AuthRejected
+		ce.Advice = []string{"ctx auth login"}
+	case contract.CodeServerError:
+		doc.Server.Version = ""
+		doc.Server.CapabilitiesKnown = false
+		doc.Server.Capabilities = []contract.ServerCapability{}
+	}
+	body := ce.Body()
+	doc.Remote.Error = &body
+	return statusLive{}
+}
+
+// statusServerOutdated is E13's server_outdated: the server's capabilities
+// are known and lack one a v1 client relies on.
+func statusServerOutdated(serverURL string, s contract.ServerInfo) (contract.Warning, bool) {
+	if !s.CapabilitiesKnown {
+		return contract.Warning{}, false
+	}
+	var missing []string
+	for _, c := range []contract.ServerCapability{contract.SrvPagesAt, contract.SrvExpectAbsent, contract.SrvWritePathSHA} {
+		if !slices.Contains(s.Capabilities, c) {
+			missing = append(missing, string(c))
+		}
+	}
+	if len(missing) == 0 {
+		return contract.Warning{}, false
+	}
+	if serverURL == "" {
+		serverURL = "the server"
+	}
+	return contract.Warning{
+		Code:    contract.WarnServerOutdated,
+		Message: serverURL + " does not advertise " + strings.Join(missing, ", ") + "; update the Contexo server",
+		Paths:   []string{},
+	}, true
+}
+
+// statusRepairMessage is status's own base_repair_skipped message, for n
+// unverified pages and EnsureBase's error (nil when it did not fail).
+func statusRepairMessage(n int, err error) string {
+	msg := fmt.Sprintf("%d pages could not be verified against the server", n)
+	if n == 1 {
+		msg = "1 page could not be verified against the server"
+	}
+	switch {
+	case err == nil:
+		return msg
+	case n == 0:
+		return "base repair failed: " + err.Error()
+	}
+	return msg + ": base repair failed: " + err.Error()
+}
+
+// statusMergeWarnings merges warnings by code (R11): the first warning of a
+// code keeps its position and message and gets the sorted union of every
+// same-code warning's paths (never nil).
+func statusMergeWarnings(ws []contract.Warning) []contract.Warning {
+	out := make([]contract.Warning, 0, len(ws))
+	at := map[contract.WarningCode]int{}
+	for _, w := range ws {
+		i, seen := at[w.Code]
+		if !seen {
+			at[w.Code] = len(out)
+			w.Paths = append([]string{}, w.Paths...)
+			out = append(out, w)
+			continue
+		}
+		out[i].Paths = append(out[i].Paths, w.Paths...)
+	}
+	for i := range out {
+		slices.Sort(out[i].Paths)
+		out[i].Paths = slices.Compact(out[i].Paths)
+	}
+	return out
+}
+
+// statusHead is remote.head (R1): the sha of the listing entry with the
+// newest time. ListPages carries no repo HEAD, so it is "" when the listing
+// is empty or the newest time is shared by different shas.
+func statusHead(listing []sync.PageMeta) string {
+	head, ambiguous := "", false
+	var newest time.Time
+	for i, m := range listing {
+		switch {
+		case i == 0 || m.Time.After(newest):
+			head, newest, ambiguous = m.SHA, m.Time, false
+		case m.Time.Equal(newest) && m.SHA != head:
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return head
+}
+
+// statusEntry builds the PageEntry of one classified path. Frontmatter
+// fields come only from a valid working file; a remote side from a sidecar
+// (or without a listing entry) carries only its sha (E9).
+func statusEntry(f *syncstate.PathFacts, res contract.ClassifyResult, meta map[string]sync.PageMeta) contract.PageEntry {
+	e := contract.PageEntry{
+		Path:         f.Path,
+		State:        res.State,
+		ConflictKind: res.ConflictKind,
+		Tags:         []string{},
+		Notes:        res.Notes,
+	}
+	if e.Notes == nil {
+		e.Notes = []contract.NoteCode{}
+	}
+	if lf := f.File; lf != nil {
+		e.Local = &contract.LocalSide{File: lf.Path, Hash: lf.Hash}
+		if inv := lf.Invalid; inv != nil {
+			e.Invalid = &contract.InvalidInfo{
+				Stage:        contract.InvalidStage(inv.Stage),
+				Message:      inv.Message,
+				ExpectedPath: inv.ExpectedPath,
+			}
+		} else if lf.Page != nil {
+			fm := lf.Page.Frontmatter
+			e.Type = string(fm.Type)
+			e.Slug = fm.Slug
+			e.Title = statusTitle(lf.Page.Body)
+			e.Tags = append(e.Tags, fm.Tags...)
+			e.Author = fm.Author
+			e.Agent = fm.Agent
+			if !fm.Updated.IsZero() {
+				e.Updated = contract.TimePtr(fm.Updated)
+			}
+			e.ReasoningSummary = fm.ReasoningSummary
+		}
+	}
+	switch f.Base.Kind {
+	case syncstate.BaseValid:
+		e.Base = &contract.BaseSide{SHA: f.Base.SHA, Hash: f.Base.Hash}
+		if f.BaseRecord != nil && !f.BaseRecord.SyncedAt.IsZero() {
+			e.Base.SyncedAt = contract.TimePtr(f.BaseRecord.SyncedAt)
+		}
+	case syncstate.BaseStale:
+		e.Base = &contract.BaseSide{SHA: f.Base.SHA, Stale: true}
+	}
+	if f.Remote.Kind == syncstate.RemotePresent {
+		e.Remote = &contract.RemoteSide{SHA: f.Remote.SHA}
+		if m, ok := meta[f.Path]; ok && !f.RemoteFromSidecar {
+			e.Remote.Author, e.Remote.Email, e.Remote.Message = m.Author, m.Email, m.Message
+			if !m.Time.IsZero() {
+				e.Remote.Time = contract.TimePtr(m.Time)
+			}
+		}
+	}
+	return e
+}
+
+// statusTitle is the text of the body's first "# " line, or "".
+func statusTitle(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if t, ok := strings.CutPrefix(line, "# "); ok {
+			return strings.TrimSpace(t)
+		}
+	}
+	return ""
+}
+
+// statusCount adds one page of state s to c.
+func statusCount(c *contract.StateCounts, s contract.PageState) {
+	switch s {
+	case contract.StateUnchanged:
+		c.Unchanged++
+	case contract.StateModified:
+		c.Modified++
+	case contract.StateNew:
+		c.New++
+	case contract.StateIncoming:
+		c.Incoming++
+	case contract.StateIncomingNew:
+		c.IncomingNew++
+	case contract.StateConflict:
+		c.Conflict++
+	case contract.StateDeletedLocal:
+		c.DeletedLocal++
+	case contract.StateInvalid:
+		c.Invalid++
+	case contract.StateUnverified:
+		c.Unverified++
+	}
+}
+
+// FillStatusIdentity fills the server, project and auth identity of doc from
+// the resolved remote r (WP-0.3), and remote.error from unusable, the reason
+// the caller could not use r (E22). r is nil when the config or credentials
+// could not be read (R10). An auth.state or remote.error the engine already
+// set is kept; an auth.state it left empty (no request made, R6) becomes
+// unchecked with a token, else not_authenticated. Callers pass a nil
+// unusable for --offline, which asked for no server.
+func FillStatusIdentity(doc *contract.StatusDoc, r *config.Remote, unusable error) {
+	if doc == nil {
+		return
+	}
+	if r != nil {
+		doc.Server.URL = r.ServerURL
+		doc.Server.URLSource = contract.URLSource(r.URLSource)
+		doc.Project.RepoID = r.RepoID
+		doc.Project.ConfigServerURL = r.ConfiguredServerURL
+		doc.Project.DashboardURL = r.DashboardURL
+		doc.Project.DashboardPageURLTemplate = ""
+		if r.DashboardURL != "" && r.RepoID != "" {
+			doc.Project.DashboardPageURLTemplate = r.DashboardURL + "/repos/" + url.PathEscape(r.RepoID) + "/page/{path}"
+		}
+		if r.Token != "" {
+			doc.Auth.CredentialsSource = r.CredsSource
+			doc.Auth.TokenKind = r.TokenKind()
+			if r.Creds != nil {
+				doc.Auth.UserName, doc.Auth.UserEmail = r.Creds.UserName, r.Creds.UserEmail
+			}
+		}
+		if r.Mismatch {
+			// Identity first (R11).
+			doc.Warnings = statusMergeWarnings(append([]contract.Warning{{
+				Code: contract.WarnServerURLMismatch,
+				Message: fmt.Sprintf("config server_url %s differs from %s, the server your credentials belong to; using %s",
+					r.ConfiguredServerURL, r.ServerURL, r.ServerURL),
+				Paths: []string{},
+			}}, doc.Warnings...))
+		}
+	}
+	if doc.Auth.State == "" {
+		doc.Auth.State = contract.AuthNotAuthenticated
+		if r != nil && r.Token != "" {
+			doc.Auth.State = contract.AuthUnchecked
+		}
+	}
+	// Deviation 14: remote.error only without a live listing.
+	if unusable != nil && doc.Remote.Error == nil && doc.Remote.Source == contract.RemoteNone {
+		body := statusUnusable(r, unusable)
+		doc.Remote.Error = &body
+	}
+}
+
+// statusUnusable is remote.error for a remote that could not be used: the
+// first E22 case r shows, with its fixed advice and unusable's message when
+// unusable names that case; otherwise unusable's own contract error (a
+// corrupt config or credentials file, R10).
+func statusUnusable(r *config.Remote, unusable error) contract.ErrorBody {
+	ce := ui.ToContractError(unusable)
+	if r == nil {
+		return ce.Body()
+	}
+	var code contract.ErrorCode
+	var what, advice string
+	switch {
+	case r.Token == "":
+		code, what, advice = contract.CodeNotAuthenticated, "not authenticated", "ctx auth login"
+	case r.ServerURL == "":
+		code, what, advice = contract.CodeServerUnresolved, "server URL unresolved", "ctx auth login --server <url>"
+	case r.RepoID == "":
+		code, what, advice = contract.CodeRepoNotConfigured, "repo not configured", "ctx remote set-repo <id>"
+	default:
+		return ce.Body()
+	}
+	msg := "status: " + what
+	if ce.Code == code {
+		msg = ce.Message
+	}
+	return contract.New(code, msg, advice).Body()
+}
+
+// statusBlocksPush is E24's captures.blocks_push: the guard requires a
+// distill and CONTEXO_DISTILL_DISABLE does not bypass it. It reads the env
+// var itself until WP-1.2's guard reports the bypass (consolidation request).
+func statusBlocksPush(g *GuardResult) bool {
+	return g != nil && g.Required && os.Getenv("CONTEXO_DISTILL_DISABLE") != "1"
 }
