@@ -99,43 +99,24 @@ func statusAuthor(rr *config.Remote) syncops.Author {
 	return syncops.Author{Name: rr.Creds.UserName, Email: rr.Creds.UserEmail}
 }
 
-// statusRenderHuman prints doc for a person. rr (nil for a corrupt config)
-// supplies the identity block; the token itself is never printed.
+// statusRenderHuman prints doc for a person. rr (nil for a corrupt config or
+// credentials file) supplies the identity block; the token itself is never
+// printed.
 func statusRenderHuman(cmd *cobra.Command, doc *contract.StatusDoc, rr *config.Remote) {
 	u := ui.From(cmd)
 	out := cmd.OutOrStdout()
-	if rr == nil {
-		rr = &config.Remote{}
-	}
 
 	u.Brand(statusBrand(doc, rr))
 	fmt.Fprintln(out)
 
 	u.Eyebrow("REMOTE")
-	if rr.ServerURL != "" {
-		server := rr.ServerURL
-		if rr.URLSource != "" {
-			server += "  (from " + rr.URLSource + ")"
-		}
-		u.Field("server", server)
+	if rr != nil {
+		statusRenderIdentity(u, doc, rr)
 	} else {
-		u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
+		// Login or set-repo hints would not help: the file needs fixing, and
+		// remote.error (online) names it.
+		u.Field("config", "unreadable (.contexo/config.json or the credentials file)")
 	}
-	// The REMOTE block owns the mismatch text, so the document's
-	// server_url_mismatch warning is skipped below.
-	if rr.Mismatch {
-		u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
-			rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
-	}
-	if rr.RepoID != "" {
-		u.Field("repo", rr.RepoID)
-	} else {
-		u.Field("repo", "(none — run 'ctx remote set-repo <id>')")
-	}
-	if rr.Token != "" && rr.Creds != nil && rr.Creds.UserName != "" {
-		u.Field("user", fmt.Sprintf("%s <%s>", rr.Creds.UserName, rr.Creds.UserEmail))
-	}
-	u.Field("auth", statusAuthLine(doc, rr))
 	if e := doc.Remote.Error; e != nil {
 		u.Warn("server: %s", e.Message)
 		for _, a := range e.Advice {
@@ -182,9 +163,41 @@ func statusRenderHuman(cmd *cobra.Command, doc *contract.StatusDoc, rr *config.R
 	}
 }
 
+// statusRenderIdentity prints the REMOTE fields of the resolved remote: the
+// server and where its URL came from, the mismatch warning, the repo, the
+// user and the auth state.
+func statusRenderIdentity(u *ui.UI, doc *contract.StatusDoc, rr *config.Remote) {
+	if rr.ServerURL != "" {
+		server := rr.ServerURL
+		if rr.URLSource != "" {
+			server += "  (from " + rr.URLSource + ")"
+		}
+		u.Field("server", server)
+	} else {
+		u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
+	}
+	// The REMOTE block owns the mismatch text, so the document's
+	// server_url_mismatch warning is skipped later.
+	if rr.Mismatch {
+		u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
+			rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
+	}
+	if rr.RepoID != "" {
+		u.Field("repo", rr.RepoID)
+	} else {
+		u.Field("repo", "(none — run 'ctx remote set-repo <id>')")
+	}
+	if rr.Token != "" && rr.Creds != nil && rr.Creds.UserName != "" {
+		u.Field("user", fmt.Sprintf("%s <%s>", rr.Creds.UserName, rr.Creds.UserEmail))
+	}
+	u.Field("auth", statusAuthLine(doc, rr))
+}
+
 // statusBrand is the brand line's state and whether its dot is healthy.
 func statusBrand(doc *contract.StatusDoc, rr *config.Remote) (string, bool) {
 	switch {
+	case rr == nil:
+		return "config unreadable", false
 	case rr.Token == "":
 		return "not authenticated", false
 	case rr.ServerURL == "":

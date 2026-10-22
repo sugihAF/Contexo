@@ -546,6 +546,39 @@ func TestStatusJSON_RemoteUnusablePrecedence(t *testing.T) {
 	}
 }
 
+// A corrupt config.json (ResolveRemote fails, R10) still gives a complete
+// local document: remote.error carries the parse failure online, --offline
+// carries none, and the human form renders.
+func TestStatusJSON_CorruptConfigStillRenders(t *testing.T) {
+	p := testkit.NewProject(t, testkit.ProjectOptions{NoCreds: true, Pages: st11Pages})
+	p.WriteRaw("config.json", []byte("{not json"))
+
+	doc, raw := st11StatusJSON(t, p.Root)
+	st11CheckRaw(t, raw)
+	e := doc.Remote.Error
+	if e == nil || e.Code != contract.CodeInternal || !strings.Contains(e.Message, "config") {
+		t.Errorf("remote.error = %+v, want internal naming the config", e)
+	}
+	if doc.Remote.Source != contract.RemoteNone || doc.Auth.State != contract.AuthNotAuthenticated {
+		t.Errorf("remote/auth = %q/%q, want none/not_authenticated", doc.Remote.Source, doc.Auth.State)
+	}
+	if len(doc.Pages) != len(st11Pages) {
+		t.Errorf("%d pages, want %d", len(doc.Pages), len(st11Pages))
+	}
+
+	doc, _ = st11StatusJSON(t, p.Root, "--offline")
+	if doc.Remote.Error != nil || len(doc.Pages) != len(st11Pages) {
+		t.Errorf("--offline: remote.error %+v, %d pages", doc.Remote.Error, len(doc.Pages))
+	}
+
+	code, out, stderr := st11Run(t, "status", "--root", p.Root)
+	if code != 0 {
+		t.Fatalf("human: exit %d, stderr %q", code, stderr)
+	}
+	st11AssertContains(t, "corrupt config (human)", out, "REMOTE", "config unreadable", "config: parse", "KNOWLEDGE")
+	st11AssertLacks(t, "corrupt config (human)", out, "ctx remote set-repo", "ctx auth login")
+}
+
 func TestStatusJSON_DashboardEmptyOmitsTemplate(t *testing.T) {
 	srv := testkit.StartServer(t)
 	p := testkit.NewProject(t, testkit.ProjectOptions{
@@ -864,8 +897,11 @@ func TestStatusHuman_RenderAllStates(t *testing.T) {
 	clean.Auth.State = contract.AuthAuthenticated
 	st11AssertContains(t, "in sync", st11Render(t, clean, rr), "in sync")
 
-	// A nil remote (corrupt config) still renders.
-	st11AssertContains(t, "nil remote", st11Render(t, clean, nil), "REMOTE", "not authenticated")
+	// A nil remote (corrupt config) still renders, and sends nobody to log in
+	// or set a repo: the file is what needs fixing.
+	out = st11Render(t, clean, nil)
+	st11AssertContains(t, "nil remote", out, "REMOTE", "config unreadable")
+	st11AssertLacks(t, "nil remote", out, "ctx remote set-repo", "ctx auth login")
 }
 
 func TestStatusHuman_Sections(t *testing.T) {
