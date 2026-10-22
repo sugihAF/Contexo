@@ -1,151 +1,89 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sugihAF/contexo/internal/ui"
-
-	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/schema"
-	"github.com/sugihAF/contexo/internal/store/pagestore"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/syncops"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
+func init() {
+	registerCapability(contract.CapPushJSON)
+	registerCapability(contract.CapPushPaths)
+	registerCapability(contract.CapPushDistillGuard)
+}
+
+// pushFlags are the human-mode presentation flags of `ctx push`.
+type pushFlags struct {
+	dryRun, yes, showDiff, noPreview bool
+}
+
+// newPushCmd is `ctx push [paths...]`: a thin layer over syncops.Push. With
+// --json it writes the ctx.push.v1 document (also on a conflict, exit 6) and
+// never prompts; without it the batch is previewed and confirmed through
+// PushOptions.Confirm and failures exit 1.
 func newPushCmd() *cobra.Command {
 	var (
 		featureFilter  string
 		tagFilter      string
 		typeFilter     string
 		message        string
-		dryRun         bool
 		fallbackServer bool
-		yes            bool
-		showDiff       bool
-		noPreview      bool
+		noDistill      bool
+		asJSON         bool
+		fl             pushFlags
 	)
 	cmd := &cobra.Command{
-		Use:   "push",
-		Short: "Push local .contexo pages to the server",
+		Use:   "push [paths...]",
+		Short: "Push changed local .contexo pages to the server",
+		Long: "Push sends the pages you changed or created since the last sync (all of them, or only the named paths).\n" +
+			"A page a teammate changed in the meantime is never overwritten: it is reported as a conflict to resolve with\n" +
+			"'ctx resolve <path> --ours|--theirs'.",
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fallbackServer {
 				return fmt.Errorf("push: --fallback-server: server-side distillation not implemented yet (planned for Phase 4 of agent-reasoning-capture); use the agent-as-distiller flow via ctx_push MCP for now")
 			}
 			root := GetRootDir()
-			hubDir := config.ContexoDirPath(root)
-
+			if _, err := syncops.RequireHub(root); err != nil {
+				return err
+			}
+			// Returned unreplaced: the *config.RemoteError stays in the chain
+			// and nothing has been sent yet.
 			rr, client, err := openRemote(root, "push", true)
 			if err != nil {
 				return err
 			}
-
-			store, err := pagestore.Open(hubDir)
-			if err != nil {
-				return ui.Suggest(fmt.Errorf("push: open hub: %w", err), "ctx init")
+			var author syncops.Author
+			if rr.Creds != nil {
+				author = syncops.Author{Name: rr.Creds.UserName, Email: rr.Creds.UserEmail}
 			}
-
-			pages, err := store.List(pagestore.Filter{})
-			if err != nil {
-				return fmt.Errorf("push: list pages: %w", err)
+			env := syncops.NewEnv(root, rr.RepoID, rr.ServerURL, author, client)
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
 			}
-
-			filtered := applyFilters(pages, featureFilter, tagFilter, typeFilter)
-			if len(filtered) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Nothing to push (no pages match filters)")
-				return nil
+			opts := syncops.PushOptions{
+				Paths:     args,
+				Message:   message,
+				DryRun:    fl.dryRun,
+				NoDistill: noDistill,
+				Feature:   featureFilter,
+				Tag:       tagFilter,
+				Type:      typeFilter,
 			}
-
-			state, err := sync.LoadState(hubDir)
-			if err != nil {
-				return err
+			if asJSON {
+				return runPushJSON(ctx, cmd, env, opts)
 			}
-
-			files := make([]sync.PushFile, 0, len(filtered))
-			for _, p := range filtered {
-				data, err := schema.SerializePage(p)
-				if err != nil {
-					return fmt.Errorf("push: serialize %s: %w", p.Frontmatter.Slug, err)
-				}
-				path := p.Frontmatter.RelPath()
-				files = append(files, sync.PushFile{
-					Path:      path,
-					Content:   string(data),
-					ParentSHA: state.PageSHAs[path],
-				})
-			}
-
-			if dryRun {
-				if noPreview {
-					fmt.Fprintf(cmd.OutOrStdout(), "Would push %d page(s):\n", len(files))
-					for _, f := range files {
-						fmt.Fprintf(cmd.OutOrStdout(), "  %s  (parent=%s)\n", f.Path, shortSHA(f.ParentSHA))
-					}
-					return nil
-				}
-				previews := computePushPreview(client, rr.RepoID, files)
-				renderPreview(cmd.OutOrStdout(), rr.RepoID, previews, showDiff)
-				fmt.Fprintln(cmd.OutOrStdout(), "(dry-run; no changes sent)")
-				return nil
-			}
-
-			if message == "" {
-				message = fmt.Sprintf("ctx push (%d pages)", len(files))
-			}
-
-			if !noPreview {
-				previews := computePushPreview(client, rr.RepoID, files)
-				hasEdits := renderPreview(cmd.OutOrStdout(), rr.RepoID, previews, showDiff)
-				if hasEdits && !yes {
-					if !stdinIsTTY() {
-						return ui.Suggest(errors.New("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm"), "ctx push --yes")
-					}
-					ok, err := confirm(os.Stdin, cmd.OutOrStdout(), "Proceed?")
-					if err != nil {
-						return err
-					}
-					if !ok {
-						fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
-						return nil
-					}
-				}
-			}
-
-			resp, err := client.PushPages(rr.RepoID, &sync.PushRequest{
-				AuthorName:  rr.Creds.UserName,
-				AuthorEmail: rr.Creds.UserEmail,
-				Message:     message,
-				Files:       files,
-			})
-			if err != nil {
-				return err
-			}
-
-			if len(resp.Conflicts) > 0 {
-				fmt.Fprintf(cmd.OutOrStderr(), "%d conflict(s):\n", len(resp.Conflicts))
-				for _, cf := range resp.Conflicts {
-					fmt.Fprintf(cmd.OutOrStderr(), "  %s: current=%s expected_parent=%s\n",
-						cf.Path, shortSHA(cf.CurrentSHA), shortSHA(cf.ExpectedParentSHA))
-				}
-				fmt.Fprintln(cmd.OutOrStderr(),
-					"Resolve by running 'ctx pull', merging the conflicting pages, then 'ctx push' again.")
-			}
-
-			for _, f := range resp.Pushed {
-				state.PageSHAs[f.Path] = f.SHA
-			}
-			if err := sync.SaveState(hubDir, state); err != nil {
-				return fmt.Errorf("push: save state: %w", err)
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Pushed %d page(s); HEAD=%s\n", len(resp.Pushed), shortSHA(resp.NewHead))
-			if len(resp.Conflicts) > 0 {
-				return fmt.Errorf("push: %d conflict(s) remain", len(resp.Conflicts))
-			}
-			return nil
+			return runPushHuman(ctx, cmd, env, client, opts, fl)
 		},
 	}
 
@@ -153,41 +91,143 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "push only pages with this tag (alias of --feature)")
 	cmd.Flags().StringVar(&typeFilter, "type", "", "push only pages of this type (concept|entity|source|analysis)")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "commit message (default: 'ctx push (N pages)')")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be pushed without sending")
+	cmd.Flags().BoolVar(&fl.dryRun, "dry-run", false, "show what would be pushed without sending or writing anything")
 	cmd.Flags().BoolVar(&fallbackServer, "fallback-server", false, "(planned) route reasoning-trail distillation to the Contexo server; currently errors")
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the pre-push confirmation prompt (required for non-interactive use when editing existing pages)")
-	cmd.Flags().BoolVar(&showDiff, "show-diff", false, "print the full per-section diff in the preview, not just a one-line summary")
-	cmd.Flags().BoolVar(&noPreview, "no-preview", false, "skip the pre-push preview entirely (faster; loses the heads-up about what changes)")
+	cmd.Flags().BoolVarP(&fl.yes, "yes", "y", false, "skip the pre-push confirmation prompt (required for non-interactive use when editing existing pages)")
+	cmd.Flags().BoolVar(&fl.showDiff, "show-diff", false, "print the full per-section diff in the preview, not just a one-line summary")
+	cmd.Flags().BoolVar(&fl.noPreview, "no-preview", false, "skip the pre-push preview entirely (faster; loses the heads-up about what changes)")
+	cmd.Flags().BoolVar(&noDistill, "no-distill", false, "push even when an un-distilled agent session is pending (bypasses the reasoning-trail guard; use deliberately)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the ctx.push.v1 JSON document; never prompts or previews (implies --yes and --no-preview)")
 	return cmd
 }
 
-func applyFilters(pages []*schema.Page, feature, tag, typ string) []*schema.Page {
-	wanted := strings.ToLower(strings.TrimSpace(feature))
-	if wanted == "" {
-		wanted = strings.ToLower(strings.TrimSpace(tag))
+// runPushJSON is the machine flow: no Confirm, so no prompt and no preview
+// requests. The document is written whenever the engine returns one (on
+// exit 6 too); the error goes back unchanged for Execute's envelope.
+func runPushJSON(ctx context.Context, cmd *cobra.Command, env syncops.Env, opts syncops.PushOptions) error {
+	doc, err := syncops.Push(ctx, env, opts)
+	if doc != nil {
+		if werr := contract.WriteDoc(cmd.OutOrStdout(), doc); werr != nil && err == nil {
+			return fmt.Errorf("push: write document: %w", werr)
+		}
 	}
-	typLow := strings.ToLower(strings.TrimSpace(typ))
+	return err
+}
 
-	var out []*schema.Page
-	for _, p := range pages {
-		if typLow != "" && strings.ToLower(string(p.Frontmatter.Type)) != typLow {
-			continue
-		}
-		if wanted != "" {
-			has := false
-			for _, t := range p.Frontmatter.Tags {
-				if strings.ToLower(t) == wanted {
-					has = true
-					break
-				}
-			}
-			if !has {
-				continue
-			}
-		}
-		out = append(out, p)
+// runPushHuman previews and confirms the batch under the lock (through
+// Confirm, unless --no-preview), then reports what happened. Failures exit
+// 1 with their advice; nothing here prints JSON.
+func runPushHuman(ctx context.Context, cmd *cobra.Command, env syncops.Env, client *sync.Client, opts syncops.PushOptions, fl pushFlags) error {
+	if !fl.noPreview {
+		opts.Confirm = pushConfirm(cmd.OutOrStdout(), os.Stdin, stdinIsTTY, client, env.RepoID, fl)
 	}
-	return out
+	doc, err := syncops.Push(ctx, env, opts)
+	return pushFinishHuman(cmd, doc, err, fl)
+}
+
+// pushConfirm returns the human Confirm hook: it previews the plan and, when
+// the batch edits existing pages and neither --dry-run nor --yes was given,
+// asks on a TTY or refuses without one.
+func pushConfirm(out io.Writer, in io.Reader, isTTY func() bool, client *sync.Client, repoID string, fl pushFlags) func([]syncops.PushPlanFile) (bool, error) {
+	return func(plan []syncops.PushPlanFile) (bool, error) {
+		previews := computePushPreview(client, repoID, plan)
+		hasEdits := renderPreview(out, repoID, previews, fl.showDiff)
+		if fl.dryRun || !hasEdits || fl.yes {
+			return true, nil
+		}
+		if !isTTY() {
+			return false, ui.Suggest(errors.New("push: refusing to alter existing pages in non-interactive mode; pass --yes to confirm"), "ctx push --yes")
+		}
+		return confirm(in, out, "Proceed?")
+	}
+}
+
+// pushFinishHuman reports a human push from the engine's result and returns
+// the error Execute renders (exit 1). A declined prompt is not a failure.
+func pushFinishHuman(cmd *cobra.Command, doc *contract.PushDoc, err error, fl pushFlags) error {
+	if errors.Is(err, syncops.ErrPushDeclined) {
+		fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+		return nil
+	}
+	if doc != nil {
+		pushReportHuman(cmd.OutOrStdout(), cmd.ErrOrStderr(), doc, fl)
+	}
+	if err == nil {
+		return nil
+	}
+
+	var ce *contract.Error
+	if !errors.As(err, &ce) {
+		return err
+	}
+	switch ce.Code {
+	case contract.CodeConflict:
+		if doc != nil {
+			pushReportConflicts(cmd.OutOrStderr(), doc.Conflicts)
+		}
+		// RenderError prints advice only from a *ui.CLIError.
+		return ui.Suggest(err, ce.Advice...)
+	case contract.CodeDistillRequired:
+		if prompt := pushAgentPrompt(ce.Details); prompt != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Share via your agent: %s\n", prompt)
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "ctx push --no-distill bypasses this guard; use it only deliberately.")
+	}
+	return err
+}
+
+// pushReportHuman prints the outcome of a push (or dry run) that returned a
+// document.
+func pushReportHuman(out, errOut io.Writer, doc *contract.PushDoc, fl pushFlags) {
+	for _, w := range doc.Warnings {
+		fmt.Fprintf(errOut, "warning: %s\n", w.Message)
+	}
+	switch {
+	case len(doc.Pushed) == 0 && len(doc.Conflicts) == 0:
+		fmt.Fprintln(out, "Nothing to push.")
+	case doc.DryRun && fl.noPreview:
+		fmt.Fprintf(out, "Would push %d page(s):\n", len(doc.Pushed))
+		for _, p := range doc.Pushed {
+			fmt.Fprintf(out, "  %s  (%s)\n", p.Path, p.Kind)
+		}
+	case doc.DryRun:
+		fmt.Fprintln(out, "(dry-run; no changes sent)")
+	default:
+		fmt.Fprintf(out, "Pushed %d page(s); HEAD=%s\n", len(doc.Pushed), shortSHA(doc.NewHead))
+	}
+	if len(doc.Skipped) > 0 {
+		fmt.Fprintf(out, "Skipped %d page(s):\n", len(doc.Skipped))
+		for _, s := range doc.Skipped {
+			fmt.Fprintf(out, "  %s  (%s)\n", s.Path, s.Reason)
+		}
+	}
+}
+
+// pushReportConflicts lists the pages the server refused, each with the
+// teammate's sha and the base the local edit started from.
+func pushReportConflicts(w io.Writer, conflicts []contract.PushConflict) {
+	fmt.Fprintf(w, "%d conflict(s):\n", len(conflicts))
+	for _, c := range conflicts {
+		base := "none"
+		if c.BaseSHA != "" {
+			base = shortSHA(c.BaseSHA)
+		}
+		fmt.Fprintf(w, "  %s: server=%s base=%s\n", c.Path, shortSHA(c.ServerSHA), base)
+	}
+}
+
+// pushAgentPrompt returns the distill_required details' agent prompt, or ""
+// when the details are missing.
+func pushAgentPrompt(details any) string {
+	switch d := details.(type) {
+	case *contract.DistillRequiredDetails:
+		if d != nil {
+			return d.AgentPrompt
+		}
+	case contract.DistillRequiredDetails:
+		return d.AgentPrompt
+	}
+	return ""
 }
 
 func shortSHA(sha string) string {

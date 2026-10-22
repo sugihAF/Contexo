@@ -5,11 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	gosync "sync"
 	"testing"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/diff"
 	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/syncops"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
 
 func TestSummarizeDiff_TrimAndCap(t *testing.T) {
@@ -81,13 +86,15 @@ func TestComputePushPreview_MixOfNewEditNoChange(t *testing.T) {
 	defer srv.Close()
 
 	client := sync.NewClient(srv.URL, "tok")
-	files := []sync.PushFile{
-		{Path: "new.md", Content: "---\nslug: new\ntype: concept\n---\nfresh body\n"},
-		{Path: "same.md", Content: "---\nslug: same\ntype: concept\n---\nbody\n"},
-		{Path: "edit.md", Content: "---\nslug: edit\ntype: concept\n---\n## Decision\nnew text\n"},
-		{Path: "broken.md", Content: "---\nslug: broken\ntype: concept\n---\nx\n"},
+	// new.md is an update the server no longer has: a 404 still previews
+	// as NEW.
+	plan := []syncops.PushPlanFile{
+		{Kind: contract.WriteUpdate, File: sync.PushFile{Path: "new.md", Content: "---\nslug: new\ntype: concept\n---\nfresh body\n"}},
+		{Kind: contract.WriteUpdate, File: sync.PushFile{Path: "same.md", Content: "---\nslug: same\ntype: concept\n---\nbody\n"}},
+		{Kind: contract.WriteUpdate, File: sync.PushFile{Path: "edit.md", Content: "---\nslug: edit\ntype: concept\n---\n## Decision\nnew text\n"}},
+		{Kind: contract.WriteUpdate, File: sync.PushFile{Path: "broken.md", Content: "---\nslug: broken\ntype: concept\n---\nx\n"}},
 	}
-	previews := computePushPreview(client, "repo", files)
+	previews := computePushPreview(client, "repo", plan)
 	if len(previews) != 4 {
 		t.Fatalf("want 4 previews, got %d", len(previews))
 	}
@@ -102,6 +109,107 @@ func TestComputePushPreview_MixOfNewEditNoChange(t *testing.T) {
 	}
 	if previews[3].Status != pushStatusError {
 		t.Errorf("broken.md: got %v want ERROR", previews[3].Status)
+	}
+}
+
+// A create file has no server version, so its preview is NEW without a
+// request; only the update file is read.
+func TestComputePushPreview_CreateSkipsRead(t *testing.T) {
+	var (
+		mu   gosync.Mutex
+		hits []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("X-Page-SHA", "abc1234")
+		_, _ = w.Write([]byte("---\nslug: old\ntype: concept\n---\n## Decision\nold\n"))
+	}))
+	defer srv.Close()
+
+	client := sync.NewClient(srv.URL, "tok")
+	plan := []syncops.PushPlanFile{
+		{Kind: contract.WriteCreate, File: sync.PushFile{Path: "wiki/concepts/new.md",
+			Content: "---\nslug: new\ntype: concept\n---\nfresh\n", ExpectAbsent: true}},
+		{Kind: contract.WriteUpdate, File: sync.PushFile{Path: "wiki/concepts/old.md",
+			Content: "---\nslug: old\ntype: concept\n---\n## Decision\nnew\n", ParentSHA: "abc1234"}},
+	}
+	previews := computePushPreview(client, "repo", plan)
+	if len(previews) != 2 {
+		t.Fatalf("want 2 previews, got %d", len(previews))
+	}
+	if previews[0].Path != "wiki/concepts/new.md" || previews[0].Status != pushStatusNew {
+		t.Errorf("create preview = %+v, want NEW for wiki/concepts/new.md", previews[0])
+	}
+	if previews[0].LineHint != "  [NEW]   wiki/concepts/new.md" {
+		t.Errorf("create line hint = %q", previews[0].LineHint)
+	}
+	if previews[1].Status != pushStatusEdit {
+		t.Errorf("update preview status = %v, want EDIT", previews[1].Status)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"/v1/repos/repo/pages/wiki/concepts/old.md"}
+	if !reflect.DeepEqual(hits, want) {
+		t.Errorf("server requests = %q, want only %q (a create file is never read)", hits, want)
+	}
+}
+
+// TestComputePushPreview_ConcurrencyAtMost4 pins E12: every per-page fan-out
+// in ctx, the preview's server reads included, keeps at most 4 requests in
+// flight.
+func TestComputePushPreview_ConcurrencyAtMost4(t *testing.T) {
+	var (
+		mu             gosync.Mutex
+		inFlight, peak int
+	)
+	release := make(chan struct{})
+	arrived := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		arrived <- struct{}{}
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Header().Set("X-Page-SHA", "abc1234")
+		_, _ = w.Write([]byte("---\nslug: p\ntype: concept\n---\nbody\n"))
+	}))
+	defer srv.Close()
+
+	plan := make([]syncops.PushPlanFile, 12)
+	for i := range plan {
+		plan[i] = syncops.PushPlanFile{Kind: contract.WriteUpdate, File: sync.PushFile{
+			Path: "wiki/concepts/p" + string(rune('a'+i)) + ".md", Content: "---\nslug: p\ntype: concept\n---\nnew\n"}}
+	}
+	done := make(chan []pushPreview)
+	go func() { done <- computePushPreview(sync.NewClient(srv.URL, "tok"), "repo", plan) }()
+
+	// Let the first wave arrive, give any extra request time to show up,
+	// then release everything.
+	for i := 0; i < 4; i++ {
+		<-arrived
+	}
+	extra := false
+	select {
+	case <-arrived:
+		extra = true
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if got := len(<-done); got != len(plan) {
+		t.Fatalf("previews = %d, want %d", got, len(plan))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if extra || peak > 4 {
+		t.Fatalf("preview reads in flight peaked at %d (extra=%v), want at most 4 (E12)", peak, extra)
 	}
 }
 
