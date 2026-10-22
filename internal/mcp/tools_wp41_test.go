@@ -113,3 +113,38 @@ func TestWP41_GFR4_ResolvedNoteBeforePushed(t *testing.T) {
 		t.Errorf("want 'Resolved %s' before 'Pushed 1 page(s)':\n%s", c.rel, text)
 	}
 }
+
+func TestWP41_GFR5_FullSHAsInPushText(t *testing.T) {
+	c := wp41ListingConflict(t)
+	s := mcpSyncMCP(t, c.agent)
+	brief := c.firstBrief(t, s)
+	ancestor := regexp.MustCompile(`ancestor \(both diverged from\):\s+(\S+)`).FindStringSubmatch(brief)
+	server := regexp.MustCompile(`server now:\s+(\S+)`).FindStringSubmatch(brief)
+	if ancestor == nil || server == nil {
+		t.Fatalf("brief lacks the ancestor or server line:\n%s", brief)
+	}
+	if ancestor[1] != c.ancestorSHA || server[1] != c.mateSHA {
+		t.Errorf("brief ancestor %q server %q, want the full %s and %s", ancestor[1], server[1], c.ancestorSHA, c.mateSHA)
+	}
+
+	c.merge()
+	text := mcpSyncText(mcpSyncCall(t, s, "ctx_push", mcpSyncResolved(c.rel)))
+	if want := "re-based on server " + c.mateSHA; !strings.Contains(text, want) {
+		t.Errorf("resolve note lacks %q:\n%s", want, text)
+	}
+	head := regexp.MustCompile(`HEAD=(\S+)`).FindStringSubmatch(text)
+	if head == nil || !wp41SHA40.MatchString(head[1]) {
+		t.Errorf("push head line has no full HEAD sha:\n%s", text)
+	}
+}
+
+func TestWP41_GFR5_BriefPrintsFullAncestorSHA(t *testing.T) {
+	const ancestorSHA = "abc123456abcdef0123456789abcdef012345678"
+	out := buildMergeBrief("push", []mergeItem{{
+		Path: mergeTestPath, AncestorSHA: ancestorSHA, Ancestor: []byte("a\n"),
+		Yours: []byte("b\n"), ServerSHA: mergeTestServerSHA, Server: []byte("c\n"),
+	}})
+	if want := "ancestor (both diverged from):  " + ancestorSHA + "\n"; !strings.Contains(out, want) {
+		t.Errorf("brief lacks %q:\n%s", want, out)
+	}
+}

@@ -77,9 +77,11 @@ func buildMergeBrief(origin string, items []mergeItem) string {
 	for i, it := range items {
 		paths[i] = it.Path
 		fmt.Fprintf(&sb, "─── FILE %d/%d: %s ───\n", i+1, len(items), it.Path)
+		// Both shas are printed in full, like every sha in the ctx_push and
+		// ctx_pull text (WP-4.1 GFR-5).
 		ancestor := "(none)"
 		if it.AncestorSHA != "" {
-			ancestor = shortMergeSHA(it.AncestorSHA)
+			ancestor = it.AncestorSHA
 		}
 		fmt.Fprintf(&sb, "  ancestor (both diverged from):  %s\n", ancestor)
 		fmt.Fprintf(&sb, "  server now:                     %s\n", it.ServerSHA)
@@ -187,11 +189,4 @@ func overlappingModifiedSections(yours, theirs *diff.SectionDiff) []string {
 		}
 	}
 	return both
-}
-
-func shortMergeSHA(s string) string {
-	if len(s) <= 7 {
-		return s
-	}
-	return s[:7]
 }

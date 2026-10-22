@@ -708,7 +708,7 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 		}
 		head = fmt.Sprintf("Pushed %d page(s)", len(doc.Pushed))
 		if doc.NewHead != "" {
-			head += "; HEAD=" + shortMCPSHA(doc.NewHead)
+			head += "; HEAD=" + doc.NewHead
 		}
 	}
 	// Every page that needs a merge goes into one brief; rest holds the
@@ -802,7 +802,7 @@ func (s *Server) resolveForPush(ctx context.Context, env syncops.Env, rel string
 	})
 	if err == nil {
 		briefForget(env.Root, rel)
-		out.notes = append(out.notes, fmt.Sprintf("Resolved %s: kept your version, re-based on server %s", rel, shortMCPSHA(known)))
+		out.notes = append(out.notes, fmt.Sprintf("Resolved %s: kept your version, re-based on server %s", rel, known))
 		return out, nil
 	}
 	c := ui.ToContractError(err)
@@ -1190,7 +1190,7 @@ func (s *Server) toolPull(ctx context.Context, args map[string]interface{}) *Too
 
 	head := fmt.Sprintf("Pulled %d page(s), adopted %d", len(doc.Written), len(doc.Adopted))
 	if doc.Head != "" {
-		head += "; HEAD=" + shortMCPSHA(doc.Head)
+		head += "; HEAD=" + doc.Head
 	}
 	lines := []string{head}
 	var kept []string
