@@ -616,7 +616,7 @@ func pushDistillError(g *GuardResult) *contract.Error {
 	return &contract.Error{
 		Code: contract.CodeDistillRequired,
 		Message: "push: " + pending +
-			"; share these pages through your agent so the reasoning trail is captured",
+			"; share these pages through your agent so the decision record is captured",
 		Details: g.Details,
 	}
 }
