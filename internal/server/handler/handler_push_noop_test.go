@@ -532,7 +532,8 @@ func TestCreateRepoLegacy_NoOwnerTakeover(t *testing.T) {
 	}
 
 	// An existing repo with no owner is NOT claimed through this deprecated
-	// route (orphans are claimed through POST /v1/repos).
+	// route (nor through POST /v1/repos: only the first sign-in adopts an
+	// ownerless repo).
 	if err := rig.store.Init("orphan"); err != nil {
 		t.Fatalf("init orphan: %v", err)
 	}
@@ -872,8 +873,9 @@ func TestPush_StatErrorNeverPurgesAnExistingRepo(t *testing.T) {
 // pushes to a new repo (the editor extension and an agent, say) must all
 // succeed. createOwnedRepo used to create the repo before adding the owner
 // row, so a push that lost the create race could check membership in between
-// and get 403 from its own owner's repo. Now the owner row exists before the
-// repo does, and repo creation is serialized.
+// and get 403 from its own owner's repo. Now repo creation is serialized, and
+// a push that finds the repo decides membership under createRepoMu, which the
+// creation holds until its owner row exists.
 func TestPush_SameUserConcurrentFirstPushAllSucceed(t *testing.T) {
 	rig := setupRig(t)
 	wp02WireSync(rig)

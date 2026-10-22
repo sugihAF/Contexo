@@ -93,9 +93,10 @@ func (s *Store) Create(repoID string) (created bool, err error) {
 	unlock := lockRepo(dir)
 	defer unlock()
 	// created must be definitive: callers treat a created repo as brand new
-	// (handler.createOwnedRepo drops stale membership rows). Only a .git that
-	// is certainly absent counts; any other stat error (EACCES, EMFILE, EIO)
-	// may hide an existing repo and is returned.
+	// (handler.createRepoAsOwner and createLegacyRepo purge the stale access
+	// rows of the id). Only a .git that is certainly absent counts; any other
+	// stat error (EACCES, EMFILE, EIO) may hide an existing repo and is
+	// returned.
 	if _, err := os.Stat(gitDir); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
