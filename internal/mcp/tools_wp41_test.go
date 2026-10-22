@@ -148,3 +148,38 @@ func TestWP41_GFR5_BriefPrintsFullAncestorSHA(t *testing.T) {
 		t.Errorf("brief lacks %q:\n%s", want, out)
 	}
 }
+
+func TestWP41_GFR6_IdenticalEditsNotConflicting(t *testing.T) {
+	const fm = "---\nslug: x\ntype: concept\n---\n"
+	ancestor := []byte(fm + "## Context\nOriginal context.\n\n## Notes\nOriginal notes.\n")
+	yours := []byte(fm + "## Context\nAlice's context.\n\n## Notes\nBob's notes.\n")
+	theirs := []byte(fm + "## Context\nOriginal context.\n\n## Notes\nBob's notes.\n")
+	out := buildMergeBrief("push", []mergeItem{{
+		Path: mergeTestPath, AncestorSHA: "abc123456", Ancestor: ancestor,
+		Yours: yours, ServerSHA: mergeTestServerSHA, Server: theirs,
+	}})
+	if strings.Contains(out, "CONFLICTING regions") {
+		t.Errorf("identical Notes edits are reported as conflicting:\n%s", out)
+	}
+	if !strings.Contains(out, "auto-mergeable in principle") {
+		t.Errorf("want the auto-mergeable note:\n%s", out)
+	}
+	if !strings.Contains(out, "Same change on both sides (keep it once):\n    ## Notes\n") {
+		t.Errorf("want ## Notes listed as the same change on both sides:\n%s", out)
+	}
+
+	// One section differs, one is identical: only the differing one conflicts.
+	yours = []byte(fm + "## Context\nAlice's context.\n\n## Notes\nBob's notes.\n")
+	theirs = []byte(fm + "## Context\nBob's context.\n\n## Notes\nBob's notes.\n")
+	out = buildMergeBrief("push", []mergeItem{{
+		Path: mergeTestPath, AncestorSHA: "abc123456", Ancestor: ancestor,
+		Yours: yours, ServerSHA: mergeTestServerSHA, Server: theirs,
+	}})
+	if !strings.Contains(out, "CONFLICTING regions (both sides changed):\n    ## Context — synthesize") ||
+		strings.Contains(out, "## Notes — synthesize") {
+		t.Errorf("want only ## Context under CONFLICTING regions:\n%s", out)
+	}
+	if !strings.Contains(out, "Same change on both sides (keep it once):\n    ## Notes\n") {
+		t.Errorf("want ## Notes listed as the same change on both sides:\n%s", out)
+	}
+}
