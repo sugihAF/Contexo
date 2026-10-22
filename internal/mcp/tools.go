@@ -33,7 +33,7 @@ func (s *Server) ListTools() []Tool {
 				"'sync my stripe knowledge to contexthub' or 'share this with the team'. Filter by " +
 				"feature (= tag), tag, or type to push a subset. If a capture buffer is present and the " +
 				"push includes concept/analysis pages, the tool will pause and ask you to write a source " +
-				"page first (a structured reasoning-trail page); then re-invoke with distill_done=true " +
+				"page first (a structured decision-record page); then re-invoke with distill_done=true " +
 				"and source_slug set. " +
 				"If any file in the batch has been modified on the server since your last pull, the tool " +
 				"returns a <MERGE_REQUIRED> directive with the ancestor + your + server versions and a list " +
@@ -47,7 +47,7 @@ func (s *Server) ListTools() []Tool {
 					"tag":          map[string]interface{}{"type": "string", "description": "Alias of feature"},
 					"type":         map[string]interface{}{"type": "string", "enum": []string{"concept", "entity", "source", "analysis"}},
 					"message":      map[string]interface{}{"type": "string", "description": "Commit message"},
-					"no_distill":   map[string]interface{}{"type": "boolean", "description": "Skip the reasoning-trail handshake for this push"},
+					"no_distill":   map[string]interface{}{"type": "boolean", "description": "Skip the decision-record handshake for this push"},
 					"distill_done": map[string]interface{}{"type": "boolean", "description": "Set true after authoring the source page that the previous PUSH_PAUSED response requested"},
 					"source_slug":  map[string]interface{}{"type": "string", "description": "Slug of the source page just written (required when distill_done=true)"},
 				},
@@ -80,9 +80,10 @@ func (s *Server) ListTools() []Tool {
 				"'concept' = how or why something works (e.g. how Stripe trials work in this codebase); " +
 				"'entity' = a named system, service, library, product, or database (e.g. Stripe, ChompChat, Redis) — " +
 				"its purpose, where it lives in the project, and gotchas; " +
-				"'source' = the reasoning trail behind a recent decision (usually auto-prompted by ctx_push's PUSH_PAUSED handshake); " +
+				"'source' = the decision record of a recent team decision (usually auto-prompted by ctx_push's PUSH_PAUSED handshake); " +
 				"'analysis' = a comparison or evaluation across options. " +
-				"Always include reasoning_summary and an Agent Reasoning section in the body explaining what was considered and rejected.",
+				"Always include reasoning_summary (a one-line summary of the decision) and a Rationale section in the body: " +
+				"the options the team considered and why the rejected ones were rejected.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"slug", "type", "body"},
@@ -158,7 +159,7 @@ func (s *Server) ListTools() []Tool {
 		{
 			Name: "ctx_capture_session",
 			Description: "Produce a template + the local capture buffer so you can author a structured source " +
-				"page (raw/sessions/<date>-<slug>.md) capturing the reasoning trail of the current session. " +
+				"page (raw/sessions/<date>-<slug>.md) capturing the decision record of the current session. " +
 				"Useful for mid-session checkpoints when the user says 'capture what we've decided so far'. " +
 				"Does NOT push. After calling this, write the page with ctx_write_page(type=source, ...).",
 			InputSchema: map[string]interface{}{
@@ -445,7 +446,7 @@ func (s *Server) buildDistillDirective(batch []*schema.Page) (string, bool) {
 	return strings.Join([]string{
 		"<PUSH_PAUSED reason=distill_required>",
 		"",
-		"Before pushing: capture the reasoning trail, then make sure every named system",
+		"Before pushing: write up the decision record, then make sure every named system",
 		"in this batch has its own entity page. Do the three steps below in order, then",
 		"re-invoke ctx_push with distill_done=true.",
 		"",
@@ -453,7 +454,7 @@ func (s *Server) buildDistillDirective(batch []*schema.Page) (string, bool) {
 		fmt.Sprintf("  type:              \"source\""),
 		fmt.Sprintf("  slug:              %q   (suggested; adjust topic to taste)", suggestedSlug),
 		fmt.Sprintf("  tags:              %v   (union of the batch's tags)", tags),
-		"  reasoning_summary: one-line distillation (<= 100 chars)",
+		"  reasoning_summary: one-line summary of the decision (<= 100 chars)",
 		"  body:              follow the TEMPLATE below",
 		"",
 		"TEMPLATE (drop sections that genuinely don't apply, keep them in this order):",
@@ -558,12 +559,12 @@ func (s *Server) toolCaptureSession(args map[string]interface{}) *ToolResult {
 	return textResult(strings.Join([]string{
 		"<CAPTURE_TEMPLATE>",
 		"",
-		"Author a 'source' page capturing the reasoning trail of this session. Call",
+		"Author a 'source' page capturing the decision record of this session. Call",
 		"ctx_write_page with:",
 		"",
 		fmt.Sprintf("  type:              \"source\""),
 		fmt.Sprintf("  slug:              %q   (rename to reflect the topic)", suggested),
-		"  reasoning_summary: one-line distillation (<= 100 chars)",
+		"  reasoning_summary: one-line summary of the decision (<= 100 chars)",
 		"  body:              follow the TEMPLATE below",
 		"",
 		"TEMPLATE:",
