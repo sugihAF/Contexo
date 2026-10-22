@@ -184,14 +184,12 @@
       "file": "error.repo_not_found.json",
       "schema": "ctx.error.v1",
       "command": [
-        "show",
-        "wiki/concepts/retry-policy.md",
-        "--at",
-        "server"
+        "pull",
+        "--json"
       ],
       "stream": "stderr",
       "exit_code": 8,
-      "sha256": "a724a9bfdbfd66ab2e47d45f471c5e64374ed6362dd24e44cbea8f01196f65f9"
+      "sha256": "6d5f01698d6759af917bc35b69b10dae76a818af782186ad616eb9a695684fd2"
     },
     {
       "file": "error.server_error.json",

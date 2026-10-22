@@ -554,9 +554,13 @@ func startOldServer(t testing.TB) *e2eServer {
 	return &e2eServer{TK: tk, Proxy: px, URL: px.URL, Key: tk.Key, Old: true}
 }
 
-// serverSHA returns the last commit touching rel in repo ("" when absent).
+// serverSHA returns the last commit touching rel in repo ("" when the path
+// or the whole repo is absent).
 func serverSHA(t testing.TB, s *e2eServer, repo, rel string) string {
 	t.Helper()
+	if !s.TK.Store.Exists(repo) {
+		return ""
+	}
 	pages, err := s.TK.Store.ListPages(repo)
 	if err != nil {
 		t.Fatalf("server list pages: %v", err)
@@ -708,10 +712,11 @@ func (px *recordingProxy) Records() []proxyRecord {
 	return append([]proxyRecord(nil), px.recs...)
 }
 
-// Reset forgets the recorded requests.
+// Reset forgets the recorded requests and any pending SetAfterList hook.
 func (px *recordingProxy) Reset() {
 	px.mu.Lock()
 	px.recs = nil
+	px.afterList = nil
 	px.mu.Unlock()
 }
 
@@ -761,7 +766,9 @@ func (px *recordingProxy) PushedFiles() []pushFile {
 
 // SetAfterList installs a one-shot hook that runs after the next listing
 // response arrives from the server and before it reaches the client. The
-// hook runs on the proxy goroutine: it must not call t.
+// hook runs on the proxy goroutine: it must not call t, and it must hand
+// its result back over a channel (a child process in between is no Go
+// happens-before edge, so a shared variable is a data race).
 func (px *recordingProxy) SetAfterList(fn func()) {
 	px.mu.Lock()
 	px.afterList = fn

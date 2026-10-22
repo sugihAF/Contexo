@@ -206,14 +206,23 @@ func gopPartialConflict(g *goldenEnv) ctxResult {
 	editPage(g.t, a, pageRel(p1), "Alice: batch at 03:00.")
 	editPage(g.t, a, pageRel(p2), "Alice: also owns refunds.")
 
-	var hookRes ctxResult
-	var hookErr error
+	type hookOut struct {
+		r   ctxResult
+		err error
+	}
+	done := make(chan hookOut, 1)
 	srv.Proxy.SetAfterList(func() {
-		hookRes, hookErr = execCtx(bin, b, nil, "push", "--json", "--yes")
+		r, err := execCtx(bin, b, nil, "push", "--json", "--yes")
+		done <- hookOut{r, err}
 	})
 	r := runCtx(g.t, a, "push", "--json", "--yes")
-	if hookErr != nil || hookRes.Exit != 0 {
-		g.t.Fatalf("teammate push in the race hook: %v\n%s", hookErr, hookRes)
+	select {
+	case h := <-done:
+		if h.err != nil || h.r.Exit != 0 {
+			g.t.Fatalf("teammate push in the race hook: %v\n%s", h.err, h.r)
+		}
+	default:
+		g.t.Fatalf("the race hook did not run (no listing reached the proxy)\n%s", r)
 	}
 	gopCheckPartialConflict(g.t, r, pageRel(p1), pageRel(p2))
 	return r

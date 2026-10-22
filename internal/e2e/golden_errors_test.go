@@ -79,9 +79,11 @@ func goldenErrorGroups() []goldenGroup {
 			return geSynthetic(g, http.StatusTooManyRequests, `{"error":"rate limit exceeded"}`)
 		}),
 		geGroup(contract.CodeRepoNotFound, func(g *goldenEnv) ctxResult {
+			// pull's listing names the code in its message; show and resolve
+			// raise the same code with the legacy "sync: page not found" text.
 			srv := g.server()
-			a := g.user(srv, "alice", withRepo("missing-repo"), withPages(conceptPage("retry-policy", "Retry three times.")))
-			return runCtx(g.t, a, "show", "wiki/concepts/retry-policy.md", "--at", "server")
+			a := g.user(srv, "alice", withRepo("missing-repo"))
+			return runCtx(g.t, a, "pull", "--json")
 		}),
 		geGroup(contract.CodePageNotFound, func(g *goldenEnv) ctxResult {
 			a, _ := geProject(g)
