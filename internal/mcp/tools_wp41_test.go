@@ -100,3 +100,16 @@ func TestWP41_GFR3_BriefOnlyHasNoPushedZero(t *testing.T) {
 		t.Errorf("the reply starts with %q, want the brief", strings.SplitN(text, "\n", 2)[0])
 	}
 }
+
+func TestWP41_GFR4_ResolvedNoteBeforePushed(t *testing.T) {
+	c := wp41ListingConflict(t)
+	s := mcpSyncMCP(t, c.agent)
+	c.firstBrief(t, s)
+	c.merge()
+	text := mcpSyncText(mcpSyncCall(t, s, "ctx_push", mcpSyncResolved(c.rel)))
+	resolvedAt := strings.Index(text, "Resolved "+c.rel)
+	pushedAt := strings.Index(text, "Pushed 1 page(s)")
+	if resolvedAt < 0 || pushedAt < 0 || resolvedAt > pushedAt {
+		t.Errorf("want 'Resolved %s' before 'Pushed 1 page(s)':\n%s", c.rel, text)
+	}
+}

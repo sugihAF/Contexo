@@ -736,8 +736,9 @@ func TestMCPPush_ResolvedThenPushSucceeds(t *testing.T) {
 	c.fx.px.Reset()
 	res := mcpSyncCall(t, c.s, "ctx_push", mcpSyncResolved(c.rel))
 	text := mcpSyncText(res)
-	if res.IsError || !strings.HasPrefix(text, "Pushed 1 page(s); HEAD=") {
-		t.Errorf("ctx_push(resolved=[%s]) = (isError %v) %q, want 'Pushed 1 page(s); HEAD=...'", c.rel, res.IsError, text)
+	// WP-4.1 GFR-4: the resolve note comes before the push it led to.
+	if res.IsError || !strings.HasPrefix(text, "Resolved "+c.rel+": ") || !strings.Contains(text, "\nPushed 1 page(s); HEAD=") {
+		t.Errorf("ctx_push(resolved=[%s]) = (isError %v) %q, want 'Resolved ...' then 'Pushed 1 page(s); HEAD=...'", c.rel, res.IsError, text)
 	}
 
 	body, _ := mcpSyncServerPage(t, c.fx, c.rel)
@@ -791,8 +792,8 @@ func TestMCPPush_ResolvedStaleServerReturnsFreshBrief(t *testing.T) {
 	c.fx.px.Reset()
 	res = mcpSyncCall(t, c.s, "ctx_push", mcpSyncResolved(c.rel))
 	text = mcpSyncText(res)
-	if res.IsError || !strings.HasPrefix(text, "Pushed 1 page(s); HEAD=") {
-		t.Errorf("re-merged ctx_push(resolved=[%s]) = (isError %v) %q, want 'Pushed 1 page(s); HEAD=...' (registry sha before the sidecar's)", c.rel, res.IsError, text)
+	if res.IsError || !strings.HasPrefix(text, "Resolved "+c.rel+": ") || !strings.Contains(text, "\nPushed 1 page(s); HEAD=") {
+		t.Errorf("re-merged ctx_push(resolved=[%s]) = (isError %v) %q, want 'Resolved ...' then 'Pushed 1 page(s); HEAD=...' (registry sha before the sidecar's)", c.rel, res.IsError, text)
 	}
 	body, _ = mcpSyncServerPage(t, c.fx, c.rel)
 	if want := mcpSyncNorm(t, merged2); !bytes.Equal(body, want) {

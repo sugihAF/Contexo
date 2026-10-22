@@ -711,9 +711,9 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 			head += "; HEAD=" + shortMCPSHA(doc.NewHead)
 		}
 	}
-	lines := append([]string(nil), notes...)
-
-	// Every page that needs a merge goes into one brief.
+	// Every page that needs a merge goes into one brief; rest holds the
+	// other skips and the warnings.
+	var rest []string
 	var conflicts []mergeItem
 	seen := map[string]bool{}
 	add := func(it mergeItem) {
@@ -731,10 +731,10 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 				add(s.mergeItemFor(ctx, env, sk.Path, sk.ServerSHA, ""))
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("Skipped %s (%s): %s", sk.Path, sk.Reason, pushSkipFix(sk)))
+			rest = append(rest, fmt.Sprintf("Skipped %s (%s): %s", sk.Path, sk.Reason, pushSkipFix(sk)))
 		}
 		for _, w := range doc.Warnings {
-			lines = append(lines, "Warning: "+w.Message)
+			rest = append(rest, "Warning: "+w.Message)
 		}
 	}
 	for _, rel := range plan.conflicts {
@@ -743,13 +743,17 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 	for _, it := range briefs {
 		add(it)
 	}
+
+	// The resolve notes come first: they happened before the push they led
+	// to (WP-4.1 GFR-4). A push that sent nothing and only asks for a merge
+	// has no "Pushed 0 page(s)" line (WP-4.1 GFR-3).
+	lines := append([]string(nil), notes...)
+	if head != "" && (len(doc.Pushed) > 0 || len(conflicts) == 0) {
+		lines = append(lines, head)
+	}
+	lines = append(lines, rest...)
 	if len(conflicts) > 0 {
 		lines = append(lines, s.renderBrief(env, "push", conflicts))
-	}
-	// A push that sent nothing and only asks for a merge does not open
-	// with "Pushed 0 page(s)" (WP-4.1 GFR-3).
-	if head != "" && (len(doc.Pushed) > 0 || len(conflicts) == 0) {
-		lines = append([]string{head}, lines...)
 	}
 	if len(lines) == 0 {
 		return textResult("Nothing to push: no changed pages match the filters")
