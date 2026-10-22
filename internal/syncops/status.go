@@ -46,6 +46,11 @@ func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc,
 
 	var remote map[string]string // nil: no live listing (E9 offline rule)
 	var meta map[string]sync.PageMeta
+	if !o.Offline && env.Online() {
+		remote, meta, _, _ = statusOnline(ctx, env, doc, now)
+	}
+	// Read the local state only now: EnsureBase may have rewritten
+	// state.json, bases.json and conflicts.json (E5 step 4).
 	view, err := syncstate.LoadView(hub, remote)
 	if err != nil {
 		return nil, Wrap(err, contract.CodeInternal, "status")
@@ -97,6 +102,68 @@ func statusNewDoc(env Env, now time.Time, offline bool) *contract.StatusDoc {
 		Captures: contract.CaptureInfo{Sessions: []contract.CaptureSession{}},
 		Warnings: []contract.Warning{},
 	}
+}
+
+// statusOnline makes status's one ListPages call and reads ServerInfo right
+// after it, before EnsureBase's requests can change what it reports
+// (deviation 14). On success it fills server, auth and remote, runs
+// EnsureBase over the live listing, and returns the listing as path -> sha
+// and as entries by path, plus EnsureBase's warnings and error. A failed
+// listing returns a nil map: the E9 offline rule applies.
+func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now time.Time) (map[string]string, map[string]sync.PageMeta, []contract.Warning, error) {
+	listing, lerr := env.Remote.ListPages(env.RepoID)
+	ver, caps, known := env.Remote.ServerInfo()
+	doc.Server.Version = ver
+	doc.Server.CapabilitiesKnown = known
+	doc.Server.Capabilities = append([]contract.ServerCapability{}, caps...)
+	if lerr != nil {
+		return nil, nil, nil, nil
+	}
+
+	if listing == nil {
+		listing = []sync.PageMeta{}
+	}
+	remote := make(map[string]string, len(listing))
+	meta := make(map[string]sync.PageMeta, len(listing))
+	for _, m := range listing {
+		remote[m.Path] = m.SHA
+		meta[m.Path] = m
+	}
+	exists := true
+	doc.Auth.State = contract.AuthAuthenticated
+	doc.Remote = contract.RemoteInfo{
+		Source:     contract.RemoteLive,
+		FetchedAt:  contract.TimePtr(now),
+		RepoExists: &exists,
+		Head:       statusHead(listing),
+		PageCount:  len(listing),
+	}
+	res, err := statusEnsureBase(ctx, env, EnsureBaseOptions{Listing: listing, Locked: false})
+	var warnings []contract.Warning
+	if res != nil {
+		warnings = res.Warnings
+	}
+	return remote, meta, warnings, err
+}
+
+// statusHead is remote.head (R1): the sha of the listing entry with the
+// newest time. ListPages carries no repo HEAD, so it is "" when the listing
+// is empty or the newest time is shared by different shas.
+func statusHead(listing []sync.PageMeta) string {
+	head, ambiguous := "", false
+	var newest time.Time
+	for i, m := range listing {
+		switch {
+		case i == 0 || m.Time.After(newest):
+			head, newest, ambiguous = m.SHA, m.Time, false
+		case m.Time.Equal(newest) && m.SHA != head:
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return head
 }
 
 // statusEntry builds the PageEntry of one classified path. Frontmatter

@@ -525,3 +525,247 @@ func TestStatus_NotInitialized(t *testing.T) {
 		}
 	}
 }
+
+// st11OrderRemote wraps a FakeRemote and records the order of every Remote
+// call, ServerInfo included. info, when set, replaces ServerInfo's answer.
+type st11OrderRemote struct {
+	*syncopstest.FakeRemote
+	calls []string
+	info  func() (string, []contract.ServerCapability, bool)
+}
+
+func (r *st11OrderRemote) PushPages(repoID string, req *sync.PushRequest) (*sync.PushResponse, error) {
+	r.calls = append(r.calls, "PushPages")
+	return r.FakeRemote.PushPages(repoID, req)
+}
+
+func (r *st11OrderRemote) PullPages(repoID, since string) (*sync.PullResponse, error) {
+	r.calls = append(r.calls, "PullPages")
+	return r.FakeRemote.PullPages(repoID, since)
+}
+
+func (r *st11OrderRemote) ListPages(repoID string) ([]sync.PageMeta, error) {
+	r.calls = append(r.calls, "ListPages")
+	return r.FakeRemote.ListPages(repoID)
+}
+
+func (r *st11OrderRemote) ReadPage(repoID, path string) ([]byte, string, error) {
+	r.calls = append(r.calls, "ReadPage")
+	return r.FakeRemote.ReadPage(repoID, path)
+}
+
+func (r *st11OrderRemote) ReadPageAt(repoID, path, sha string) ([]byte, string, error) {
+	r.calls = append(r.calls, "ReadPageAt")
+	return r.FakeRemote.ReadPageAt(repoID, path, sha)
+}
+
+func (r *st11OrderRemote) ServerInfo() (string, []contract.ServerCapability, bool) {
+	r.calls = append(r.calls, "ServerInfo")
+	if r.info != nil {
+		return r.info()
+	}
+	return r.FakeRemote.ServerInfo()
+}
+
+// st11OverrideEnsureBase replaces the statusEnsureBase seam for the test.
+func st11OverrideEnsureBase(t testing.TB, fn func(context.Context, Env, EnsureBaseOptions) (*EnsureBaseResult, error)) {
+	t.Helper()
+	prev := statusEnsureBase
+	statusEnsureBase = fn
+	t.Cleanup(func() { statusEnsureBase = prev })
+}
+
+// st11Listing is the fake's listing by path (one extra, counted request).
+func st11Listing(t testing.TB, fr *syncopstest.FakeRemote) map[string]sync.PageMeta {
+	t.Helper()
+	listing, err := fr.ListPages("acme-kb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]sync.PageMeta{}
+	for _, m := range listing {
+		out[m.Path] = m
+	}
+	return out
+}
+
+// st11LiveSide is the live remote side status must build from m.
+func st11LiveSide(m sync.PageMeta) *contract.RemoteSide {
+	return &contract.RemoteSide{SHA: m.SHA, Author: m.Author, Email: m.Email, Time: contract.TimePtr(m.Time), Message: m.Message}
+}
+
+func TestStatus_Online_IncomingAndConflict(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const a, b = "wiki/concepts/a.md", "wiki/concepts/b.md"
+
+	a1 := st11Page(testkit.PageSpec{Slug: "a", Body: "one"})
+	sa1 := fr.Seed(a, a1)
+	st11SeedBase(t, env, a, a1, sa1)
+	fr.Seed(a, st11Page(testkit.PageSpec{Slug: "a", Body: "two (teammate)"}))
+	st11Write(t, env, a, a1)
+
+	b1 := st11Page(testkit.PageSpec{Slug: "b", Body: "one"})
+	sb1 := fr.Seed(b, b1)
+	st11SeedBase(t, env, b, b1, sb1)
+	fr.Seed(b, st11Page(testkit.PageSpec{Slug: "b", Body: "two (teammate)"}))
+	st11Write(t, env, b, st11Page(testkit.PageSpec{Slug: "b", Body: "two (mine)"}))
+
+	doc := st11Status(t, env, StatusOptions{})
+	live := st11Listing(t, fr)
+
+	ea := st11Entry(t, doc, a)
+	if ea.State != contract.StateIncoming || ea.Base == nil || ea.Base.SHA != sa1 {
+		t.Fatalf("a = %+v", ea)
+	}
+	if want := st11LiveSide(live[a]); !reflect.DeepEqual(ea.Remote, want) {
+		t.Fatalf("a remote = %+v, want %+v", ea.Remote, want)
+	}
+	if ea.Remote.Author != "Seed" || ea.Remote.Email != "seed@acme.dev" || ea.Remote.Message != "seed "+a {
+		t.Fatalf("a remote = %+v", ea.Remote)
+	}
+	eb := st11Entry(t, doc, b)
+	if eb.State != contract.StateConflict || eb.ConflictKind != contract.ConflictBothModified {
+		t.Fatalf("b = %+v", eb)
+	}
+	if want := st11LiveSide(live[b]); !reflect.DeepEqual(eb.Remote, want) {
+		t.Fatalf("b remote = %+v, want %+v", eb.Remote, want)
+	}
+	if doc.Counts.Incoming != 1 || doc.Counts.Conflict != 1 || doc.Counts.Behind != 1 || doc.Counts.Ahead != 0 {
+		t.Fatalf("counts = %+v", doc.Counts)
+	}
+	if doc.Offline || doc.Remote.Source != contract.RemoteLive {
+		t.Fatalf("offline %v remote %+v", doc.Offline, doc.Remote)
+	}
+}
+
+func TestStatus_RemoteOnlyIsIncomingNew(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const p = "wiki/concepts/remote.md"
+	fr.Seed(p, st11Page(testkit.PageSpec{Slug: "remote"}))
+
+	doc := st11Status(t, env, StatusOptions{})
+	e := st11Entry(t, doc, p)
+	if e.State != contract.StateIncomingNew || e.Local != nil || e.Base != nil || e.Type != "" {
+		t.Fatalf("remote-only = %+v", e)
+	}
+	if want := st11LiveSide(st11Listing(t, fr)[p]); !reflect.DeepEqual(e.Remote, want) {
+		t.Fatalf("remote side = %+v, want %+v", e.Remote, want)
+	}
+	if doc.Counts.IncomingNew != 1 || doc.Counts.Behind != 1 {
+		t.Fatalf("counts = %+v", doc.Counts)
+	}
+}
+
+func TestStatus_NewLocalExistingOnServerIsBothAdded(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const p = "wiki/entities/gateway.md"
+	sr := fr.Seed(p, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "theirs"}))
+	mine := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "mine"})
+	st11Write(t, env, p, mine)
+
+	doc := st11Status(t, env, StatusOptions{})
+	e := st11Entry(t, doc, p)
+	if e.State != contract.StateConflict || e.ConflictKind != contract.ConflictBothAdded {
+		t.Fatalf("entry = %+v", e)
+	}
+	if e.Base != nil || e.Local == nil || e.Local.Hash != syncstate.Hash(mine) || e.Remote == nil || e.Remote.SHA != sr {
+		t.Fatalf("sides: local %+v base %+v remote %+v", e.Local, e.Base, e.Remote)
+	}
+}
+
+func TestStatus_OneRequestOnline(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	for _, slug := range []string{"a", "b", "c"} {
+		rel := "wiki/entities/" + slug + ".md"
+		data := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: slug})
+		st11SeedBase(t, env, rel, data, fr.Seed(rel, data))
+		st11Write(t, env, rel, data)
+	}
+
+	doc := st11Status(t, env, StatusOptions{})
+	if got := fr.Requests(); !reflect.DeepEqual(got, map[string]int{"ListPages": 1}) {
+		t.Fatalf("requests = %v, want exactly one ListPages", got)
+	}
+	if doc.Counts.Unchanged != 3 || len(doc.Pages) != 3 {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+	r := doc.Remote
+	if r.Source != contract.RemoteLive || r.RepoExists == nil || !*r.RepoExists || r.PageCount != 3 || r.Error != nil {
+		t.Fatalf("remote = %+v", r)
+	}
+	if r.FetchedAt == nil || !r.FetchedAt.Equal(doc.GeneratedAt) {
+		t.Fatalf("fetched_at %v != generated_at %v", r.FetchedAt, doc.GeneratedAt)
+	}
+	if r.Head != fr.Head() {
+		t.Fatalf("head = %q, want newest seed %q", r.Head, fr.Head())
+	}
+	if doc.Auth.State != contract.AuthAuthenticated {
+		t.Fatalf("auth.state = %q", doc.Auth.State)
+	}
+	wantCaps := []contract.ServerCapability{contract.SrvPagesAt, contract.SrvExpectAbsent, contract.SrvWritePathSHA}
+	if doc.Server.Version != "0.7.0-fake" || !doc.Server.CapabilitiesKnown || !reflect.DeepEqual(doc.Server.Capabilities, wantCaps) {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	if len(doc.Warnings) != 0 {
+		t.Fatalf("warnings = %+v", doc.Warnings)
+	}
+}
+
+func TestStatus_ServerInfoFromListingOnly(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	or := &st11OrderRemote{FakeRemote: fr}
+	env := st11Env(t, or)
+	const a = "wiki/entities/a.md"
+	data := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "a"})
+	st11SeedBase(t, env, a, data, fr.Seed(a, data))
+	st11Write(t, env, a, data)
+	st11OverrideEnsureBase(t, func(_ context.Context, env Env, _ EnsureBaseOptions) (*EnsureBaseResult, error) {
+		if _, _, err := env.Remote.ReadPage(env.RepoID, a); err != nil {
+			t.Errorf("ReadPage: %v", err)
+		}
+		return &EnsureBaseResult{}, nil
+	})
+
+	doc := st11Status(t, env, StatusOptions{})
+	if want := []string{"ListPages", "ServerInfo", "ReadPage"}; !reflect.DeepEqual(or.calls, want) {
+		t.Fatalf("call order = %v, want %v (ServerInfo once, right after the listing)", or.calls, want)
+	}
+	if st11Entry(t, doc, a).State != contract.StateUnchanged {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+}
+
+func TestStatus_HeadAmbiguousOmitted(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		listing []sync.PageMeta
+		want    string
+	}{
+		{"empty", []sync.PageMeta{}, ""},
+		{"nil", nil, ""},
+		{"unique newest", []sync.PageMeta{
+			{Path: "a", SHA: "s1", Time: t0}, {Path: "b", SHA: "s3", Time: t0.Add(2 * time.Second)},
+			{Path: "c", SHA: "s2", Time: t0.Add(time.Second)},
+		}, "s3"},
+		{"newest shared by one commit", []sync.PageMeta{
+			{Path: "a", SHA: "s2", Time: t0.Add(time.Second)}, {Path: "b", SHA: "s2", Time: t0.Add(time.Second)},
+			{Path: "c", SHA: "s1", Time: t0},
+		}, "s2"},
+		{"newest time, different shas", []sync.PageMeta{
+			{Path: "a", SHA: "s1", Time: t0.Add(time.Second)}, {Path: "b", SHA: "s2", Time: t0.Add(time.Second)},
+		}, ""},
+		{"tie below a unique newest", []sync.PageMeta{
+			{Path: "a", SHA: "s1", Time: t0}, {Path: "b", SHA: "s2", Time: t0},
+			{Path: "c", SHA: "s3", Time: t0.Add(time.Second)},
+		}, "s3"},
+	} {
+		if got := statusHead(tc.listing); got != tc.want {
+			t.Errorf("%s: statusHead = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
