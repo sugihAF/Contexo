@@ -556,8 +556,9 @@ type mcpSyncConflictFix struct {
 // teammate, edits it on both sides, and lets the teammate's push land
 // right before the agent's push request reaches the server: the agent's
 // ctx_push then gets a real 409 (the race of WP-1.2 R16; a teammate push
-// that lands before the agent's listing is skipped as a conflict without
-// a sidecar instead). It asserts the first MERGE_REQUIRED.
+// that lands before the agent's listing is skipped as a conflict, which
+// since WP-4.1 GFR-1 writes the same push sidecar, see tools_wp41_test.go).
+// It asserts the first MERGE_REQUIRED.
 func mcpSyncConflictSetup(t *testing.T) *mcpSyncConflictFix {
 	t.Helper()
 	fx := mcpSyncServer(t)
