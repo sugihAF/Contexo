@@ -7,26 +7,58 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sugihAF/contexo/internal/syncops"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
 )
 
-// newShowCmd is the hidden wave-0 stub of `ctx show <relpath> --at
-// base|server|<sha>`. Owner: WP-1.4, which replaces RunE and unhides it.
+func init() {
+	registerCapability(contract.CapShowBase)
+	registerCapability(contract.CapShowServer)
+	registerCapability(contract.CapShowSHA)
+}
+
+// newShowCmd is `ctx show <relpath> --at base|server|<sha>` (WP-1.4), the
+// content source of the extension's read-only contexo: documents. Success
+// writes only the page bytes to stdout (no added newline, CRLF and BOM
+// kept) and nothing to stderr.
 //
 // show is always machine mode (E20/E21): its hidden --json flag reads true
 // and cannot be turned off, so ui.DetectMode and ui.EnvelopeMode read it like
 // any --json flag and internal/ui/mode.go needs no edit.
+//
+// The checks run cheapest and most specific first: cobra's argument and
+// flag rules, then the path and --at rules (no I/O), then the hub, and only
+// for the network variants the credentials and repo id. A bad path is
+// therefore invalid_path even in an uninitialised or unauthenticated
+// project, and --at base never needs credentials.
 func newShowCmd() *cobra.Command {
 	var at string
 	cmd := &cobra.Command{
-		Use:    "show <relpath> --at base|server|<sha>",
-		Short:  "Print a page's base, server or historical bytes",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
+		Use:   "show <relpath> --at base|server|<sha>",
+		Short: "Print a page's base, server or historical bytes",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := syncops.RequireHub(GetRootDir()); err != nil {
+			root := GetRootDir()
+			env := syncops.NewEnv(root, "", "", syncops.Author{}, nil)
+			rel, online, err := syncops.ShowPreflight(env, syncops.ShowOptions{Path: args[0], At: at})
+			if err != nil {
 				return err
 			}
-			return syncops.NotImplemented("show")
+			if _, err := syncops.RequireHub(root); err != nil {
+				return err
+			}
+			if online {
+				rr, client, err := openRemote(root, "show", true)
+				if err != nil {
+					return err
+				}
+				env = syncops.NewEnv(root, rr.RepoID, rr.ServerURL, syncops.Author{}, client)
+			}
+			b, err := syncops.Show(cmd.Context(), env, syncops.ShowOptions{Path: rel, At: at})
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(b)
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&at, "at", "", "base, server, or a commit sha")
