@@ -2,6 +2,7 @@ package syncops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/sugihAF/contexo/internal/sync"
 	"github.com/sugihAF/contexo/internal/syncops/contract"
 	"github.com/sugihAF/contexo/internal/syncstate"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
 // Owner: WP-1.1. Fields may be added, never renamed or removed.
@@ -137,8 +139,8 @@ type statusLive struct {
 // statusOnline makes status's one ListPages call and reads ServerInfo right
 // after it, before EnsureBase's requests can change what it reports
 // (deviation 14). On success it fills server, auth and remote and runs
-// EnsureBase over the live listing (E5 step 3). A failed listing leaves the
-// zero statusLive: the E9 offline rule applies.
+// EnsureBase over the live listing (E5 step 3). A failed listing never
+// fails status: statusRemoteFailure reports it.
 func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now time.Time) statusLive {
 	listing, lerr := env.Remote.ListPages(env.RepoID)
 	ver, caps, known := env.Remote.ServerInfo()
@@ -146,7 +148,7 @@ func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now tim
 	doc.Server.CapabilitiesKnown = known
 	doc.Server.Capabilities = append([]contract.ServerCapability{}, caps...)
 	if lerr != nil {
-		return statusLive{}
+		return statusRemoteFailure(doc, lerr, now)
 	}
 
 	if listing == nil {
@@ -175,6 +177,41 @@ func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now tim
 	}
 	live.ensureErr = err
 	return live
+}
+
+// statusRemoteFailure records a failed listing and returns the remote view
+// status continues with. A missing repo is a live answer (R2): every path
+// is absent and, with nothing on the server to repair from, EnsureBase is
+// not called. Any other failure becomes remote.error with the E9 offline
+// rule and no EnsureBase: a 401 rejects the credentials (R4), a server_error
+// may be a proxy page without Contexo headers, so the capabilities become
+// unknown (R3), and the rest leave auth unchecked (R5).
+func statusRemoteFailure(doc *contract.StatusDoc, lerr error, now time.Time) statusLive {
+	if errors.Is(lerr, sync.ErrRepoNotFound) {
+		exists := false
+		doc.Auth.State = contract.AuthAuthenticated
+		doc.Remote = contract.RemoteInfo{
+			Source:     contract.RemoteLive,
+			FetchedAt:  contract.TimePtr(now),
+			RepoExists: &exists,
+		}
+		return statusLive{remote: map[string]string{}, meta: map[string]sync.PageMeta{}}
+	}
+
+	ce := ui.ToContractError(lerr)
+	doc.Auth.State = contract.AuthUnchecked
+	switch ce.Code {
+	case contract.CodeAuthRejected:
+		doc.Auth.State = contract.AuthRejected
+		ce.Advice = []string{"ctx auth login"}
+	case contract.CodeServerError:
+		doc.Server.Version = ""
+		doc.Server.CapabilitiesKnown = false
+		doc.Server.Capabilities = []contract.ServerCapability{}
+	}
+	body := ce.Body()
+	doc.Remote.Error = &body
+	return statusLive{}
 }
 
 // statusServerOutdated is E13's server_outdated: the server's capabilities

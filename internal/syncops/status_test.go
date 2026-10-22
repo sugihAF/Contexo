@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -946,5 +947,291 @@ func TestStatus_WarningsMergedByCode(t *testing.T) {
 	want := []contract.Warning{{Code: contract.WarnBaseRepairSkipped, Message: "y skipped", Paths: []string{x, y, z}}}
 	if !reflect.DeepEqual(doc.Warnings, want) {
 		t.Fatalf("warnings = %+v, want %+v", doc.Warnings, want)
+	}
+}
+
+// st11ListError is the error the real client's ListPages returns for an
+// HTTP answer of status with body.
+func st11ListError(status int, body string) *sync.HTTPError {
+	return sync.NewHTTPError(status, []byte(body), fmt.Sprintf("sync: list pages (%d): %s", status, body), nil, false)
+}
+
+// st11ForbidEnsureBase fails the test when status calls EnsureBase.
+func st11ForbidEnsureBase(t testing.TB) {
+	t.Helper()
+	st11OverrideEnsureBase(t, func(context.Context, Env, EnsureBaseOptions) (*EnsureBaseResult, error) {
+		t.Error("EnsureBase called without a live listing")
+		return nil, nil
+	})
+}
+
+// st11Sidecar records rec (and content) in .sync/conflicts.json.
+func st11Sidecar(t testing.TB, env Env, rec syncstate.ConflictRecord, content []byte) {
+	t.Helper()
+	c, err := syncstate.OpenConflicts(env.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(rec, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// st11Fail* name st11FailureProject's pages: an edited page, an unchanged
+// page whose sidecar names a newer server version, and a new page. Without
+// a listing the E9 offline rule makes them modified, incoming (remote {sha}
+// from the sidecar) and new.
+const (
+	st11FailEdited  = "wiki/entities/edited.md"
+	st11FailSidecar = "wiki/entities/sidecar.md"
+	st11FailFresh   = "wiki/entities/fresh.md"
+)
+
+var st11FailServerSHA = st11SHA(40)
+
+func st11FailureProject(t testing.TB, env Env, fr *syncopstest.FakeRemote) {
+	t.Helper()
+	edited := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "edited", Body: "v1"})
+	st11SeedBase(t, env, st11FailEdited, edited, fr.Seed(st11FailEdited, edited))
+	st11Write(t, env, st11FailEdited, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "edited", Body: "v2"}))
+	side := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "sidecar"})
+	sb := fr.Seed(st11FailSidecar, side)
+	st11SeedBase(t, env, st11FailSidecar, side, sb)
+	st11Write(t, env, st11FailSidecar, side)
+	st11Sidecar(t, env, syncstate.ConflictRecord{
+		Path: st11FailSidecar, ServerSHA: st11FailServerSHA, BaseSHA: sb,
+		Kind: syncstate.KindBothModified, Source: syncstate.SourcePull,
+	}, []byte("theirs"))
+	st11Write(t, env, st11FailFresh, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "fresh"}))
+}
+
+// st11CheckFailurePages asserts the E9 offline rule over st11FailureProject.
+func st11CheckFailurePages(t testing.TB, doc *contract.StatusDoc) {
+	t.Helper()
+	if len(doc.Pages) != 3 {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+	if e := st11Entry(t, doc, st11FailEdited); e.State != contract.StateModified || e.Remote != nil {
+		t.Errorf("edited = %+v remote %+v, want modified without a remote side", e, e.Remote)
+	}
+	e := st11Entry(t, doc, st11FailSidecar)
+	if e.State != contract.StateIncoming || !reflect.DeepEqual(e.Remote, &contract.RemoteSide{SHA: st11FailServerSHA}) {
+		t.Errorf("sidecar = %+v remote %+v, want incoming with remote {sha} from the sidecar", e, e.Remote)
+	}
+	if e := st11Entry(t, doc, st11FailFresh); e.State != contract.StateNew || e.Remote != nil {
+		t.Errorf("fresh = %+v", e)
+	}
+}
+
+// st11FullCaps is a current server's capability list.
+var st11FullCaps = []contract.ServerCapability{contract.SrvPagesAt, contract.SrvExpectAbsent, contract.SrvWritePathSHA}
+
+func TestStatus_RemoteErrorIsReportedNotFatal(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	st11FailureProject(t, env, fr)
+	st11ForbidEnsureBase(t)
+	fr.FailNext("ListPages", &sync.NetworkError{Op: "list pages", Err: errors.New("dial tcp: no such host")})
+
+	doc, err := Status(context.Background(), env, StatusOptions{})
+	if err != nil || doc == nil {
+		t.Fatalf("Status = %v, %v; a remote failure must not fail status", doc, err)
+	}
+	st11CheckDoc(t, doc)
+	want := &contract.ErrorBody{Code: contract.CodeNetwork, Message: "sync: list pages: dial tcp: no such host",
+		Advice: []string{}, Retryable: true}
+	if !reflect.DeepEqual(doc.Remote.Error, want) {
+		t.Fatalf("remote.error = %+v, want %+v", doc.Remote.Error, want)
+	}
+	if doc.Offline || doc.Remote.Source != contract.RemoteNone || doc.Auth.State != contract.AuthUnchecked {
+		t.Fatalf("offline %v remote %+v auth %q", doc.Offline, doc.Remote, doc.Auth.State)
+	}
+	if doc.Server.CapabilitiesKnown || len(doc.Server.Capabilities) != 0 || doc.Server.Version != "" {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	st11CheckFailurePages(t, doc)
+	if got := fr.Requests(); !reflect.DeepEqual(got, map[string]int{"ListPages": 1}) {
+		t.Fatalf("requests = %v", got)
+	}
+	if len(doc.Warnings) != 0 {
+		t.Fatalf("warnings = %+v", doc.Warnings)
+	}
+}
+
+func TestStatus_AuthRejected(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	st11FailureProject(t, env, fr)
+	st11ForbidEnsureBase(t)
+	const body = `{"error":"invalid or expired token"}`
+	fr.FailNext("ListPages", st11ListError(401, body))
+
+	doc := st11Status(t, env, StatusOptions{})
+	want := &contract.ErrorBody{Code: contract.CodeAuthRejected, Message: "sync: list pages (401): " + body,
+		Advice: []string{"ctx auth login"}, HTTPStatus: 401}
+	if !reflect.DeepEqual(doc.Remote.Error, want) {
+		t.Fatalf("remote.error = %+v, want %+v", doc.Remote.Error, want)
+	}
+	if doc.Auth.State != contract.AuthRejected || doc.Remote.Source != contract.RemoteNone {
+		t.Fatalf("auth %q remote %+v", doc.Auth.State, doc.Remote)
+	}
+	// The 401 still carried the server's headers.
+	if !doc.Server.CapabilitiesKnown || !reflect.DeepEqual(doc.Server.Capabilities, st11FullCaps) ||
+		doc.Server.Version != "0.7.0-fake" {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	st11CheckFailurePages(t, doc)
+}
+
+func TestStatus_RepoMissing(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const kept, stale, fresh = "wiki/entities/kept.md", "wiki/entities/stale.md", "wiki/entities/fresh.md"
+	keptBytes := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "kept"})
+	st11SeedBase(t, env, kept, keptBytes, st11SHA(1))
+	st11Write(t, env, kept, keptBytes)
+	st11SetPageSHA(t, env, stale, st11SHA(2)) // no base record: stale
+	st11Write(t, env, stale, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "stale"}))
+	st11Write(t, env, fresh, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "fresh"}))
+	st11ForbidEnsureBase(t)
+	fr.FailNext("ListPages", st11ListError(404, `{"code":"repo_not_found","error":"repo not found"}`))
+
+	doc := st11Status(t, env, StatusOptions{})
+	r := doc.Remote
+	if r.Source != contract.RemoteLive || r.RepoExists == nil || *r.RepoExists || r.PageCount != 0 ||
+		r.Head != "" || r.Error != nil || r.FetchedAt == nil || !r.FetchedAt.Equal(doc.GeneratedAt) {
+		t.Fatalf("remote = %+v", r)
+	}
+	if doc.Auth.State != contract.AuthAuthenticated {
+		t.Fatalf("auth.state = %q", doc.Auth.State)
+	}
+	missing := []contract.NoteCode{contract.NoteMissingOnServer}
+	for path, notes := range map[string][]contract.NoteCode{kept: missing, stale: missing, fresh: {}} {
+		e := st11Entry(t, doc, path)
+		if e.State != contract.StateNew || !reflect.DeepEqual(e.Notes, notes) || e.Remote != nil {
+			t.Errorf("%s = %+v, want new with notes %v", path, e, notes)
+		}
+	}
+	if doc.Counts.New != 3 || len(doc.Warnings) != 0 {
+		t.Fatalf("counts %+v warnings %+v", doc.Counts, doc.Warnings)
+	}
+	if !doc.Server.CapabilitiesKnown || !reflect.DeepEqual(doc.Server.Capabilities, st11FullCaps) {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+}
+
+func TestStatus_ServerErrorCapsUnknown(t *testing.T) {
+	// An old server's 502 would report known capabilities and none of them:
+	// a proxy error page must not claim the server is outdated (R3).
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{OldServer: true})
+	env := st11Env(t, fr)
+	st11FailureProject(t, env, fr)
+	st11ForbidEnsureBase(t)
+	fr.FailNext("ListPages", st11ListError(502, "<html>502 Bad Gateway</html>"))
+
+	doc := st11Status(t, env, StatusOptions{})
+	e := doc.Remote.Error
+	if e == nil || e.Code != contract.CodeServerError || !e.Retryable || e.HTTPStatus != 502 {
+		t.Fatalf("remote.error = %+v", e)
+	}
+	if doc.Server.CapabilitiesKnown || len(doc.Server.Capabilities) != 0 || doc.Server.Version != "" {
+		t.Fatalf("server = %+v, want capabilities unknown", doc.Server)
+	}
+	if w := st11Warning(doc, contract.WarnServerOutdated); w != nil {
+		t.Fatalf("server_outdated during an outage: %+v", w)
+	}
+	if doc.Auth.State != contract.AuthUnchecked || doc.Remote.Source != contract.RemoteNone {
+		t.Fatalf("auth %q remote %+v", doc.Auth.State, doc.Remote)
+	}
+	st11CheckFailurePages(t, doc)
+}
+
+func TestStatus_ForbiddenIsRemoteError(t *testing.T) {
+	// R5, with the other listing failures that keep the answer's headers.
+	for _, tc := range []struct {
+		status int
+		body   string
+		code   contract.ErrorCode
+	}{
+		{403, `{"error":"forbidden"}`, contract.CodeForbidden},
+		{429, `{"error":"rate limited"}`, contract.CodeRateLimited},
+		{404, "404 page not found", contract.CodeServerUnsupported},
+		{402, `{"code":"repo_limit","error":"quota","limit":3}`, contract.CodeQuotaExceeded},
+		{400, `{"error":"bad request"}`, contract.CodeUsage},
+		{418, `{"error":"teapot"}`, contract.CodeInternal},
+	} {
+		fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+		env := st11Env(t, fr)
+		st11FailureProject(t, env, fr)
+		st11ForbidEnsureBase(t)
+		fr.FailNext("ListPages", st11ListError(tc.status, tc.body))
+
+		doc := st11Status(t, env, StatusOptions{})
+		e := doc.Remote.Error
+		if e == nil || e.Code != tc.code || e.HTTPStatus != tc.status || e.Advice == nil ||
+			e.Message != fmt.Sprintf("sync: list pages (%d): %s", tc.status, tc.body) ||
+			e.Retryable != contract.Retryable(tc.code) {
+			t.Fatalf("%d: remote.error = %+v, want code %s", tc.status, e, tc.code)
+		}
+		if doc.Auth.State != contract.AuthUnchecked || doc.Remote.Source != contract.RemoteNone {
+			t.Fatalf("%d: auth %q remote %+v", tc.status, doc.Auth.State, doc.Remote)
+		}
+		if !doc.Server.CapabilitiesKnown || !reflect.DeepEqual(doc.Server.Capabilities, st11FullCaps) {
+			t.Fatalf("%d: server = %+v, want the answer's capabilities", tc.status, doc.Server)
+		}
+		st11CheckFailurePages(t, doc)
+	}
+}
+
+func TestStatus_OfflineSidecarKeepsConflict(t *testing.T) {
+	env := st11Env(t, nil)
+	const a = "wiki/concepts/a.md"
+	sb, s2 := st11SHA(1), st11SHA(2)
+	st11SeedBase(t, env, a, st11Page(testkit.PageSpec{Slug: "a", Body: "base"}), sb)
+	st11Write(t, env, a, st11Page(testkit.PageSpec{Slug: "a", Body: "mine"}))
+	st11Sidecar(t, env, syncstate.ConflictRecord{
+		Path: a, ServerSHA: s2, BaseSHA: sb, Kind: syncstate.KindBothModified, Source: syncstate.SourcePush,
+	}, st11Page(testkit.PageSpec{Slug: "a", Body: "theirs"}))
+
+	before := st11TreeSum(t, env.HubDir)
+	doc := st11Status(t, env, StatusOptions{Offline: true})
+	if st11TreeSum(t, env.HubDir) != before {
+		t.Fatal("offline status changed the .contexo tree")
+	}
+	e := st11Entry(t, doc, a)
+	if e.State != contract.StateConflict || e.ConflictKind != contract.ConflictBothModified {
+		t.Fatalf("a = %+v, want conflict both_modified", e)
+	}
+	if !reflect.DeepEqual(e.Remote, &contract.RemoteSide{SHA: s2}) || e.Base == nil || e.Base.SHA != sb {
+		t.Fatalf("a remote %+v base %+v, want remote {sha: %s} only", e.Remote, e.Base, s2)
+	}
+	if doc.Remote.Source != contract.RemoteNone || doc.Counts.Conflict != 1 {
+		t.Fatalf("remote %+v counts %+v", doc.Remote, doc.Counts)
+	}
+}
+
+func TestStatus_SidecarOverlayOnline(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const p = "wiki/entities/gateway.md"
+	base := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "base"})
+	sb := fr.Seed(p, base)
+	st11SeedBase(t, env, p, base, sb)
+	st11Write(t, env, p, st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "gateway", Body: "mine"}))
+	st11Sidecar(t, env, syncstate.ConflictRecord{
+		Path: p, ServerSHA: st11SHA(9), Kind: syncstate.KindBothAdded, Source: syncstate.SourcePush,
+	}, nil)
+
+	doc := st11Status(t, env, StatusOptions{})
+	e := st11Entry(t, doc, p)
+	if e.State != contract.StateConflict || e.ConflictKind != contract.ConflictBothAdded {
+		t.Fatalf("entry = %+v, want conflict both_added (E9 online overlay)", e)
+	}
+	// Online, R comes only from the listing: the live side, not the sidecar's.
+	if want := st11LiveSide(st11Listing(t, fr)[p]); !reflect.DeepEqual(e.Remote, want) || e.Remote.SHA != sb {
+		t.Fatalf("remote = %+v, want %+v", e.Remote, want)
 	}
 }
