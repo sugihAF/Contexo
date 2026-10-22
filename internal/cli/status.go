@@ -1,186 +1,137 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"os"
-	goSync "sync"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sugihAF/contexo/internal/ui"
-
 	"github.com/sugihAF/contexo/internal/config"
-	"github.com/sugihAF/contexo/internal/schema"
-	"github.com/sugihAF/contexo/internal/store/pagestore"
-	"github.com/sugihAF/contexo/internal/sync"
+	"github.com/sugihAF/contexo/internal/syncops"
+	"github.com/sugihAF/contexo/internal/syncops/contract"
+	"github.com/sugihAF/contexo/internal/ui"
 )
 
+func init() {
+	registerCapability(contract.CapStatusJSON)
+	registerCapability(contract.CapStatusOffline)
+}
+
 func newStatusCmd() *cobra.Command {
-	var noDrift bool
+	var jsonOut, offline, noDrift bool
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show .contexo status and local-vs-server delta",
+		Short: "Show each page's local, base and server state",
+		Long: "status compares every page's working file, its last-synced base and the server's " +
+			"listing (one request), and lists what to push, pull, resolve or fix. --offline makes " +
+			"no request: server knowledge then comes only from recorded conflicts.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root := GetRootDir()
-			hubDir := config.ContexoDirPath(root)
-			u := ui.From(cmd)
-			out := cmd.OutOrStdout()
-
-			if _, err := os.Stat(hubDir); os.IsNotExist(err) {
-				fmt.Fprintln(out, "Not initialized (run 'ctx init')")
-				return nil
-			}
-
-			// remoteErr (not err: pagestore.Open below reuses that name) gates
-			// the drift check; rr is nil only for a corrupt config or
-			// credentials file.
-			rr, client, remoteErr := openRemote(root, "status", true)
-			if rr == nil {
-				return remoteErr
-			}
-
-			authed := rr.Token != ""
-			state := "connected"
-			if !authed {
-				state = "not authenticated"
-			} else if rr.ServerURL == "" {
-				state = "server unresolved"
-			}
-			u.Brand(state, authed && rr.ServerURL != "")
-			fmt.Fprintln(out)
-
-			u.Eyebrow("REMOTE")
-			if rr.ServerURL != "" {
-				u.Field("server", rr.ServerURL)
-			} else {
-				u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
-			}
-			if rr.Mismatch {
-				u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
-					rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
-			}
-			if rr.RepoID != "" {
-				u.Field("repo", rr.RepoID)
-			} else {
-				u.Field("repo", "(none — run 'ctx remote set-repo <id>')")
-			}
-			if authed {
-				if rr.Creds.UserName != "" {
-					u.Field("user", fmt.Sprintf("%s <%s>", rr.Creds.UserName, rr.Creds.UserEmail))
-				}
-				u.Field("auth", fmt.Sprintf("yes (%s)", rr.Creds.Kind()))
-			} else {
-				u.Field("auth", "no")
-			}
-			fmt.Fprintln(out)
-
-			store, err := pagestore.Open(hubDir)
-			if err != nil {
-				return nil
-			}
-			pages, _ := store.List(pagestore.Filter{})
-
-			// LoadState returns nil only when the state file exists but is
-			// unreadable or corrupt, and the error is deliberately discarded
-			// here (a bad state file should not break `ctx status`). Substitute
-			// an empty state so the loop below cannot nil-deref -- every page
-			// then reads as never-pushed, which is the honest answer when the
-			// sync state is unusable.
-			syncState, _ := sync.LoadState(hubDir)
-			if syncState == nil {
-				syncState = &sync.State{PageSHAs: map[string]string{}}
-			}
-
-			unpushed := 0
-			for _, p := range pages {
-				if _, known := syncState.PageSHAs[p.Frontmatter.RelPath()]; !known {
-					unpushed++
-				}
-			}
-
-			u.Eyebrow("KNOWLEDGE")
-			u.Field("pages", fmt.Sprintf("%d local · %d never pushed", len(pages), unpushed))
-			if syncState.LastPullSHA != "" {
-				u.Field("last pull", shortSHA(syncState.LastPullSHA))
-			} else {
-				u.Field("last pull", "(never)")
-			}
-
-			if !noDrift && remoteErr == nil {
-				t := u.Task("Checking server drift")
-				drifted := computeDriftedPages(client, rr.RepoID, pages, syncState)
-				t.Done("Checked %d pages", len(pages))
-
-				if len(drifted) > 0 {
-					fmt.Fprintln(out)
-					u.Warn("%d page(s) drifted on server", len(drifted))
-					for _, p := range drifted {
-						fmt.Fprintf(out, "    %s   %s → %s\n",
-							p.Path, shortSHA(p.LocalSHA), shortSHA(p.ServerSHA))
-					}
-					u.Hint("run", "ctx pull")
-				}
-			}
-
-			return nil
+			return statusRun(cmd, jsonOut, offline || noDrift)
 		},
 	}
-	cmd.Flags().BoolVar(&noDrift, "no-drift", false, "skip the per-page server-drift check (faster; offline-friendly)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the ctx.status.v1 document")
+	cmd.Flags().BoolVar(&offline, "offline", false, "make no network request")
+	// --no-drift predates --offline and stays as a hidden alias of it.
+	cmd.Flags().BoolVar(&noDrift, "no-drift", false, "alias of --offline")
+	_ = cmd.Flags().MarkHidden("no-drift")
 	return cmd
 }
 
-// driftConcurrency bounds in-flight server reads during the drift check.
-const driftConcurrency = 8
+// statusRun builds the status document and prints it as JSON or for a human.
+// Only a missing .contexo/ (not_initialized) or an engine failure is an error;
+// an unusable remote is reported inside the document (E22).
+func statusRun(cmd *cobra.Command, jsonOut, offline bool) error {
+	root, err := filepath.Abs(GetRootDir())
+	if err != nil {
+		return syncops.Wrap(err, contract.CodeInternal, "status: resolve root")
+	}
+	if _, err := syncops.RequireHub(root); err != nil {
+		if jsonOut {
+			return fmt.Errorf("status: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Not initialized (run 'ctx init')")
+		return nil
+	}
 
-// driftedPage describes a page that has changed on the server since the local
-// last-pulled sha. Used by `ctx status` to list a heads-up of pages that
-// would 409 on push (or surprise the user on read).
-type driftedPage struct {
-	Path      string
-	LocalSHA  string
-	ServerSHA string
+	// rr is nil only for a corrupt config or credentials file; status still
+	// renders then, with remote.error from rerr (R10).
+	rr, client, rerr := openRemote(root, "status", true)
+	var remote syncops.Remote
+	if !offline && rerr == nil {
+		remote = client
+	}
+	env := syncops.NewEnv(root, "", "", syncops.Author{}, remote)
+	if rr != nil {
+		env = syncops.NewEnv(root, rr.RepoID, rr.ServerURL, statusAuthor(rr), remote)
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	doc, err := syncops.Status(ctx, env, syncops.StatusOptions{Offline: offline})
+	if err != nil {
+		return err
+	}
+	// --offline asked for no server, so an unusable remote is no error then.
+	var unusable error
+	if !offline {
+		unusable = rerr
+	}
+	syncops.FillStatusIdentity(doc, rr, unusable)
+
+	if jsonOut {
+		return contract.WriteDoc(cmd.OutOrStdout(), doc)
+	}
+	statusRenderHuman(cmd, doc, rr)
+	return nil
 }
 
-// computeDriftedPages walks every locally-tracked page, asks the server for
-// its current sha, and returns the subset that has moved. Pages never pulled
-// (no entry in state.PageSHAs) are skipped — drift implies a baseline. Errors
-// per page are silently skipped; failure to detect drift should never break
-// the status output.
-// Checks run concurrently: this used to be one blocking round trip per page,
-// so a 40-page repo waited on 40 sequential requests. Each goroutine writes to
-// its own index, so the reported order is the page order and does not shuffle
-// between runs.
-func computeDriftedPages(client *sync.Client, repoID string, pages []*schema.Page, state *sync.State) []driftedPage {
-	found := make([]*driftedPage, len(pages))
-	sem := make(chan struct{}, driftConcurrency)
-	var wg goSync.WaitGroup
-
-	for i, p := range pages {
-		path := p.Frontmatter.RelPath()
-		localSHA, ok := state.PageSHAs[path]
-		if !ok || localSHA == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(i int, path, localSHA string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			_, serverSHA, err := client.ReadPage(repoID, path)
-			if err != nil || serverSHA == "" || serverSHA == localSHA {
-				return
-			}
-			found[i] = &driftedPage{Path: path, LocalSHA: localSHA, ServerSHA: serverSHA}
-		}(i, path, localSHA)
+// statusAuthor is the commit identity from the resolved credentials.
+func statusAuthor(rr *config.Remote) syncops.Author {
+	if rr.Creds == nil {
+		return syncops.Author{}
 	}
-	wg.Wait()
+	return syncops.Author{Name: rr.Creds.UserName, Email: rr.Creds.UserEmail}
+}
 
-	var drifted []driftedPage
-	for _, d := range found {
-		if d != nil {
-			drifted = append(drifted, *d)
-		}
+// statusRenderHuman prints doc for a person. rr (nil for a corrupt config)
+// supplies the identity block; the token itself is never printed.
+func statusRenderHuman(cmd *cobra.Command, doc *contract.StatusDoc, rr *config.Remote) {
+	u := ui.From(cmd)
+	out := cmd.OutOrStdout()
+	if rr == nil {
+		rr = &config.Remote{}
 	}
-	return drifted
+
+	authed := rr.Token != ""
+	state := "connected"
+	switch {
+	case !authed:
+		state = "not authenticated"
+	case rr.ServerURL == "":
+		state = "server unresolved"
+	case doc.Offline:
+		state = "offline"
+	}
+	u.Brand(state, authed && rr.ServerURL != "")
+	fmt.Fprintln(out)
+
+	u.Eyebrow("REMOTE")
+	if rr.ServerURL != "" {
+		u.Field("server", rr.ServerURL)
+	} else {
+		u.Field("server", "(unresolved — run 'ctx auth login --server <url>')")
+	}
+	if rr.Mismatch {
+		u.Warn("config server_url %s differs from your credentials' server; ctx uses %s. Only if you trust it, log in with its own dashboard: 'ctx auth login --server %s --dashboard <its dashboard URL>' (this replaces your global credentials)",
+			rr.ConfiguredServerURL, rr.ServerURL, rr.ConfiguredServerURL)
+	}
+	if rr.RepoID != "" {
+		u.Field("repo", rr.RepoID)
+	} else {
+		u.Field("repo", "(none — run 'ctx remote set-repo <id>')")
+	}
 }
