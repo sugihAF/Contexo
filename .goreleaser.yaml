@@ -5,6 +5,15 @@ version: 2
 
 project_name: contexo
 
+# Tag-pick trap: the final vX.Y.Z is tagged on the same commit as its last
+# vX.Y.Z-rc.N. GoReleaser picks the current tag with `git tag --points-at HEAD
+# --sort=-version:refname`, and plain version sort ranks the rc above the final
+# tag, so the final build would be stamped with the rc version. Treating "-" as
+# a prerelease suffix (git versionsort.suffix) sorts vX.Y.Z above vX.Y.Z-rc.N.
+# release.yml also pins GORELEASER_CURRENT_TAG to the pushed tag; keep both.
+git:
+  prerelease_suffix: "-"
+
 before:
   hooks:
     - go mod tidy
