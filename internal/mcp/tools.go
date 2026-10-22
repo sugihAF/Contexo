@@ -681,7 +681,7 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 	}
 
 	// Step 5: push the batch through the engine.
-	var lines []string
+	var head string
 	var doc *contract.PushDoc
 	if len(paths) > 0 {
 		if message == "" {
@@ -706,13 +706,12 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 				_ = buf.Archive()
 			}
 		}
-		head := fmt.Sprintf("Pushed %d page(s)", len(doc.Pushed))
+		head = fmt.Sprintf("Pushed %d page(s)", len(doc.Pushed))
 		if doc.NewHead != "" {
 			head += "; HEAD=" + shortMCPSHA(doc.NewHead)
 		}
-		lines = append(lines, head)
 	}
-	lines = append(lines, notes...)
+	lines := append([]string(nil), notes...)
 
 	// Every page that needs a merge goes into one brief.
 	var conflicts []mergeItem
@@ -746,6 +745,11 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 	}
 	if len(conflicts) > 0 {
 		lines = append(lines, s.renderBrief(env, "push", conflicts))
+	}
+	// A push that sent nothing and only asks for a merge does not open
+	// with "Pushed 0 page(s)" (WP-4.1 GFR-3).
+	if head != "" && (len(doc.Pushed) > 0 || len(conflicts) == 0) {
+		lines = append([]string{head}, lines...)
 	}
 	if len(lines) == 0 {
 		return textResult("Nothing to push: no changed pages match the filters")

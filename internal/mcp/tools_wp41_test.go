@@ -89,3 +89,14 @@ func TestWP41_GFR2_ResolvedAfterRestartPushes(t *testing.T) {
 		t.Errorf("server %s = %q, want the merged page %q", c.rel, body, want)
 	}
 }
+
+func TestWP41_GFR3_BriefOnlyHasNoPushedZero(t *testing.T) {
+	c := wp41ListingConflict(t)
+	text := c.firstBrief(t, mcpSyncMCP(t, c.agent))
+	if regexp.MustCompile(`(?m)^Pushed 0 page\(s\)`).MatchString(text) {
+		t.Errorf("a ctx_push that only returns a merge brief prints 'Pushed 0 page(s)':\n%s", text)
+	}
+	if !strings.HasPrefix(text, "<MERGE_REQUIRED origin=push>") {
+		t.Errorf("the reply starts with %q, want the brief", strings.SplitN(text, "\n", 2)[0])
+	}
+}
