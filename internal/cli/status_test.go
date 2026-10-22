@@ -598,6 +598,108 @@ func TestStatusJSON_OfflineHasNoRemoteError(t *testing.T) {
 	}
 }
 
+// st11TreeSum hashes every path under dir with its type, bytes and mtime, so
+// a rewrite with the same bytes, or a temp file created and removed (the
+// parent directory's mtime moves), changes the sum.
+func st11TreeSum(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		fmt.Fprintf(&b, "%s\x00%s\x00%d\x00", filepath.ToSlash(rel), info.Mode().Type(), info.ModTime().UnixNano())
+		if d.Type().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			b.Write(data)
+		}
+		b.WriteByte(0)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// --offline (and its --no-drift alias), JSON or human, writes nothing in the
+// project: no .sync/ on a project that has none, no lock or .gitignore, no
+// rewritten state, base, sidecar or capture file. It sends nothing either.
+func TestStatusJSON_OfflineWritesNothing(t *testing.T) {
+	trap := st11TrapServer(t)
+	runs := [][]string{
+		{"status", "--json", "--offline"},
+		{"status", "--offline"},
+		{"status", "--json", "--no-drift"},
+	}
+
+	// A project that never synced has no .sync/, and status must not make one.
+	bare := testkit.NewProject(t, testkit.ProjectOptions{
+		ServerURL: trap.URL, Key: "st11-key", RepoID: "st11-bare", Pages: st11Pages,
+	})
+	before := st11TreeSum(t, bare.Root)
+	for _, args := range runs {
+		if code, _, stderr := st11Run(t, append(args, "--root", bare.Root)...); code != 0 {
+			t.Fatalf("%q: exit %d, stderr %q", args, code, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(bare.HubDir, ".sync")); !os.IsNotExist(err) {
+		t.Errorf(".sync/ exists after offline status (stat err %v)", err)
+	}
+	if after := st11TreeSum(t, bare.Root); after != before {
+		t.Error("offline status changed the never-synced project")
+	}
+
+	// A synced project with a base, a sidecar and a capture buffer.
+	p := testkit.NewProject(t, testkit.ProjectOptions{
+		ServerURL: trap.URL, Key: "st11-key", RepoID: "st11-synced", Pages: st11Pages,
+	})
+	a := "wiki/concepts/alpha.md"
+	const s1 = "1111111111111111111111111111111111111111"
+	st11RecordBases(t, p.HubDir, map[string][]byte{a: p.Read(a)}, map[string]string{a: s1})
+	p.WritePage(testkit.PageSpec{Slug: "alpha", Title: "Alpha", Tags: []string{"st11"}, Body: "edited"})
+	conflicts, err := syncstate.OpenConflicts(p.HubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conflicts.Put(syncstate.ConflictRecord{Path: a, ServerSHA: "2222222222222222222222222222222222222222",
+		BaseSHA: s1, Kind: syncstate.KindBothModified, Source: syncstate.SourcePush}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := conflicts.Save(); err != nil {
+		t.Fatal(err)
+	}
+	p.WriteRaw("raw/sessions/_pending/st11-sess.jsonl", []byte("{\"turn\":1}\n"))
+
+	// The sum covers .sync/: a lock, a .gitignore or a temp file would show.
+	before = st11TreeSum(t, p.Root)
+	for _, args := range runs {
+		code, stdout, stderr := st11Run(t, append(args, "--root", p.Root)...)
+		if code != 0 {
+			t.Fatalf("%q: exit %d, stderr %q", args, code, stderr)
+		}
+		if args[1] == "--json" {
+			if e := st11Entry(t, st11Decode(t, stdout), a); e.State != contract.StateConflict {
+				t.Errorf("%q: %s state %q, want conflict from the sidecar", args, a, e.State)
+			}
+		}
+	}
+	if after := st11TreeSum(t, p.Root); after != before {
+		t.Error("offline status changed the synced project")
+	}
+	if n := trap.hits.Load(); n != 0 {
+		t.Errorf("offline status sent %d request(s)", n)
+	}
+}
+
 func TestStatusJSON_RelativeRootAbsolute(t *testing.T) {
 	p := testkit.NewProject(t, testkit.ProjectOptions{NoCreds: true, Pages: st11Pages})
 	t.Chdir(filepath.Dir(p.Root))
