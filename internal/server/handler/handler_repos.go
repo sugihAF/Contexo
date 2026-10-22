@@ -71,13 +71,14 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 }
 
 // createRepoAsOwner creates the NEW repo repoID with uid, a signed-in user
-// (h.users is set), as its only member, the owner. Its contract is
-// createOwnedRepo's, so that createOwnedRepo can delegate to it: created is
-// true only for the request that created the repo; created is false with ok
-// true when the repo exists or another request created it first (the caller
-// applies its existing-repo rules and must not claim it); ok is false when
-// the response is already written: 400 for an id outside repoIDPattern, 402
-// from the quota, 500 when a store call fails.
+// (h.users is set), as its only member, the owner. It is every signed-in
+// creation: POST /v1/repos, and through createOwnedRepo a signed-in first
+// push and the deprecated create. created is true only for the request that
+// created the repo; created is false with ok true when the repo exists or
+// another request created it first (the caller applies its existing-repo
+// rules and must not claim it); ok is false when the response is already
+// written: 400 for an id outside repoIDPattern, 402 from the quota, 500 when
+// a store call fails.
 //
 // After the pattern check, in this order:
 //  1. An existing repo (an alias of one included) is left alone: nothing is
@@ -86,18 +87,18 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 //     in step 3.
 //  2. The known repo ids are listed before the repo appears, which keeps
 //     the window between the repo appearing and the purge short, and before
-//     createRepoMu, which every creation and a non-member's push wait for:
-//     the listing needs no lock. A row written after it for an id that
-//     names the new directory would be that id's first row, and an id gets
-//     its first row only from a create, which makes the directory (this
-//     request then stops in step 3 or 5), from the first sign-in, which
-//     adopts a directory that exists, or from a route that needs rows of the
-//     id already (join, mint, a signed-in push or pull). repoID's own rows
-//     are purged whether they are listed or not.
+//     createRepoMu, which every creation, push membership check and
+//     invite-key route waits for: the listing needs no lock. A row written
+//     after it for an id that names the new directory would be that id's
+//     first row, and an id gets its first row only from a create, which
+//     makes the directory (this request then stops in step 3 or 5), from the
+//     first sign-in, which adopts a directory that exists, or from a route
+//     that needs rows of the id already (join, mint, a signed-in push or
+//     pull). repoID's own rows are purged whether they are listed or not.
 //  3. createRepoMu is taken, and the repo is checked again.
 //  4. The quota: a 402 creates nothing.
-//  5. gitstore.Create. created=false means someone outside createRepoMu
-//     (legacy auth, another process) created it in between: not ours.
+//  5. gitstore.Create. created=false means another process or an operator
+//     created it in between: not ours.
 //  6. created=true is definitive (.git was certainly absent), so every row of
 //     repoID and of the aliases of its directory belongs to a repo an
 //     operator deleted. They are purged before the owner row exists, so an
@@ -108,31 +109,26 @@ func (h *Handler) CreateRepo(c *gin.Context) {
 //     appeared after the purge means this request did not establish the
 //     ownership it would report, so it fails closed (500) instead.
 //
-// A failure after step 5 leaves the new repo empty and ownerless, as
-// createOwnedRepo does when AddMember fails. Since an existing repo is never
-// claimed, an operator has to remove that directory.
+// A failure after step 5 leaves the new repo empty and ownerless. Since an
+// existing repo is never claimed, an operator has to remove that directory.
 //
 // createRepoMu is not reentrant: it is taken once, and only h.store.Exists
 // and Create, h.enforceRepoQuota, PurgeRepo, AddMemberIfAbsent and the
-// os.Stat calls of repoAliases run under it, never createOwnedRepo,
-// isMemberAfterCreate or requireMemberAfterCreate. The lock order is
-// createRepoMu, then the gitstore repo lock (inside Create), then SQLite.
+// os.Stat calls of repoAliases run under it, never another holder of it
+// (createLegacyRepo, isMemberAfterCreate and so requireMemberAfterCreate,
+// JoinRepo, MintInviteKey, ListInviteKeys, DeleteInviteKey), nor
+// createOwnedRepo, which is this function. The lock order is createRepoMu,
+// then the gitstore repo lock (inside Create), then SQLite.
 //
-// Known gaps; closing them needs changes outside this file:
-//   - Invite-key join and mint read a row (the key; the owner row) and
-//     insert later, without createRepoMu. SQLite runs in WAL mode, so a read
-//     made while the purge transaction is open still sees the stale rows,
-//     and the insert waits for the purge's write lock and lands right after
-//     it. A client that keeps joining with a stale key, or a stale owner
-//     that keeps minting keys, therefore gets a member row or a live key for
-//     the new repo on every re-create of its id, not by rare luck.
-//   - git init makes .git visible tens of milliseconds before step 6
-//     commits. A former member's push that checks in that window sees the
-//     repo, passes requireMemberAfterCreate on its stale row (a positive
-//     first check does not wait for createRepoMu) and commits into the new
-//     repo once Create releases the repo lock.
-//   - createOwnedRepo (a signed-in first push, the deprecated create) and
-//     the legacy-key creates (gitstore Init) never purge stale rows.
+// The stale rows cannot reach the new repo around the purge either: every
+// decision a creation can invalidate is made under createRepoMu. The
+// invite-key routes check the key or the owner row and write under it, so a
+// read of a stale row can no longer be followed by an insert that lands
+// right after the purge (in WAL mode the read saw the rows while the purge
+// was open, and a client that kept retrying won on every re-create). A push
+// or deprecated create decides membership under it (isMemberAfterCreate),
+// so a former member's push that sees .git before step 6 waits for the purge
+// and is refused. And the legacy-key creates (createLegacyRepo) purge too.
 func (h *Handler) createRepoAsOwner(c *gin.Context, repoID, uid string) (created, ok bool) {
 	if !repoIDPattern.MatchString(repoID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
