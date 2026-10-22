@@ -23,7 +23,9 @@ type activityBody struct {
 }
 
 // Activity handles GET /v1/repos/:id/activity?limit=N&offset=M. Any member may
-// view the repo's push/pull feed (newest first); total drives pagination.
+// view the repo's push/pull feed (newest first); total drives pagination. The
+// membership is checked again after the read (memberAfterRead), so a former
+// member whose row a re-create purged meanwhile never gets the new feed.
 func (h *Handler) Activity(c *gin.Context) {
 	repoID := c.Param("id")
 	if !h.requireMember(c, repoID) {
@@ -52,6 +54,9 @@ func (h *Handler) Activity(c *gin.Context) {
 	total, err := h.users.CountActivity(repoID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !h.memberAfterRead(c, repoID) {
 		return
 	}
 	out := make([]activityBody, 0, len(events))

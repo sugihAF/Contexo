@@ -26,6 +26,9 @@ type EvolutionEntry struct {
 // section-aware diff against its immediate prior commit for the same path.
 // Designed for agents and humans who want the full trajectory of a page in a
 // single round-trip instead of one history call + N diff calls.
+//
+// The answer is computed first and written only after memberAfterRead (see
+// Diff).
 func (h *Handler) Evolution(c *gin.Context) {
 	repoID := c.Param("id")
 	if !h.requireMember(c, repoID) {
@@ -40,19 +43,25 @@ func (h *Handler) Evolution(c *gin.Context) {
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = l
 	}
+	status, body := h.evolution(repoID, path, limit, c.Query("blame") == "true")
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
+	c.JSON(status, body)
+}
 
+// evolution computes Evolution's answer, its status and JSON body, without
+// writing it.
+func (h *Handler) evolution(repoID, path string, limit int, blame bool) (int, any) {
 	commits, err := h.store.LogPath(repoID, path, limit)
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
-			return
+			return http.StatusNotFound, gin.H{"error": "repo not found"}
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"error": err.Error()}
 	}
 	if len(commits) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "path not present in repo"})
-		return
+		return http.StatusNotFound, gin.H{"error": "path not present in repo"}
 	}
 
 	entries := make([]EvolutionEntry, 0, len(commits))
@@ -65,31 +74,28 @@ func (h *Handler) Evolution(c *gin.Context) {
 			if errors.Is(err, gitstore.ErrPathNotAtSHA) {
 				continue
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			return http.StatusInternalServerError, gin.H{"error": err.Error()}
 		}
 		parentSHA, err := h.store.ResolveParentSHAForPath(repoID, path, commit.SHA)
 		if err != nil && !errors.Is(err, gitstore.ErrUnknownSHA) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			return http.StatusInternalServerError, gin.H{"error": err.Error()}
 		}
 		var fromBytes []byte
 		if parentSHA != "" {
 			fromBytes, err = h.store.ReadAtSha(repoID, path, parentSHA)
 			if err != nil && !errors.Is(err, gitstore.ErrPathNotAtSHA) {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
+				return http.StatusInternalServerError, gin.H{"error": err.Error()}
 			}
 		}
 		d := diff.PageSections(fromBytes, toBytes, parentSHA, commit.SHA)
 		entries = append(entries, EvolutionEntry{Commit: commit, Diff: d})
 	}
 
-	if c.Query("blame") == "true" {
+	if blame {
 		for i := range entries {
 			_ = annotateBlame(h, repoID, path, &entries[i].Diff)
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"path": path, "entries": entries})
+	return http.StatusOK, gin.H{"path": path, "entries": entries}
 }

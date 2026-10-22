@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	gosync "sync"
@@ -118,6 +119,37 @@ func (h *Handler) requireMember(c *gin.Context, repoID string) bool {
 	return true
 }
 
+// memberAfterRead is the second half of requireMember for a route that reads
+// the repo after its membership check: it checks again, after the read and
+// before anything is written, and answers as requireMember does for a
+// non-member (403) when the caller's row is gone.
+//
+// requireMember checks without createRepoMu, so a former member of an
+// operator-deleted repo can pass on a stale row a moment before a re-create
+// of the id purges it, and read the new repo once its owner row and first
+// push are in. A creation commits its purge before the new repo has any row
+// or content of its own, and a purged row never comes back (a later join or
+// create adds a new, legitimate one). So a row still there after the read
+// proves the read saw nothing of a re-created repo. Legacy auth passes, as
+// in requireMember; without a user store requireMember already refused
+// every user.
+func (h *Handler) memberAfterRead(c *gin.Context, repoID string) bool {
+	uid := h.userID(c)
+	if auth.IsLegacy(uid) || h.users == nil {
+		return true
+	}
+	ok, err := h.users.IsMember(repoID, uid)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this repo"})
+		return false
+	}
+	return true
+}
+
 // requireOwner is like requireMember but also checks role=owner.
 func (h *Handler) requireOwner(c *gin.Context, repoID string) bool {
 	uid := h.userID(c)
@@ -187,6 +219,9 @@ func (h *Handler) ListPages(c *gin.Context) {
 		return
 	}
 	pages, err := h.store.ListPages(repoID)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -213,7 +248,12 @@ func errorWithCode(c *gin.Context, status int, msg, code string) {
 const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 
 // createOwnedRepo creates the NEW repo repoID with uid, a signed-in user, as
-// its owner. The caller has seen h.store.Exists(repoID) report false.
+// its owner, for a signed-in first push and the deprecated create. The
+// caller has seen h.store.Exists(repoID) report false. It is
+// createRepoAsOwner, the create of POST /v1/repos, so every signed-in
+// creation takes the same steps under createRepoMu, including the purge of
+// the stale rows of the id and of the aliases of its directory before the
+// owner row is added.
 //
 // Only a new id is held to repoIDPattern. gitstore drops every character
 // outside [A-Za-z0-9_-] from an id, so a non-canonical id such as "my.repo"
@@ -225,71 +265,105 @@ const repoIDRule = "id must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
 // created is true only for the request that created the repo
 // (gitstore.Create), and only that request becomes owner: checking Exists and
 // then creating races, and every racer would otherwise add itself as owner.
-// created is false with ok true when another request created the repo first;
-// the caller then applies its existing-repo rules. ok is false when the
-// response is already written: 400 for a non-canonical id, 402 from the
-// quota, 500 when a store call fails.
+// created is false with ok true when the repo exists or another request
+// created it first; the caller then applies its existing-repo rules. ok is
+// false when the response is already written: 400 for a non-canonical id,
+// 402 from the quota, 500 when a store call fails.
 //
-// Creations are serialized process-wide (createRepoMu; they are rare): the
-// Exists check, gitstore.Create and the owner row happen as one step for every
-// request that goes through here. The row is added only after this request
-// created the repo (Create reports created=true only when .git was certainly
-// absent), so no row is ever added for a repo that already exists or was never
-// made. The short window between the repo appearing and its owner row is
-// closed on the reader side: requireMemberAfterCreate waits for an in-flight
-// creation before refusing, so the creator's own parallel request (the
-// extension next to an agent) is not refused its repo. If AddMember fails the
-// new repo is left empty and ownerless, as before.
+// The window between the repo appearing and its owner row is closed on the
+// reader side: isMemberAfterCreate decides under createRepoMu, after an
+// in-flight creation has purged and added its owner row, so the creator's
+// own parallel request (the extension next to an agent) is not refused its
+// repo, and a former member of a deleted repo of the same id is.
 func (h *Handler) createOwnedRepo(c *gin.Context, repoID, uid string) (created, ok bool) {
-	if !repoIDPattern.MatchString(repoID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": repoIDRule})
-		return false, false
-	}
-	createRepoMu.Lock()
-	defer createRepoMu.Unlock()
-	if h.store.Exists(repoID) {
-		return false, true
-	}
-	if !h.enforceRepoQuota(c, uid) {
-		return false, false
-	}
-	created, err := h.store.Create(repoID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return false, false
-	}
-	if !created {
-		// Created outside createRepoMu (POST /v1/repos, legacy auth or
-		// another process): not ours.
-		return false, true
-	}
-	if err := h.users.AddMember(repoID, uid, userstore.RoleOwner); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return false, false
-	}
-	return true, true
+	return h.createRepoAsOwner(c, repoID, uid)
 }
 
-// createRepoMu serializes createOwnedRepo across every Handler in the process
-// (tests build several over one store).
+// createRepoMu serializes, across every Handler in the process (tests build
+// several over one store), each repo creation with the write-side access
+// decisions a creation can invalidate. The read routes decide from what they
+// read instead (memberAfterRead, ListMembers).
+//
+// The creations are createRepoAsOwner (POST /v1/repos, and through
+// createOwnedRepo a signed-in first push and the deprecated create) and
+// createLegacyRepo (the legacy key, a server without a user store). Each
+// holds createRepoMu from its last existence check through gitstore.Create,
+// the purge of the stale rows of the id and, for a signed-in creator, the
+// owner row. The decisions are isMemberAfterCreate (push, the deprecated
+// create), the invite-key routes JoinRepo, MintInviteKey, ListInviteKeys
+// and DeleteInviteKey, and RemoveMember, which hold it from their membership
+// or key check through the rows they act on (insert, list, delete). A
+// decision therefore runs either wholly before a creation of its repo, whose
+// purge then removes what it wrote, or after the creation's purge and owner
+// row, and sees only the new repo's rows.
+//
+// Each of these takes it once, directly, and none calls another of them
+// while holding it: it is not reentrant. It is never held while a request
+// body is read, so a slow client cannot stall every creation. The lock order
+// is createRepoMu, then the gitstore repo lock (inside Create), then SQLite.
+//
+// The lock is process-wide, not per repo: every signed-in push or deprecated
+// create to an existing repo, and every invite-key request, waits for any
+// creation in flight (git init, the purge, the owner row), not only one of
+// its own repo. Creations are rare and short; a creation that waits for the
+// gitstore lock of a case sibling ("team" while "Team" commits a large page,
+// on a case-sensitive filesystem) holds it longer.
 var createRepoMu gosync.Mutex
 
-// isMemberAfterCreate reports whether uid is a member of repoID. When the
-// first check says no, it checks again under createRepoMu, that is after any
-// in-flight createOwnedRepo has added its owner row, so a request that found
-// the repo a moment after its creator made it is not refused its own repo.
+// isMemberAfterCreate reports whether uid is a member of repoID, checked
+// once, under createRepoMu: after any in-flight creation of repoID has purged
+// the stale rows of the id and added its owner row. So a request that found
+// the repo a moment after its creator made it is not refused its own repo,
+// and a former member of an operator-deleted repo of that id is: git init
+// makes .git visible before the purge, and a check without the lock could
+// pass on the stale row in that window.
 func (h *Handler) isMemberAfterCreate(repoID, uid string) (bool, error) {
-	member, err := h.users.IsMember(repoID, uid)
-	if err != nil || member {
-		return member, err
-	}
 	createRepoMu.Lock()
 	defer createRepoMu.Unlock()
 	return h.users.IsMember(repoID, uid)
 }
 
+// createLegacyRepo creates repoID for the legacy key or a server without a
+// user store: the idempotent create those clients always had, which leaves
+// an existing repo alone (nil) and a new repo without an owner.
+//
+// Like createRepoAsOwner it runs gitstore.Create under createRepoMu, after
+// listing the known repo ids without the lock, and purges only when Create
+// reported created=true: every row of the directory's canonical id, of
+// repoID and of the other aliases of the directory then belongs to a repo an
+// operator deleted, and must not reach the new one. A store error is
+// returned for the caller's 500. A new repo whose purge failed keeps those
+// rows, and a retry finds it existing and purges nothing: as after a failed
+// createRepoAsOwner, an operator has to remove that directory.
+func (h *Handler) createLegacyRepo(repoID string) error {
+	// Exists of an id with no directory name stats a relative .git; Create
+	// refuses such an id.
+	if repoDirName(repoID) != "" && h.store.Exists(repoID) {
+		return nil
+	}
+	var known []string
+	if h.users != nil {
+		ids, err := h.users.KnownRepoIDs()
+		if err != nil {
+			return err
+		}
+		known = ids
+		if !slices.Contains(known, repoID) {
+			known = append(known, repoID)
+		}
+	}
+	createRepoMu.Lock()
+	defer createRepoMu.Unlock()
+	created, err := h.store.Create(repoID)
+	if err != nil || !created || h.users == nil {
+		return err
+	}
+	return h.purgeStaleAccess(repoDirName(repoID), known)
+}
+
 // requireMemberAfterCreate is requireMember for the create-adjacent routes
-// (push, legacy create): see isMemberAfterCreate.
+// (push, the deprecated create): a signed-in user's membership is decided
+// under createRepoMu, see isMemberAfterCreate.
 func (h *Handler) requireMemberAfterCreate(c *gin.Context, repoID string) bool {
 	uid := h.userID(c)
 	if auth.IsLegacy(uid) || h.users == nil {
@@ -313,16 +387,18 @@ func (h *Handler) requireMemberAfterCreate(c *gin.Context, repoID string) bool {
 //
 // For a signed-in user it never grants access to an existing repo: an
 // existing repo answers 201 (no membership change) to a member and 409 to
-// anyone else. It never claims an ownerless repo (POST /v1/repos does): with
-// gitstore's id sanitizing, an alias such as "alice.-repo" of someone's
-// "alice-repo" has no owner row of its own. A new repo needs a canonical id
-// and is owned by the one request that creates it (createOwnedRepo). Legacy
-// auth (or no user store) keeps the idempotent Init.
+// anyone else. It never claims an ownerless repo (neither does POST
+// /v1/repos: only the first sign-in adopts one): with gitstore's id
+// sanitizing, an alias such as "alice.-repo" of someone's "alice-repo" has
+// no owner row of its own. A new repo needs a canonical id and is owned by
+// the one request that creates it (createOwnedRepo). Legacy auth (or no user
+// store) keeps the idempotent create (createLegacyRepo). Either creation
+// purges the stale rows of an operator-deleted repo of the same directory.
 func (h *Handler) CreateRepoLegacy(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
 	if auth.IsLegacy(uid) || h.users == nil {
-		if err := h.store.Init(repoID); err != nil {
+		if err := h.createLegacyRepo(repoID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -382,6 +458,9 @@ func (h *Handler) ReadPage(c *gin.Context) {
 			return
 		}
 		content, pathSHA, err := h.store.ReadPageAt(repoID, path, at)
+		if !h.memberAfterRead(c, repoID) {
+			return
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, gitstore.ErrRepoNotFound):
@@ -404,6 +483,9 @@ func (h *Handler) ReadPage(c *gin.Context) {
 	}
 
 	content, sha, err := h.store.Read(repoID, path)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, gitstore.ErrRepoNotFound):
@@ -425,7 +507,11 @@ func (h *Handler) ReadPage(c *gin.Context) {
 // to a new repo auto-creates it and makes the pusher its owner; the new id
 // must match repoIDPattern (400 otherwise, before any write), and of several
 // concurrent first pushes only the one that created the repo is owner, the
-// others being ordinary (non-member) pushes. Legacy auth creates any id.
+// others being ordinary (non-member) pushes. Legacy auth creates any id,
+// without an owner. A push that creates the repo purges the stale rows of an
+// operator-deleted repo of the same directory, whichever auth it uses, and a
+// signed-in push to an existing repo decides membership under createRepoMu
+// (requireMemberAfterCreate).
 func (h *Handler) Push(c *gin.Context) {
 	repoID := c.Param("id")
 	uid := h.userID(c)
@@ -504,7 +590,7 @@ func (h *Handler) Push(c *gin.Context) {
 			if !h.enforceRepoQuota(c, uid) {
 				return
 			}
-			if err := h.store.Init(repoID); err != nil {
+			if err := h.createLegacyRepo(repoID); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
@@ -617,6 +703,21 @@ func (h *Handler) Pull(c *gin.Context) {
 	since := c.Query("since")
 
 	paths, head, err := h.store.ChangedSince(repoID, since)
+	var files []sync.PullFile
+	if err == nil {
+		files = make([]sync.PullFile, 0, len(paths))
+		for _, p := range paths {
+			content, sha, err := h.store.Read(repoID, p)
+			if err != nil {
+				continue
+			}
+			files = append(files, sync.PullFile{Path: p, Content: string(content), SHA: sha})
+		}
+	}
+	// After every read, before the activity row and the answer.
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -624,15 +725,6 @@ func (h *Handler) Pull(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
-	}
-
-	files := make([]sync.PullFile, 0, len(paths))
-	for _, p := range paths {
-		content, sha, err := h.store.Read(repoID, p)
-		if err != nil {
-			continue
-		}
-		files = append(files, sync.PullFile{Path: p, Content: string(content), SHA: sha})
 	}
 
 	// Record a "pull" only when pages were actually received, so no-op
@@ -654,6 +746,9 @@ func (h *Handler) Timeline(c *gin.Context) {
 		limit = l
 	}
 	commits, err := h.store.Log(repoID, limit)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, gitstore.ErrRepoNotFound) {
 			errorWithCode(c, http.StatusNotFound, "repo not found", "repo_not_found")
@@ -681,6 +776,9 @@ func (h *Handler) History(c *gin.Context) {
 		limit = l
 	}
 	commits, err := h.store.LogPath(repoID, path, limit)
+	if !h.memberAfterRead(c, repoID) {
+		return
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, gitstore.ErrRepoNotFound):
