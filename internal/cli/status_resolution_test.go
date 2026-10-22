@@ -9,7 +9,7 @@ import (
 )
 
 // wp03SeedState records a pushed sha for page foo, so `ctx status` has a
-// baseline and its drift check reads foo from the server.
+// synced page to check against the server's listing.
 func wp03SeedState(t *testing.T, root string) {
 	t.Helper()
 	state := &sync.State{PageSHAs: map[string]string{
@@ -26,7 +26,7 @@ func TestStatusUsesResolvedServer(t *testing.T) {
 	wp03SeedState(t, root)
 
 	stdout, _, _ := wp03Run(t, root, "status")
-	tr.AssertOnlyA(t, "status drift check", wp03Token)
+	tr.AssertOnlyA(t, "status listing", wp03Token)
 	if !strings.Contains(stdout, tr.A.URL) {
 		t.Errorf("status does not show the resolved server %s:\n%s", tr.A.URL, stdout)
 	}
