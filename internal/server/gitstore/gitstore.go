@@ -902,10 +902,28 @@ func (s *Store) git(dir string, args ...string) (string, error) {
 // core.quotePath=false keeps non-ASCII names verbatim in git's plain-text
 // output (wiki/café.md, not "wiki/caf\303\251.md"); names git still quotes
 // go through unquoteGitPath.
+//
+// The rest keep page bytes exact whatever the host's git config says: a host
+// with core.autocrlf=true (GitHub's Windows runners, Git for Windows' default)
+// or a "* text=auto" attribute would store a CRLF page as LF, so reads return
+// other bytes than were written and a CRLF -> LF rewrite looks unchanged.
+// Command-line settings beat every config file: core.autocrlf, core.eol and
+// core.safecrlf turn conversion (and its refusals) off; core.attributesFile
+// and GIT_ATTR_NOSYSTEM=1 drop the global and system gitattributes files; and
+// an empty init.templateDir keeps git init from copying a template's
+// info/attributes into a new repo. In-tree .gitattributes never get in
+// (validatePagePath refuses them).
 func gitCmd(dir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", append([]string{"-c", "core.quotePath=false"}, args...)...)
+	cmd := exec.Command("git", append([]string{
+		"-c", "core.quotePath=false",
+		"-c", "core.autocrlf=false",
+		"-c", "core.eol=lf",
+		"-c", "core.safecrlf=false",
+		"-c", "core.attributesFile=" + os.DevNull,
+		"-c", "init.templateDir=",
+	}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1", "GIT_ATTR_NOSYSTEM=1")
 	return cmd
 }
 
