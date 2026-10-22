@@ -908,6 +908,39 @@ func TestStatus_EnsureBaseErrorIsWarning(t *testing.T) {
 	}
 }
 
+// E12: inside status the whole EnsureBase is capped at 20 s, so a slow
+// backfill cannot hold the extension's status call past its 30 s timeout.
+func TestStatus_EnsureBaseCappedAt20s(t *testing.T) {
+	const a = "wiki/concepts/a.md"
+	_, env := st11StaleScenario(t, a, "a")
+	var deadline time.Time
+	var hasDeadline bool
+	st11OverrideEnsureBase(t, func(ctx context.Context, _ Env, _ EnsureBaseOptions) (*EnsureBaseResult, error) {
+		deadline, hasDeadline = ctx.Deadline()
+		return &EnsureBaseResult{Repaired: []string{}, Unverified: []string{}, Warnings: []contract.Warning{}}, nil
+	})
+	start := time.Now()
+	st11Status(t, env, StatusOptions{})
+	end := time.Now()
+	if !hasDeadline {
+		t.Fatal("EnsureBase ran without a deadline; status must cap it at 20 s (E12)")
+	}
+	if deadline.Before(start.Add(20*time.Second)) || deadline.After(end.Add(20*time.Second)) {
+		t.Fatalf("EnsureBase deadline %v is not 20 s after the call (%v .. %v)", deadline, start, end)
+	}
+
+	// A tighter caller deadline wins.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	want, _ := ctx.Deadline()
+	if _, err := Status(ctx, env, StatusOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !deadline.Equal(want) {
+		t.Fatalf("EnsureBase deadline = %v, want the caller's %v", deadline, want)
+	}
+}
+
 func TestStatus_ServerOutdatedWarning(t *testing.T) {
 	for _, tc := range []struct {
 		name string

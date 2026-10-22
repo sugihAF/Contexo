@@ -282,6 +282,11 @@ func statusNewDoc(env Env, now time.Time, offline bool) *contract.StatusDoc {
 	}
 }
 
+// statusEnsureBaseBudget caps the whole EnsureBase inside status (E12), well
+// under the extension's 30 s status timeout; pages it leaves stale stay
+// unverified.
+const statusEnsureBaseBudget = 20 * time.Second
+
 // statusLive is what the live listing contributed to a status run.
 type statusLive struct {
 	remote    map[string]string // path -> sha; nil without a live listing
@@ -325,7 +330,9 @@ func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now tim
 		Head:       statusHead(listing),
 		PageCount:  len(listing),
 	}
-	res, err := statusEnsureBase(ctx, env, EnsureBaseOptions{Listing: listing, Locked: false})
+	ebCtx, cancel := context.WithTimeout(ctx, statusEnsureBaseBudget)
+	defer cancel()
+	res, err := statusEnsureBase(ebCtx, env, EnsureBaseOptions{Listing: listing, Locked: false})
 	if res != nil {
 		live.warnings = res.Warnings
 	}
