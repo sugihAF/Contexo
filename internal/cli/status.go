@@ -157,7 +157,7 @@ func statusRenderHuman(cmd *cobra.Command, doc *contract.StatusDoc, rr *config.R
 		u.Field("captures", "none pending")
 	}
 	if doc.Captures.BlocksPush {
-		u.Warn("fresh captures blocks push: share via your agent (it distills them), then push")
+		u.Warn("fresh captures block push: share via your agent (it distills them), then push")
 	}
 	for _, w := range doc.Warnings {
 		if w.Code == contract.WarnServerURLMismatch {
@@ -320,13 +320,13 @@ func statusRenderSections(u *ui.UI, out io.Writer, doc *contract.StatusDoc) bool
 }
 
 // statusInvalidDetail is "<stage>: <message>", plus the expected path of a
-// path_mismatch.
+// path_mismatch when the message does not name it already.
 func statusInvalidDetail(p contract.PageEntry) string {
 	if p.Invalid == nil {
 		return ""
 	}
 	d := fmt.Sprintf("%s: %s", p.Invalid.Stage, p.Invalid.Message)
-	if p.Invalid.ExpectedPath != "" {
+	if p.Invalid.ExpectedPath != "" && !strings.Contains(p.Invalid.Message, p.Invalid.ExpectedPath) {
 		d += " (expected " + p.Invalid.ExpectedPath + ")"
 	}
 	return d

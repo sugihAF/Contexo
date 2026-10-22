@@ -820,7 +820,7 @@ func TestStatusHuman_RenderAllStates(t *testing.T) {
 		"REMOTE", "https://kb.acme.dev", "st11-repo", "Ana <ana@acme.dev>", "pat", "KNOWLEDGE",
 		"1 conflict", "1 modified", "1 new", "2 incoming", "2 invalid", "1 unverified",
 		"1 deleted locally", "1 unchanged", "c41b7e0",
-		"2 pending (1 fresh)", "blocks push",
+		"2 pending (1 fresh)", "fresh captures block push", "share via your agent",
 		"wiki/concepts/clash.md", "both_modified",
 		"ctx resolve wiki/concepts/clash.md --ours", "ctx resolve wiki/concepts/clash.md --theirs",
 		"wiki/concepts/mod.md", "wiki/entities/fresh.md", "ctx push",
@@ -910,5 +910,28 @@ func TestStatusHuman_Sections(t *testing.T) {
 	st11AssertLacks(t, "sections", out, "ctx repair", "st11-key")
 	if n := trap.hits.Load(); n != 0 {
 		t.Errorf("status --offline sent %d request(s)", n)
+	}
+}
+
+// A path_mismatch line names the expected path once: ScanLocal's message
+// already names it, so the renderer adds no "(expected ...)" then.
+func TestStatusHuman_ExpectedPathOnce(t *testing.T) {
+	p := testkit.NewProject(t, testkit.ProjectOptions{NoCreds: true})
+	const want = "wiki/concepts/elsewhere.md"
+	p.WriteRaw("wiki/concepts/moved.md", testkit.PageBytes(testkit.PageSpec{Slug: "elsewhere"}))
+	code, out, stderr := st11Run(t, "status", "--offline", "--root", p.Root)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	st11AssertContains(t, "path_mismatch", out, "wiki/concepts/moved.md", "path_mismatch")
+	if n := strings.Count(out, want); n != 1 {
+		t.Errorf("%s appears %d times, want once:\n%s", want, n, out)
+	}
+
+	// A message that does not name it gets the suffix.
+	e := contract.PageEntry{Path: "wiki/concepts/moved.md", State: contract.StateInvalid,
+		Invalid: &contract.InvalidInfo{Stage: contract.InvalidPathMismatch, Message: "slug elsewhere", ExpectedPath: want}}
+	if d := statusInvalidDetail(e); d != "path_mismatch: slug elsewhere (expected "+want+")" {
+		t.Errorf("detail = %q", d)
 	}
 }
