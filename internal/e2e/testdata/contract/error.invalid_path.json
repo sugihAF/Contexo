@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":3,"error":{"code":"invalid_path","message":"invalid page path \"../x.md\": contains a \"..\" segment","advice":[],"retryable":false}}

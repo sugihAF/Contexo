@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":12,"error":{"code":"busy","message":"push: another ctx process is syncing (e2e, pid 4242 on e2e-host, since 2000-01-01T00:00:00Z)","advice":[],"retryable":true,"details":{"pid":4242,"host":"e2e-host","command":"e2e","started_at":"2000-01-01T00:00:00Z"}}}

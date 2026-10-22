@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":5,"error":{"code":"repo_not_configured","message":"pull: repo not configured","advice":["ctx remote set-repo <id>"],"retryable":false}}

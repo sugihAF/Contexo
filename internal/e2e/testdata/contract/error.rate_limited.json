@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":7,"error":{"code":"rate_limited","message":"pull: sync: list pages (429): {\"error\":\"rate limit exceeded\"}","advice":[],"retryable":true,"http_status":429}}

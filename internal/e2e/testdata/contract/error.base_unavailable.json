@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":8,"error":{"code":"base_unavailable","message":"show wiki/concepts/chargeback-flow.md --at base: syncstate: base unavailable: wiki/concepts/chargeback-flow.md has no base snapshot for its last synced sha","advice":["ctx repair"],"retryable":false}}

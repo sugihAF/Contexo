@@ -202,12 +202,11 @@ func goldenCheckRun(t *testing.T, grp goldenGroup, r ctxResult) {
 		has[f.Stream] = true
 	}
 	switch {
-	case has[streamStdout] && has[streamStderr]:
-		doc, _ := assertPushConflict(t, r)
-		_ = doc
+	case has[streamStderr] && goldenCodeOf(t, grp) == contract.CodeConflict:
+		// push exit 6 writes its document AND the envelope.
+		assertPushConflict(t, r)
 	case has[streamStderr]:
-		e := assertFail(t, r, goldenCodeOf(t, grp))
-		_ = e
+		assertFail(t, r, goldenCodeOf(t, grp))
 	case has[streamStdout]:
 		assertOK(t, r, nil)
 	case has[streamRaw]:

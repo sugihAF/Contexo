@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":10,"error":{"code":"server_unsupported","message":"show wiki/concepts/retry-policy.md --at 0000000000000000000000000000000000000001: sync: read page at 0000000000000000000000000000000000000001: server did not echo X-Contexo-At (no ?at support)","advice":[],"retryable":false,"details":{"missing":["pages.at"]}}}
