@@ -598,6 +598,15 @@ type proxyRecord struct {
 	Caps      string   // response X-Contexo-Capabilities
 	Status    int      // response status (502 when the upstream failed)
 	PushPaths []string // files[].path of a POST .../sync/push
+	PushFiles []pushFile
+}
+
+// pushFile is one files[] element of a recorded push body (content left
+// out).
+type pushFile struct {
+	Path         string `json:"path"`
+	ParentSHA    string `json:"parent_sha"`
+	ExpectAbsent bool   `json:"expect_absent"`
 }
 
 // recordingProxy is an httputil.ReverseProxy in front of a server that
@@ -625,8 +634,12 @@ func startRecordingProxy(t testing.TB, target string) *recordingProxy {
 		rec := proxyRecord{Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery,
 			Client: r.Header.Get("X-Contexo-Client"), Caps: resp.Header.Get("X-Contexo-Capabilities"),
 			Status: resp.StatusCode}
-		if pp, ok := r.Context().Value(pushPathsKey{}).([]string); ok {
-			rec.PushPaths = pp
+		if pf, ok := r.Context().Value(pushPathsKey{}).([]pushFile); ok {
+			rec.PushFiles = pf
+			rec.PushPaths = []string{}
+			for _, f := range pf {
+				rec.PushPaths = append(rec.PushPaths, f.Path)
+			}
 		}
 		var hook func()
 		px.mu.Lock()
@@ -664,17 +677,13 @@ func startRecordingProxy(t testing.TB, target string) *recordingProxy {
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			var req struct {
-				Files []struct {
-					Path string `json:"path"`
-				} `json:"files"`
+				Files []pushFile `json:"files"`
 			}
-			paths := []string{}
+			files := []pushFile{}
 			if json.Unmarshal(body, &req) == nil {
-				for _, f := range req.Files {
-					paths = append(paths, f.Path)
-				}
+				files = append(files, req.Files...)
 			}
-			r = r.WithContext(context.WithValue(r.Context(), pushPathsKey{}, paths))
+			r = r.WithContext(context.WithValue(r.Context(), pushPathsKey{}, files))
 		}
 		rp.ServeHTTP(w, r)
 	}))
@@ -737,6 +746,15 @@ func (px *recordingProxy) PushedPaths() []string {
 	var out []string
 	for _, r := range px.Records() {
 		out = append(out, r.PushPaths...)
+	}
+	return out
+}
+
+// PushedFiles returns every recorded push files[] element, in order.
+func (px *recordingProxy) PushedFiles() []pushFile {
+	var out []pushFile
+	for _, r := range px.Records() {
+		out = append(out, r.PushFiles...)
 	}
 	return out
 }
