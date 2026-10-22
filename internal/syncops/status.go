@@ -37,7 +37,10 @@ var statusCheckGuard = CheckGuard
 
 // Status builds the `ctx status --json` document. Offline (o.Offline or no
 // Remote) it reads only local files and writes nothing; remote.source is
-// none and R follows the E9 sidecar rule.
+// none and R follows the E9 sidecar rule. Online it makes one ListPages
+// call and runs EnsureBase over that listing (E5); a failed listing goes
+// into remote.error and never fails status. Callers then fill the identity
+// with FillStatusIdentity.
 //
 // It fails only when the project is not initialized (not_initialized) or the
 // local state cannot be read (internal).
@@ -621,7 +624,7 @@ func statusUnusable(r *config.Remote, unusable error) contract.ErrorBody {
 
 // statusBlocksPush is E24's captures.blocks_push: the guard requires a
 // distill and CONTEXO_DISTILL_DISABLE does not bypass it. It reads the env
-// var itself until WP-1.2's GuardResult.Bypassed lands.
+// var itself until WP-1.2's guard reports the bypass (consolidation request).
 func statusBlocksPush(g *GuardResult) bool {
 	return g != nil && g.Required && os.Getenv("CONTEXO_DISTILL_DISABLE") != "1"
 }
