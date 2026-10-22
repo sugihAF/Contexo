@@ -2,13 +2,17 @@
 
 This file summarizes the machine contract between `ctx` and programmatic
 callers (the Contexo VS Code extension first). It is a summary, not the
-source of truth. WP-0.1 wrote it in wave 0 and WP-2.2 finalizes it.
+source of truth. WP-0.1 wrote it in wave 0; WP-2.2 finalized it (2026-10-22)
+with the errata applied, every wire shape linked to a golden produced by the
+real binary, and the Known-deviations table.
 
-No Go test reads this file. The [HUMAN] review, WP-2.2 and WP-4.1 can
-restructure it or delete rows without editing internal/syncops. The package
-tests pin the behaviour it summarizes: for example,
-`TestHTTPMappingUnlistedStatuses` pins the HTTP mapping table and
-deviation 1, and `TestNoSyncopsTestReadsContractMD` keeps the file unread.
+No test under internal/syncops reads this file
+(`TestNoSyncopsTestReadsContractMD`). The one reader is the e2e suite's
+`TestDeviationsDocumented` (internal/e2e), which requires a row in
+"Known deviations" for every registered `DEV-n`. The package tests pin the
+behaviour summarized here: for example, `TestHTTPMappingUnlistedStatuses`
+pins the HTTP mapping table and deviation 1, and the e2e suite pins the
+commands end to end.
 
 ## Sources and precedence
 
@@ -66,10 +70,47 @@ ConflictKind, changing an exit-code category, or changing the
 one-document-per-invocation rule. Fixtures are versioned by directory
 (`testdata/v1`, later `testdata/v2`).
 
+## Commands and documents (E25, E26)
+
+Every shape below is pinned by a golden that the real binary produced
+(`internal/e2e/testdata/contract/`, see "Golden fixtures" below) and by the
+canonical hand-written fixture of the same name in
+`internal/syncops/contract/testdata/v1/` where one exists. Extension argv is
+exactly E25; R is the absolute workspace-folder path. The extension spawns ctx
+with `{...process.env, NO_COLOR:'1', CONTEXO_NO_UPDATE_CHECK:'1',
+CONTEXO_CLIENT:'contexo-vscode/<ver>'}` minus `CONTEXO_DISTILL_DISABLE` (E26).
+
+| Command (E25 argv) | stdout (schema) | Exit codes (every command may also exit 1 internal and 3 usage) | Goldens |
+|---|---|---|---|
+| `version --json` (no --root) | `VersionDoc` (`ctx.version.v1`) | 0 | `version.dev.json` |
+| `status --json --root R [--offline]` | `StatusDoc` (`ctx.status.v1`); remote problems go to `remote.error` with exit 0 | 0, 5 | `status.empty.json`, `status.all-states.json`, `status.offline-sidecar.json`, `status.offline-nocache.json`, `status.not-authenticated.json`, `status.auth-rejected.json`, `status.network-error.json`, `status.old-server.json`, `status.repo-missing.json`, `status.url-mismatch.json`, `status.captures-blocking.json` |
+| `show P --at base\|server\|<sha> --root R` (no --json; always machine mode) | raw page bytes, no added newline | 0, 4, 5, 7, 8, 10 (3 also for invalid_path) | `show.base.raw.md`, `show.server.raw.md` (stream raw) |
+| `pull --json --root R` | `PullDoc` (`ctx.pull.v1`); skips exit 0 | 0, 4, 5, 7, 8, 11, 12 | `pull.ok.json`, `pull.skipped-and-adopted.json`, `pull.up-to-date.json` |
+| `push --json --yes --root R [-m M] [-- paths...]` | `PushDoc` (`ctx.push.v1`), also on exit 6 | 0, 4, 5, 6, 7, 9, 11, 12 (3 also for invalid_path) | `push.ok.json`, `push.dry-run.json`, `push.nothing.json`, `push.partial-conflict.json` + `push.partial-conflict.stderr.json`, `push.distill-bypassed.json` |
+| `resolve P --ours\|--theirs --json --root R [--if-server-sha S]` | `ResolveDoc` (`ctx.resolve.v1`) | 0, 4, 5, 6, 7, 8, 9, 12 (3 also for invalid_path) | `resolve.ours.json`, `resolve.theirs.json` |
+| `repair [--dry-run] --json --root R` (ctx only; the extension never calls it) | `syncops.RepairResult` (`ctx.repair.v1`, E18) | 0, 4, 5, 7, 8, 12 | `repair.json` |
+
+Notes on the shapes as built:
+- `push --json` never prompts; `--yes` is accepted as a no-op, and both
+  `push --json` and `push --json --yes -- <paths>` work (scenario 01).
+- `status`'s `remote.head` is omitted when the newest listing time is shared
+  by different shas (WP-1.1 R1); consumers must not require it. Use a push
+  document's `new_head` for the repo HEAD.
+- `pull.case-collision.json` has no real-binary golden: it needs two server
+  paths that differ only by case, which the test gitstore cannot hold on the
+  case-insensitive file systems of the macOS and Windows CI runners. The
+  canonical fixture stays the reference.
+- `resolve.theirs.json`'s `backup_file` is relative to `.contexo/`:
+  `.sync/backup/<P>.<YYYYMMDDTHHMMSSZ>`.
+
 ## Exit codes and error codes (E2, E17)
 
 24 stable codes. The envelope code is authoritative; the exit code is
-`contract.ExitCodeFor(code)` (unknown codes give 1).
+`contract.ExitCodeFor(code)` (unknown codes give 1). Every code except
+`internal` and `not_implemented` has a real-binary golden
+`internal/e2e/testdata/contract/error.<code>.json` (22 files; e2e scenario 07
+reaches each of them, 08 busy, 09 sha_not_found and server_unsupported);
+`internal` and `not_implemented` exist only as canonical fixtures.
 
 | Exit | Codes | Retryable |
 |---|---|---|
@@ -138,9 +179,28 @@ names except `show.sha`, and never requires or calls `repair`.
 - Each owner registers its names with `registerCapability(c)` from an
   `init()` in its own file; it panics on an unknown name or a duplicate.
   A wave-0 build advertises only `errors.envelope`.
-- Reserved owners: status.json, status.offline -> WP-1.1; push.json,
-  push.paths, push.distill_guard -> WP-1.2; pull.json -> WP-1.3; show.base,
-  show.server, show.sha, resolve -> WP-1.4; repair -> WP-1.5.
+- Registered by: status.json, status.offline -> cli/status.go (WP-1.1);
+  push.json, push.paths, push.distill_guard -> cli/push.go (WP-1.2);
+  pull.json -> cli/pull.go (WP-1.3); show.base, show.server, show.sha ->
+  cli/show.go, resolve -> cli/resolve.go (WP-1.4); repair -> cli/repair.go
+  (WP-1.5); errors.envelope -> cli/capabilities.go (WP-0.1).
+- A build from this tree advertises all 12, in this order (e2e scenario 10
+  and `version.dev.json`):
+
+| # | Capability | Required by the extension |
+|---|---|---|
+| 1 | status.json | yes |
+| 2 | status.offline | yes |
+| 3 | show.base | yes |
+| 4 | show.server | yes |
+| 5 | show.sha | no (optional) |
+| 6 | pull.json | yes |
+| 7 | push.json | yes |
+| 8 | push.paths | yes |
+| 9 | push.distill_guard | yes |
+| 10 | resolve | yes |
+| 11 | errors.envelope | yes |
+| 12 | repair | no (optional, E18) |
 
 Server capabilities (`X-Contexo-Capabilities`): `pages.at`,
 `push.expect_absent`, `write.path_sha`. `pages.etag` is reserved and never
@@ -190,9 +250,21 @@ everything under `<root>/.contexo/.sync/`, written only by ctx:
 - `bases.json`: `{"schema":"ctx.bases.v1","pages":{rel:{sha,hash,synced_at}}}`
 - `conflicts.json`: `{"schema":"ctx.conflicts.v1","conflicts":{rel:{server_sha,base_sha?,kind,source,detected_at,has_content}}}`
 - `conflicts/<relpath>`: sanitized server content, present iff has_content
-- `lock`: `{pid,host,command,started_at}`
-- `backup/`: written by `resolve --theirs`
+- `lock`: `{pid,host,command,started_at}`, created `O_CREATE|O_EXCL`; a lock
+  of the same host whose pid is dead, older than 10 min, or unparseable and
+  older than 30 s is reclaimed
+- `lock.guard`: transient `O_EXCL` guard held while removing `lock` (stale
+  reclaim or unlock); cleared when older than 5 s
+- `backup/<relpath>.<YYYYMMDDTHHMMSSZ>`: the working file saved by
+  `resolve --theirs` before it overwrites a differing file
 - `remote.json`: reserved, never written or read in v1 (E8)
+
+As built and observed by the e2e suite: the first write creates
+`.sync/.gitignore` = `*\n` (scenario 01); a pull conflict skip writes a
+`source: pull` sidecar and leaves `state.json` and the base untouched
+(scenario 02); `resolve --theirs` writes the backup and clears the sidecar
+(scenario 02); a push 409 writes a `source: push` sidecar (scenario 07
+conflict); `status --offline` reads sidecars only (E9) and writes nothing.
 
 Write order per operation: working files, base files, `conflicts/<path>`,
 `bases.json`, `conflicts.json`, `state.json`, each index once, atomically.
@@ -200,35 +272,27 @@ push, pull, resolve and repair hold the lock (busy, exit 12, after
 `CONTEXO_LOCK_TIMEOUT`); online status only TryLocks inside EnsureBase;
 `status --offline` and `push --dry-run` write nothing (E5).
 
-## Engine stubs and wave-1 ownership
+## Engines (as built)
 
-Each engine is one stub file plus one inherited stub test. The owner fills in
-the file, may add fields, replaces the stub assertion, and never renames or
-removes a frozen identifier.
+The wave-0 stubs are gone; every engine is real and shared by the CLI and
+(after WP-2.1) the MCP tools. Frozen identifiers are the E4 table; options and
+results may only gain fields.
 
-| Files | Owner | Entry point (stub behaviour) |
+| Files | Built by | Entry point |
 |---|---|---|
-| status.go, status_test.go | WP-1.1 | `Status(ctx, env, StatusOptions{Offline}) (*contract.StatusDoc, error)` (not_implemented) |
-| push.go, push_test.go | WP-1.2 | `Push(ctx, env, PushOptions{Paths, Message, DryRun, NoDistill, Resolved}) (*contract.PushDoc, error)` (not_implemented) |
-| guard.go, guard_test.go | WP-1.2 | `CheckGuard(env, batch) (*GuardResult{Required, Details}, error)` (Required false) |
-| pull.go, pull_test.go | WP-1.3 | `Pull(ctx, env, PullOptions{}) (*contract.PullDoc, error)` (not_implemented) |
-| show.go, show_test.go (+ internal/cli show.go, show_test.go) | WP-1.4 | `Show(ctx, env, ShowOptions{Path, At}) ([]byte, error)` (not_implemented) |
-| resolve.go, resolve_test.go (+ internal/cli resolve.go, resolve_test.go) | WP-1.4 | `Resolve(ctx, env, ResolveOptions{Path, Strategy, IfServerSHA}) (*contract.ResolveDoc, error)` (not_implemented) |
-| repair.go, repair_test.go (+ internal/cli repair.go, repair_test.go) | WP-1.5 | `Repair(ctx, env, RepairOptions{DryRun}) (*RepairResult, error)` (not_implemented) |
-| ensurebase.go, ensurebase_test.go | WP-1.5 | `EnsureBase(ctx, env, EnsureBaseOptions{Listing, Paths, Locked}) (*EnsureBaseResult, error)` (empty result, zero requests) |
+| status.go (+ cli/status.go) | WP-1.1 | `Status(ctx, env, StatusOptions{Offline}) (*contract.StatusDoc, error)`, then `FillStatusIdentity(doc, remote, unusable)` |
+| push.go, guard.go (+ cli/push.go) | WP-1.2 | `Push(ctx, env, PushOptions{Paths, Message, DryRun, NoDistill, Resolved, Feature, Tag, Type, Confirm})`; `CheckGuard(env, batch) (*GuardResult{Required, Bypassed, Details}, error)` |
+| pull.go (+ cli/pull.go) | WP-1.3 | `Pull(ctx, env, PullOptions{}) (*contract.PullDoc, error)` |
+| show.go, resolve.go (+ cli/show.go, cli/resolve.go) | WP-1.4 | `Show(ctx, env, ShowOptions{Path, At})`, `Resolve(ctx, env, ResolveOptions{Path, Strategy, IfServerSHA})`, `ShowPreflight`, `ResolvePreflight` |
+| ensurebase.go, repair.go (+ cli/repair.go) | WP-1.5 | `EnsureBase(ctx, env, EnsureBaseOptions{Listing, Paths, Locked})`, `Repair(ctx, env, RepairOptions{DryRun, Budget, Concurrency}) (*RepairResult, error)` |
 
-- Frozen tests (never weakened): `env_test.go`, `overlay_test.go`. The shared
-  stub helpers (`wp01StubEnv`, `wp01AssertNotImplemented`) live in
-  `env_test.go`, so rewriting one stub test never breaks another.
+- Frozen tests (never weakened): `env_test.go`, `overlay_test.go`.
   `ensurebase_test.go` is package `syncops` and uses `FakeRemote`: it stops
   compiling (import cycle) if `syncopstest` ever imports `syncops`.
 - `TestRepairResultJSONKeyOrder` pins the E18 shape of `ctx repair --json`
   (`schema, dry_run, server_capabilities, backfilled{path,sha},
   repaired{path,old_sha,new_sha,reason}, skipped{path,reason}, unverified,
-  warnings`; arrays `[]`, never null) and stays when the stub goes.
-- Hidden CLI stubs (`ctx show`, `ctx resolve`, `ctx repair`) run
-  `syncops.RequireHub` and return `syncops.NotImplemented`. Owners replace
-  RunE and set `Hidden = false`.
+  warnings`; arrays `[]`, never null); `repair.json` is its real-binary golden.
 - `ApplySidecar` (E9) is the one online override: a modified result becomes a
   conflict of the sidecar's kind (both_modified when empty) iff a sidecar
   exists whose server sha differs from the base sha; nothing else changes.
@@ -249,6 +313,22 @@ removes a frozen identifier.
   "everything". Error bodies are byte-equal to gin's (sorted keys), and
   errors are the same `*sync.HTTPError` values a real client returns (a test
   pins this against `sync.Client` on httptest).
+
+## MCP alignment (D5, D13; WP-2.1)
+
+`ctx mcp` is the same binary, so the agent tools follow the same contract
+(E39: no installable build carries the CLI engines without this):
+- `ctx_push` and `ctx_pull` run `syncops.Push` / `syncops.Pull` under
+  `.sync/lock` and write bases, sidecars and `state.json` only through the
+  engines; `ctx_status` runs `syncops.Status` + `FillStatusIdentity`.
+- A push 409 never bumps `page_shas` (it writes a `source: push` sidecar and
+  answers MERGE_REQUIRED); a modified page is never overwritten by `ctx_pull`.
+- `ctx_push` takes `resolved: ["<path>", ...]`, which applies `resolve --ours`
+  semantics (re-base onto the server sha the agent was shown in the merge
+  brief) before pushing. The MERGE_REQUIRED text tells the agent to write the
+  merged page and call `ctx_push` with `resolved=["<path>"]`. Still 10 tools.
+- The distill handshake uses the same `CheckGuard` predicate as CLI push (D4).
+- `X-Contexo-Client` is the MCP client name, else `ctx-mcp` (E15).
 
 ## Fixtures (E31, E32, E33)
 
@@ -275,6 +355,54 @@ removes a frozen identifier.
   are full 40-hex lowercase; times are `YYYY-MM-DDTHH:MM:SSZ`; no fixture lists
   `pages.etag` or `remote.source` `cache`; 24 `error.<code>.json` files;
   version.release and version.dev list the 11 v1 capabilities then `repair`.
+
+### Golden fixtures from the real binary (e2e, WP-2.2)
+
+- Location: `internal/e2e/testdata/contract/` (48 files: 11 status, 1 version,
+  6 push incl. the exit-6 stderr half, 3 pull, 2 resolve, 2 raw show, 1 repair,
+  22 `error.<code>.json`) plus `manifest.json`; `internal/e2e/testdata/.gitattributes`
+  is `* -text`. Names follow E31 (`pull.case-collision.json` excepted, see
+  above).
+- `manifest.json`: `{"contract_version":1,"generated_by":"go test ./internal/e2e -run TestGolden -update","fixtures":[{file, schema, command, stream, exit_code, sha256}]}`,
+  sorted by file. `command` is the argv array without `--root <dir>` (the E25
+  extension argv for extension commands); `stream` is `stdout`, `stderr` or
+  `raw` (E32); `schema` is `ctx.*.v1`, null for raw; `repair.json` is stdout
+  with `ctx.repair.v1`; `sha256` is of the redacted file.
+- Each golden comes from ONE ctx run in a deterministic state (fixed page
+  bodies, frontmatter times, session ids, and server commit dates pinned via
+  `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` for the in-process gitstore). The raw
+  streams are checked first (one 2-space document, empty stderr; or exactly
+  one envelope line; E16 times and 40-hex shas on the unredacted bytes).
+- Redaction is textual (key order and indentation survive), unit-tested in
+  `internal/e2e/redact_test.go`: 40-hex shas -> per-file first-appearance
+  placeholders `%040x` from 1 (also inside the manifest `command`); whole-second
+  `Z` times -> `2000-01-01T00:00:00Z` (any other time form is left to fail the
+  schemas); server URLs -> `http://contexo-e2e.invalid` (bare host:port ->
+  `contexo-e2e.invalid`, and the Windows `connectex` refusal text -> the unix
+  `connect: connection refused`); absolute roots, raw or JSON-escaped, ->
+  `/e2e/<user>` with `/` separators below them; lock pid -> 4242 and host ->
+  `e2e-host`; `backup/<P>.<ts>` -> `.20000101T000000Z`; `version --json`
+  `os`/`arch` -> `e2e-os`/`e2e-arch`. Content hashes are kept (they are not
+  OS-dependent: pages are written with LF).
+- Regenerate ONLY for a legitimate shape change (a contract-additive field, or
+  a fix that makes ctx emit the contract shape a golden recorded wrongly):
+  `make test-e2e-update` (= `CONTEXO_NO_UPDATE_CHECK=1 go test ./internal/e2e -run TestGolden -update -count=1`),
+  then review `git diff internal/e2e/testdata`. A second `-update` must leave
+  the tree unchanged. Check: `make test-e2e`.
+- Knobs: `CONTEXO_E2E_CTX=<abs path>` runs the suite against a prebuilt ctx
+  (version.dev.json and the dev-only checks of scenario 10 are skipped for it);
+  `CONTEXO_E2E_STRICT=1` turns every known-deviation skip into a failure.
+  `go test -short` skips everything that needs the binary.
+- Meta tests (no binary needed): `TestGoldenManifest` (disk, manifest and the
+  golden groups match one-to-one; every sha256 matches), `TestGoldenStrictDecode`
+  (each stdout golden decodes with DisallowUnknownFields into its contract type
+  and re-encodes through `contract.WriteDoc` to identical compacted JSON; each
+  stderr golden is one envelope line with typed details),
+  `TestGoldens_NoSecrets`, `TestGoldens_NoPagesETag`.
+- Consumers: WP-2.I validates every stdout/stderr golden with
+  contexo-vscode `contract/validate.mjs --manifest` (WP-2.2's early run:
+  45 validated, 3 skipped (repair, 2 raw), 0 failed); WP-3.1 vendors them;
+  WP-3.2 uses them as `json-output.mdx` examples.
 
 ## Deviations confirmed by the user (2026-10-21)
 
