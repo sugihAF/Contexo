@@ -9,12 +9,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sugihAF/contexo/internal/schema"
 	"github.com/sugihAF/contexo/internal/sync"
@@ -204,40 +207,88 @@ func sr14ShowContract(t *testing.T, err error, code contract.ErrorCode) *contrac
 	return ce
 }
 
+// sr14ShowEntry is one path of an sr14ShowTree snapshot.
+type sr14ShowEntry struct {
+	Mode    fs.FileMode
+	ModTime time.Time
+	Size    int64
+	Data    string // regular files only
+}
+
+func (e sr14ShowEntry) String() string {
+	return fmt.Sprintf("mode %s mtime %s size %d", e.Mode, e.ModTime.Format(time.RFC3339Nano), e.Size)
+}
+
 // sr14ShowTree snapshots everything under dir: per slash path its mode,
-// mtime and, for a regular file, its bytes. Any write, create, remove or
-// atomic rewrite (also of a lock file that is removed again: its directory's
-// mtime moves) changes the snapshot.
-func sr14ShowTree(t *testing.T, dir string) map[string]string {
+// mtime, size and, for a regular file, its bytes. Any write, create, remove
+// or atomic rewrite (also of a lock file that is removed again: its
+// directory's mtime moves) changes the snapshot. Metadata comes from
+// os.Lstat per path, not from WalkDir's d.Info(): on Windows that is the
+// directory-enumeration record, which can be stale (lead ruling L20).
+func sr14ShowTree(t *testing.T, dir string) map[string]sr14ShowEntry {
 	t.Helper()
-	out := map[string]string{}
+	out := map[string]sr14ShowEntry{}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		entry := info.Mode().String() + " " + info.ModTime().String()
-		if d.Type().IsRegular() {
+		e := sr14ShowEntry{Mode: info.Mode(), ModTime: info.ModTime(), Size: info.Size()}
+		if info.Mode().IsRegular() {
 			b, err := os.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			entry += " " + string(b)
+			e.Data = string(b)
 		}
 		rel, err := filepath.Rel(dir, p)
 		if err != nil {
 			return err
 		}
-		out[filepath.ToSlash(rel)] = entry
+		out[filepath.ToSlash(rel)] = e
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// sr14ShowTreeDiff lists every path whose snapshot entry differs between
+// before and after, with its before/after mode, mtime and size; nil when
+// nothing changed.
+func sr14ShowTreeDiff(before, after map[string]sr14ShowEntry) []string {
+	paths := make([]string, 0, len(before)+len(after))
+	for p := range before {
+		paths = append(paths, p)
+	}
+	for p := range after {
+		if _, ok := before[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	var diff []string
+	for _, p := range paths {
+		b, inBefore := before[p]
+		a, inAfter := after[p]
+		switch {
+		case !inAfter:
+			diff = append(diff, fmt.Sprintf("removed %s (before: %s)", p, b))
+		case !inBefore:
+			diff = append(diff, fmt.Sprintf("added %s (after: %s)", p, a))
+		case b.Mode != a.Mode || !b.ModTime.Equal(a.ModTime) || b.Size != a.Size || b.Data != a.Data:
+			l := fmt.Sprintf("changed %s: before %s; after %s", p, b, a)
+			if b.Data != a.Data {
+				l += " (content differs)"
+			}
+			diff = append(diff, l)
+		}
+	}
+	return diff
 }
 
 // sr14ShowAssertRequests asserts the fake saw exactly want (method -> calls).
@@ -640,8 +691,8 @@ func TestShow_WritesNothing(t *testing.T) {
 			t.Errorf("show %s --at %s: err = %v, want ok %v", c.path, c.at, err, c.ok)
 		}
 	}
-	if after := sr14ShowTree(t, env.HubDir); !reflect.DeepEqual(after, before) {
-		t.Errorf("show changed the hub:\nbefore %v\nafter  %v", before, after)
+	if diff := sr14ShowTreeDiff(before, sr14ShowTree(t, env.HubDir)); len(diff) > 0 {
+		t.Errorf("show changed the hub:\n%s", strings.Join(diff, "\n"))
 	}
 	if _, err := os.Lstat(syncstate.LockPath(env.HubDir)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("show left a lock file: %v", err)
@@ -728,4 +779,64 @@ func TestShow_MissingHubIsNotInitialized(t *testing.T) {
 		t.Errorf("show created the hub: %v", err)
 	}
 	sr14ShowAssertRequests(t, fake, map[string]int{})
+}
+
+// TestShow_TreeDiffNamesChangedPaths pins the read-only snapshot used by
+// TestShow_WritesNothing: an untouched tree has no diff, and every changed,
+// added or removed path is named with its before/after mode, mtime and size.
+func TestShow_TreeDiffNamesChangedPaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a.md", "b.md", "c.md"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := sr14ShowTree(t, dir)
+	if diff := sr14ShowTreeDiff(before, sr14ShowTree(t, dir)); len(diff) != 0 {
+		t.Fatalf("diff of an untouched dir = %q, want none", diff)
+	}
+
+	aTime := before["a.md"].ModTime
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("a changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, "a.md"), aTime, aTime); err != nil { // content and size change, mtime does not
+		t.Fatal(err)
+	}
+	later := before["b.md"].ModTime.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "b.md"), later, later); err != nil { // only the mtime changes
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "c.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "d.md"), []byte("d"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff := sr14ShowTreeDiff(before, sr14ShowTree(t, dir))
+	line := func(name string) string {
+		t.Helper()
+		for _, l := range diff {
+			if strings.Contains(l, " "+name) {
+				return l
+			}
+		}
+		t.Fatalf("diff does not name %s:\n%s", name, strings.Join(diff, "\n"))
+		return ""
+	}
+	if l := line("a.md"); !strings.HasPrefix(l, "changed ") || !strings.Contains(l, "size 4;") ||
+		!strings.Contains(l, "size 9") || !strings.Contains(l, "content differs") {
+		t.Errorf("a.md line %q: want changed, before size 4, after size 9 and content differs", l)
+	}
+	if l := line("b.md"); !strings.HasPrefix(l, "changed ") || strings.Contains(l, "content differs") ||
+		!strings.Contains(l, later.Format(time.RFC3339Nano)) {
+		t.Errorf("b.md line %q: want changed with the new mtime and the same content", l)
+	}
+	if l := line("c.md"); !strings.HasPrefix(l, "removed ") {
+		t.Errorf("c.md line %q: want removed", l)
+	}
+	if l := line("d.md"); !strings.HasPrefix(l, "added ") {
+		t.Errorf("d.md line %q: want added", l)
+	}
 }

@@ -631,36 +631,85 @@ func TestStatusJSON_OfflineHasNoRemoteError(t *testing.T) {
 	}
 }
 
-// st11TreeSum hashes every path under dir with its type, bytes and mtime, so
-// a rewrite with the same bytes, or a temp file created and removed (the
-// parent directory's mtime moves), changes the sum.
-func st11TreeSum(t *testing.T, dir string) string {
+// st11TreeEntry is one path of an st11TreeSnapshot.
+type st11TreeEntry struct {
+	Mode    os.FileMode
+	ModTime time.Time
+	Size    int64
+	Data    string // regular files only
+}
+
+func (e st11TreeEntry) String() string {
+	return fmt.Sprintf("mode %s mtime %s size %d", e.Mode, e.ModTime.Format(time.RFC3339Nano), e.Size)
+}
+
+// st11TreeSnapshot records every path under dir (slash-relative) with its
+// mode, mtime, size and bytes, so a rewrite with the same bytes, or a temp
+// file created and removed (the parent directory's mtime moves), shows up.
+// Metadata comes from os.Lstat per path, not from WalkDir's d.Info(): on
+// Windows that is the directory-enumeration record, which can be stale
+// (lead ruling L20).
+func st11TreeSnapshot(t *testing.T, dir string) map[string]st11TreeEntry {
 	t.Helper()
-	var b strings.Builder
+	out := map[string]st11TreeEntry{}
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
-		fmt.Fprintf(&b, "%s\x00%s\x00%d\x00", filepath.ToSlash(rel), info.Mode().Type(), info.ModTime().UnixNano())
-		if d.Type().IsRegular() {
+		e := st11TreeEntry{Mode: info.Mode(), ModTime: info.ModTime(), Size: info.Size()}
+		if info.Mode().IsRegular() {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			b.Write(data)
+			e.Data = string(data)
 		}
-		b.WriteByte(0)
+		rel, _ := filepath.Rel(dir, path)
+		out[filepath.ToSlash(rel)] = e
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b.String()
+	return out
+}
+
+// st11TreeDiff lists every path whose snapshot entry differs between before
+// and after, with its before/after mode, mtime and size; nil when nothing
+// changed.
+func st11TreeDiff(before, after map[string]st11TreeEntry) []string {
+	paths := make([]string, 0, len(before)+len(after))
+	for p := range before {
+		paths = append(paths, p)
+	}
+	for p := range after {
+		if _, ok := before[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	var diff []string
+	for _, p := range paths {
+		b, inBefore := before[p]
+		a, inAfter := after[p]
+		switch {
+		case !inAfter:
+			diff = append(diff, fmt.Sprintf("removed %s (before: %s)", p, b))
+		case !inBefore:
+			diff = append(diff, fmt.Sprintf("added %s (after: %s)", p, a))
+		case b.Mode != a.Mode || !b.ModTime.Equal(a.ModTime) || b.Size != a.Size || b.Data != a.Data:
+			l := fmt.Sprintf("changed %s: before %s; after %s", p, b, a)
+			if b.Data != a.Data {
+				l += " (content differs)"
+			}
+			diff = append(diff, l)
+		}
+	}
+	return diff
 }
 
 // --offline (and its --no-drift alias), JSON or human, writes nothing in the
@@ -678,7 +727,7 @@ func TestStatusJSON_OfflineWritesNothing(t *testing.T) {
 	bare := testkit.NewProject(t, testkit.ProjectOptions{
 		ServerURL: trap.URL, Key: "st11-key", RepoID: "st11-bare", Pages: st11Pages,
 	})
-	before := st11TreeSum(t, bare.Root)
+	before := st11TreeSnapshot(t, bare.Root)
 	for _, args := range runs {
 		if code, _, stderr := st11Run(t, append(args, "--root", bare.Root)...); code != 0 {
 			t.Fatalf("%q: exit %d, stderr %q", args, code, stderr)
@@ -687,8 +736,8 @@ func TestStatusJSON_OfflineWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(bare.HubDir, ".sync")); !os.IsNotExist(err) {
 		t.Errorf(".sync/ exists after offline status (stat err %v)", err)
 	}
-	if after := st11TreeSum(t, bare.Root); after != before {
-		t.Error("offline status changed the never-synced project")
+	if diff := st11TreeDiff(before, st11TreeSnapshot(t, bare.Root)); len(diff) > 0 {
+		t.Errorf("offline status changed the never-synced project:\n%s", strings.Join(diff, "\n"))
 	}
 
 	// A synced project with a base, a sidecar and a capture buffer.
@@ -712,8 +761,8 @@ func TestStatusJSON_OfflineWritesNothing(t *testing.T) {
 	}
 	p.WriteRaw("raw/sessions/_pending/st11-sess.jsonl", []byte("{\"turn\":1}\n"))
 
-	// The sum covers .sync/: a lock, a .gitignore or a temp file would show.
-	before = st11TreeSum(t, p.Root)
+	// The snapshot covers .sync/: a lock, a .gitignore or a temp file would show.
+	before = st11TreeSnapshot(t, p.Root)
 	for _, args := range runs {
 		code, stdout, stderr := st11Run(t, append(args, "--root", p.Root)...)
 		if code != 0 {
@@ -725,8 +774,8 @@ func TestStatusJSON_OfflineWritesNothing(t *testing.T) {
 			}
 		}
 	}
-	if after := st11TreeSum(t, p.Root); after != before {
-		t.Error("offline status changed the synced project")
+	if diff := st11TreeDiff(before, st11TreeSnapshot(t, p.Root)); len(diff) > 0 {
+		t.Errorf("offline status changed the synced project:\n%s", strings.Join(diff, "\n"))
 	}
 	if n := trap.hits.Load(); n != 0 {
 		t.Errorf("offline status sent %d request(s)", n)
@@ -969,5 +1018,66 @@ func TestStatusHuman_ExpectedPathOnce(t *testing.T) {
 		Invalid: &contract.InvalidInfo{Stage: contract.InvalidPathMismatch, Message: "slug elsewhere", ExpectedPath: want}}
 	if d := statusInvalidDetail(e); d != "path_mismatch: slug elsewhere (expected "+want+")" {
 		t.Errorf("detail = %q", d)
+	}
+}
+
+// TestStatus_TreeDiffNamesChangedPaths pins the read-only snapshot used by
+// TestStatusJSON_OfflineWritesNothing: an untouched tree has no diff, and
+// every changed, added or removed path is named with its before/after mode,
+// mtime and size.
+func TestStatus_TreeDiffNamesChangedPaths(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a.md", "b.md", "c.md"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := st11TreeSnapshot(t, dir)
+	if diff := st11TreeDiff(before, st11TreeSnapshot(t, dir)); len(diff) != 0 {
+		t.Fatalf("diff of an untouched dir = %q, want none", diff)
+	}
+
+	aTime := before["a.md"].ModTime
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("a changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, "a.md"), aTime, aTime); err != nil { // content and size change, mtime does not
+		t.Fatal(err)
+	}
+	later := before["b.md"].ModTime.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "b.md"), later, later); err != nil { // only the mtime changes
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "c.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "d.md"), []byte("d"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff := st11TreeDiff(before, st11TreeSnapshot(t, dir))
+	line := func(name string) string {
+		t.Helper()
+		for _, l := range diff {
+			if strings.Contains(l, " "+name) {
+				return l
+			}
+		}
+		t.Fatalf("diff does not name %s:\n%s", name, strings.Join(diff, "\n"))
+		return ""
+	}
+	if l := line("a.md"); !strings.HasPrefix(l, "changed ") || !strings.Contains(l, "size 4;") ||
+		!strings.Contains(l, "size 9") || !strings.Contains(l, "content differs") {
+		t.Errorf("a.md line %q: want changed, before size 4, after size 9 and content differs", l)
+	}
+	if l := line("b.md"); !strings.HasPrefix(l, "changed ") || strings.Contains(l, "content differs") ||
+		!strings.Contains(l, later.Format(time.RFC3339Nano)) {
+		t.Errorf("b.md line %q: want changed with the new mtime and the same content", l)
+	}
+	if l := line("c.md"); !strings.HasPrefix(l, "removed ") {
+		t.Errorf("c.md line %q: want removed", l)
+	}
+	if l := line("d.md"); !strings.HasPrefix(l, "added ") {
+		t.Errorf("d.md line %q: want added", l)
 	}
 }
