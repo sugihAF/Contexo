@@ -1,0 +1,70 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "capabilities_known": false,
+    "capabilities": []
+  },
+  "auth": {
+    "state": "unchecked",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "none",
+    "page_count": 0,
+    "error": {
+      "code": "network",
+      "message": "sync: list pages: Get \"http://contexo-e2e.invalid/v1/repos/e2e/pages\": dial tcp contexo-e2e.invalid: connect: connection refused",
+      "advice": [],
+      "retryable": true
+    }
+  },
+  "counts": {
+    "unchanged": 0,
+    "modified": 0,
+    "new": 1,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 1,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "new",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "retry-policy",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:b34dc5fb20d66e0f810554ca9a41950097c36812aaff6f27353b0cef156291e5"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

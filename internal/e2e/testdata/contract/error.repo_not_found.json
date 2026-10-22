@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":8,"error":{"code":"repo_not_found","message":"pull: sync: list pages (404): {\"code\":\"repo_not_found\",\"error\":\"repo not found\"}","advice":[],"retryable":false,"http_status":404}}

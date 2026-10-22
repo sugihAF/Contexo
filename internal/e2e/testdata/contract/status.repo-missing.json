@@ -1,0 +1,86 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "version": "dev",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2000-01-01T00:00:00Z",
+    "repo_exists": false,
+    "page_count": 0
+  },
+  "counts": {
+    "unchanged": 0,
+    "modified": 0,
+    "new": 2,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 2,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "new",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "retry-policy",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:b34dc5fb20d66e0f810554ca9a41950097c36812aaff6f27353b0cef156291e5"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "new",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

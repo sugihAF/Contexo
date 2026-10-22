@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":5,"error":{"code":"server_unresolved","message":"pull: server URL unresolved: the credentials have no server_url","advice":["ctx auth login --server <url>"],"retryable":false}}

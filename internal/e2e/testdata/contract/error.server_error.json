@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":7,"error":{"code":"server_error","message":"pull: sync: list pages (500): {\"error\":\"internal server error\"}","advice":[],"retryable":true,"http_status":500}}

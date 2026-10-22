@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":11,"error":{"code":"quota_exceeded","message":"push: Your plan allows 1 repository. Upgrade to create more.","advice":[],"retryable":false,"http_status":402,"details":{"quota_code":"quota_repos","limit":1,"upgrade_url":"https://contexo.live/pricing"}}}

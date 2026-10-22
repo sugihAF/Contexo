@@ -1,0 +1,11 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "http://contexo-e2e.invalid",
+  "repo_id": "e2e",
+  "head": "0000000000000000000000000000000000000001",
+  "written": [],
+  "adopted": [],
+  "skipped": [],
+  "reindexed": false,
+  "warnings": []
+}

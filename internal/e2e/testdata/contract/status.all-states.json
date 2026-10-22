@@ -1,0 +1,266 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "version": "dev",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2000-01-01T00:00:00Z",
+    "repo_exists": true,
+    "page_count": 7
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 1,
+    "incoming": 1,
+    "incoming_new": 1,
+    "conflict": 2,
+    "deleted_local": 1,
+    "invalid": 2,
+    "unverified": 0,
+    "ahead": 2,
+    "behind": 2
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/broken-parse.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/concepts/broken-parse.md"
+      },
+      "invalid": {
+        "stage": "parse",
+        "message": "page: parse frontmatter: yaml: line 1: did not find expected ',' or ']'"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/chargeback-flow.md",
+      "state": "new",
+      "type": "concept",
+      "slug": "chargeback-flow",
+      "title": "chargeback-flow",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/chargeback-flow.md",
+        "hash": "sha256:35b1552560a813d479a3fd4253eca05c6224b239194a51fa7d3bc9111d659a43"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/idempotency-keys.md",
+      "state": "incoming",
+      "type": "concept",
+      "slug": "idempotency-keys",
+      "title": "idempotency-keys",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/idempotency-keys.md",
+        "hash": "sha256:e35b45db034fca4d4519710e7cb4720a5f66c310c51fbd2dd18ccf74ffb67a02"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "hash": "sha256:e35b45db034fca4d4519710e7cb4720a5f66c310c51fbd2dd18ccf74ffb67a02",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000002",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (4 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "ledger-reconciliation",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000003",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000003",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (5 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/misplaced.md",
+      "state": "invalid",
+      "tags": [],
+      "local": {
+        "file": "wiki/concepts/misplaced.md"
+      },
+      "invalid": {
+        "stage": "path_mismatch",
+        "message": "frontmatter type and slug place this page at wiki/concepts/relocated.md",
+        "expected_path": "wiki/concepts/relocated.md"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "conflict",
+      "conflict_kind": "both_modified",
+      "type": "concept",
+      "slug": "retry-policy",
+      "title": "retry-policy",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/retry-policy.md",
+        "hash": "sha256:fce8e06ff11a8d3254516a4e43709b1145be260645303e7e203175ababaf799d"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000004",
+        "hash": "sha256:b34dc5fb20d66e0f810554ca9a41950097c36812aaff6f27353b0cef156291e5",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000005",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (4 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/webhook-signing.md",
+      "state": "conflict",
+      "conflict_kind": "both_added",
+      "type": "concept",
+      "slug": "webhook-signing",
+      "title": "webhook-signing",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/webhook-signing.md",
+        "hash": "sha256:9a3030b599228b5ef2a5ec642666f6ecec3895b07da526b2d59594cd106663c0"
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000006",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (4 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/fraud-service.md",
+      "state": "deleted_local",
+      "tags": [],
+      "base": {
+        "sha": "0000000000000000000000000000000000000007",
+        "hash": "sha256:50f80378d33f1e7ce674054e819bd2a7603fad600b08145db0f7317896d3b0c2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000007",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (5 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:3a6964b221730a75977e08b67413e31ba0bde39a1d656a6aa21893d038a022e2"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000008",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000008",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (5 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/settlement-batch.md",
+      "state": "incoming_new",
+      "tags": [],
+      "remote": {
+        "sha": "0000000000000000000000000000000000000009",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (4 pages)"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": []
+}

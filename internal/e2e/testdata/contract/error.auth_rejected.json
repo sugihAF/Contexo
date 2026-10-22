@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":4,"error":{"code":"auth_rejected","message":"push: sync: list pages (401): {\"error\":\"invalid API key\"}","advice":[],"retryable":false,"http_status":401}}

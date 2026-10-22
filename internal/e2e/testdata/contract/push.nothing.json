@@ -1,0 +1,21 @@
+{
+  "schema": "ctx.push.v1",
+  "dry_run": false,
+  "message": "ctx push (0 pages)",
+  "server_url": "http://contexo-e2e.invalid",
+  "repo_id": "e2e",
+  "pushed": [],
+  "conflicts": [],
+  "skipped": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "unchanged",
+      "reason": "unchanged"
+    }
+  ],
+  "distill": {
+    "required": false,
+    "bypassed": false
+  },
+  "warnings": []
+}

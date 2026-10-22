@@ -1,0 +1,26 @@
+{
+  "schema": "ctx.repair.v1",
+  "dry_run": false,
+  "server_capabilities": [
+    "pages.at",
+    "push.expect_absent",
+    "write.path_sha"
+  ],
+  "backfilled": [
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "sha": "0000000000000000000000000000000000000001"
+    }
+  ],
+  "repaired": [
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "old_sha": "0000000000000000000000000000000000000001",
+      "new_sha": "0000000000000000000000000000000000000002",
+      "reason": "path_sha_fixed"
+    }
+  ],
+  "skipped": [],
+  "unverified": [],
+  "warnings": []
+}

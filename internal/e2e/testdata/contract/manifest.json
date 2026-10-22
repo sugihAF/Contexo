@@ -1,0 +1,582 @@
+{
+  "contract_version": 1,
+  "generated_by": "go test ./internal/e2e -run TestGolden -update",
+  "fixtures": [
+    {
+      "file": "error.auth_rejected.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "ef9d79702a398df05d5977467b6a1f0b16febcd115d88411b66976278a84b0c3"
+    },
+    {
+      "file": "error.base_unavailable.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "show",
+        "wiki/concepts/chargeback-flow.md",
+        "--at",
+        "base"
+      ],
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "66f799c4374133af3db5fe480c8f4a8907c86c5f3cc77a2c4b131a8a54a5ee8d"
+    },
+    {
+      "file": "error.busy.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 12,
+      "sha256": "ac92305b69a3fba77237f86f5f6149ae6f49fa0f3865333489db372c90108c00"
+    },
+    {
+      "file": "error.conflict.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "93e1680a08364deffa6df95106c057d108ac4b6456598e741642099da8465257"
+    },
+    {
+      "file": "error.distill_required.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 9,
+      "sha256": "d1e7f8303bd564e9a7b92ad19a10a8e7857d6b1dcc0cc8b7a4722361524b2b50"
+    },
+    {
+      "file": "error.forbidden.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "dfdf7ab2c47a826030dbe6e4841c8924677c555723fefacb33c178551756ef86"
+    },
+    {
+      "file": "error.invalid_path.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "show",
+        "../x.md",
+        "--at",
+        "base"
+      ],
+      "stream": "stderr",
+      "exit_code": 3,
+      "sha256": "dd0989c028c94106bfce37deca9550c5b1308988b54faba672ed99c39f74d507"
+    },
+    {
+      "file": "error.network.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "257a15d8ef986ede9eddc7525ba85668ed5c33b954de2c71a06121e7c609c411"
+    },
+    {
+      "file": "error.not_authenticated.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 4,
+      "sha256": "b73df3da9b971dba2133fe420ab68741e6d22b87e2363eb2d45cdcc1166c8748"
+    },
+    {
+      "file": "error.not_initialized.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "a582be845692c0da752517552b77806e3c7fd6ad189f43b424006ecb9933f8aa"
+    },
+    {
+      "file": "error.not_resolvable.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "resolve",
+        "wiki/concepts/idempotency-keys.md",
+        "--ours",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 9,
+      "sha256": "e3a1739cc57b229d5d6f55a25ff806f63919891c30c5e769b5911befb48880f1"
+    },
+    {
+      "file": "error.page_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "show",
+        "wiki/concepts/never-pushed.md",
+        "--at",
+        "server"
+      ],
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "1b433f0eb70ec3d6d7dc870f429fb8e3122908b0ded8dc9f6255d4c63c93f91a"
+    },
+    {
+      "file": "error.quota_exceeded.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 11,
+      "sha256": "eb631eef6f5fa83fd1c667a635cad7abaccb0653ba2bd5a74533654003acbab2"
+    },
+    {
+      "file": "error.rate_limited.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "1539be0c693bfa9e7bacfa67a6f6c68922328e729580aa238ea81e12617c4d2c"
+    },
+    {
+      "file": "error.repo_not_configured.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "373e03b14e1af7e3fdc4015a409943b6f9f57858dac75d32bcdfdc32602eee3b"
+    },
+    {
+      "file": "error.repo_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "6d5f01698d6759af917bc35b69b10dae76a818af782186ad616eb9a695684fd2"
+    },
+    {
+      "file": "error.server_error.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 7,
+      "sha256": "54a56c310e1a7fc0081aa7d173242bca5b8b46276b527702a8d6450ae0d8f177"
+    },
+    {
+      "file": "error.server_unresolved.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 5,
+      "sha256": "d11d22d0798b11aa80d59a4bd564c7d168b19c09c510345bafe27338a0d20015"
+    },
+    {
+      "file": "error.server_unsupported.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "show",
+        "wiki/concepts/retry-policy.md",
+        "--at",
+        "0000000000000000000000000000000000000001"
+      ],
+      "stream": "stderr",
+      "exit_code": 10,
+      "sha256": "8b38dad2319d62baeff1d89f1ce729c7983fc48fe911e58086012dbd4b2eba91"
+    },
+    {
+      "file": "error.sha_not_found.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "show",
+        "wiki/concepts/retry-policy.md",
+        "--at",
+        "0000000000000000000000000000000000000001"
+      ],
+      "stream": "stderr",
+      "exit_code": 8,
+      "sha256": "2c038a9fc82308e3a226575fd41ac2bf12af00d67729a5f0c13b9c9d02612cca"
+    },
+    {
+      "file": "error.stale.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "resolve",
+        "wiki/concepts/retry-policy.md",
+        "--ours",
+        "--json",
+        "--if-server-sha",
+        "0000000000000000000000000000000000000002"
+      ],
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "ca3ae4345fc361cd1fce37b784f1bd7cdd0334e0be36524add22159ee8eb1c69"
+    },
+    {
+      "file": "error.usage.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "resolve",
+        "wiki/concepts/retry-policy.md",
+        "--ours",
+        "--theirs",
+        "--json"
+      ],
+      "stream": "stderr",
+      "exit_code": 3,
+      "sha256": "8c4d6654b668b755da698c51427b8a5a20868d4bc574d76736b233432f30f88d"
+    },
+    {
+      "file": "pull.ok.json",
+      "schema": "ctx.pull.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "fe418ed2bfdf466f5873589e05bd92ca7a2750ef58ed33d8edbca40415bea3a4"
+    },
+    {
+      "file": "pull.skipped-and-adopted.json",
+      "schema": "ctx.pull.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "df39e2b8ae6992a940ee544b23ff5ad6f990e3574dbf8dbefb1bc3a7a6a031d2"
+    },
+    {
+      "file": "pull.up-to-date.json",
+      "schema": "ctx.pull.v1",
+      "command": [
+        "pull",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b92e537575169be11324f187066ce8b4a1d9f241d8291f53caa20b604ee04bf0"
+    },
+    {
+      "file": "push.distill-bypassed.json",
+      "schema": "ctx.push.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes",
+        "--no-distill"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f260392a5ef3940ca6f0c9a24659dde4edb6e33f472f32f0c7585c4916677bbb"
+    },
+    {
+      "file": "push.dry-run.json",
+      "schema": "ctx.push.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes",
+        "--dry-run"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "deac47a76ea5b63a1ae91d5c6c6cf5026a8879c43aae164f4b646733d7123c6c"
+    },
+    {
+      "file": "push.nothing.json",
+      "schema": "ctx.push.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes",
+        "--",
+        "wiki/concepts/retry-policy.md"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "e7a17c7dd091f85c313993ff0ea6c3b6d9f4ae4ebda509d93d6e1bba4defeef9"
+    },
+    {
+      "file": "push.ok.json",
+      "schema": "ctx.push.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "0b240b2c410cf934c9e43f2bba111f944cfaf6d2fb5243c11133932bcc3d16d3"
+    },
+    {
+      "file": "push.partial-conflict.json",
+      "schema": "ctx.push.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stdout",
+      "exit_code": 6,
+      "sha256": "9143ecb5a556aca779cf8632aac037a52192b8d0f3de456c9c452eb3a317dbbe"
+    },
+    {
+      "file": "push.partial-conflict.stderr.json",
+      "schema": "ctx.error.v1",
+      "command": [
+        "push",
+        "--json",
+        "--yes"
+      ],
+      "stream": "stderr",
+      "exit_code": 6,
+      "sha256": "93e1680a08364deffa6df95106c057d108ac4b6456598e741642099da8465257"
+    },
+    {
+      "file": "repair.json",
+      "schema": "ctx.repair.v1",
+      "command": [
+        "repair",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "b19523af8d22b90d0452aa30aaef1aebc629c9fd5d10db07af71ea5e0b810707"
+    },
+    {
+      "file": "resolve.ours.json",
+      "schema": "ctx.resolve.v1",
+      "command": [
+        "resolve",
+        "wiki/concepts/retry-policy.md",
+        "--ours",
+        "--json",
+        "--if-server-sha",
+        "0000000000000000000000000000000000000001"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "77ba84bc75f135b88d83f2cafa999db636c3ea8395237fac6c069adefc39d8d3"
+    },
+    {
+      "file": "resolve.theirs.json",
+      "schema": "ctx.resolve.v1",
+      "command": [
+        "resolve",
+        "wiki/concepts/retry-policy.md",
+        "--theirs",
+        "--json",
+        "--if-server-sha",
+        "0000000000000000000000000000000000000001"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "d645c30546158c181040ef63b461b7c4ad193cc678a04e1eed5e47ea50f501e4"
+    },
+    {
+      "file": "show.base.raw.md",
+      "schema": null,
+      "command": [
+        "show",
+        "wiki/concepts/retry-policy.md",
+        "--at",
+        "base"
+      ],
+      "stream": "raw",
+      "exit_code": 0,
+      "sha256": "da8abd378451cd15c3764b064f1deeaea73bd1ebbfab4192e7cfaaf2cc249699"
+    },
+    {
+      "file": "show.server.raw.md",
+      "schema": null,
+      "command": [
+        "show",
+        "wiki/concepts/retry-policy.md",
+        "--at",
+        "server"
+      ],
+      "stream": "raw",
+      "exit_code": 0,
+      "sha256": "b22c4b767a3f0e2475444f9c6eede2dd2bd9a0ca5ca46afa399eb11b7c2e203e"
+    },
+    {
+      "file": "status.all-states.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "107ade7d73c2314a5bbd61e6046001103cd928abe3ba65a51b19844cac1c2ff0"
+    },
+    {
+      "file": "status.auth-rejected.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "270941950492145c636e5959ffc714cdaf31cfe5c704ffa9b7902232eaf60eb8"
+    },
+    {
+      "file": "status.captures-blocking.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f0b936770500c042978ce36afcf3aa0e8d7cb758ceafa94896107934efc8d417"
+    },
+    {
+      "file": "status.empty.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "31f5df01ef41a4d97249419fb187afb2bd48caaf3eae7fbc8059bb630ef72a83"
+    },
+    {
+      "file": "status.network-error.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "0a8944812565174979799c9b121968d1b3544ddbf9b2e1d15daa6bf41bc505ee"
+    },
+    {
+      "file": "status.not-authenticated.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "777138d689b756419f05e750b2d5051fdc0e34fb349f821b1be7700b07f7ed4a"
+    },
+    {
+      "file": "status.offline-nocache.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json",
+        "--offline"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "20627ba119ac0c9d67fb290795038b616b24e8be05a7445f77188c489f0b447f"
+    },
+    {
+      "file": "status.offline-sidecar.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json",
+        "--offline"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "f15b614746b22931d9f93e22ae2b069350a5358ac010a432d051949b3b34817b"
+    },
+    {
+      "file": "status.old-server.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "e845f2e40550fb65774723d2e712b8c7388d7b056d78d853675bae27b6407c0c"
+    },
+    {
+      "file": "status.repo-missing.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "d3304e52b2cff61b675c5d5a608d8b90cd293f2160805886cb431d3e939878e9"
+    },
+    {
+      "file": "status.url-mismatch.json",
+      "schema": "ctx.status.v1",
+      "command": [
+        "status",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "52ac795e53eeed6ed2b63514810d494897f7045a1088df873321a022b35b5515"
+    },
+    {
+      "file": "version.dev.json",
+      "schema": "ctx.version.v1",
+      "command": [
+        "version",
+        "--json"
+      ],
+      "stream": "stdout",
+      "exit_code": 0,
+      "sha256": "7c096623213392026a4a1244d251090af65ee79ab04b82f56e857d30b7104c9b"
+    }
+  ]
+}

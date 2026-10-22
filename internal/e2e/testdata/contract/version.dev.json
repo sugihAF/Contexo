@@ -1,0 +1,24 @@
+{
+  "schema": "ctx.version.v1",
+  "contract_version": 1,
+  "version": "dev",
+  "commit": "none",
+  "date": "unknown",
+  "dev_build": true,
+  "os": "e2e-os",
+  "arch": "e2e-arch",
+  "capabilities": [
+    "status.json",
+    "status.offline",
+    "show.base",
+    "show.server",
+    "show.sha",
+    "pull.json",
+    "push.json",
+    "push.paths",
+    "push.distill_guard",
+    "resolve",
+    "errors.envelope",
+    "repair"
+  ]
+}

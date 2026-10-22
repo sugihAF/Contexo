@@ -1,0 +1,118 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "https://contexo-config.example.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "version": "dev",
+    "capabilities_known": true,
+    "capabilities": [
+      "pages.at",
+      "push.expect_absent",
+      "write.path_sha"
+    ]
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2000-01-01T00:00:00Z",
+    "repo_exists": true,
+    "page_count": 2
+  },
+  "counts": {
+    "unchanged": 2,
+    "modified": 0,
+    "new": 0,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 0,
+    "ahead": 0,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "ledger-reconciliation",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000001",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (2 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "unchanged",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000002",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000002",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (2 pages)"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": [
+    {
+      "code": "server_url_mismatch",
+      "message": "config server_url https://contexo-config.example.invalid differs from http://contexo-e2e.invalid, the server your credentials belong to; using http://contexo-e2e.invalid",
+      "paths": []
+    }
+  ]
+}

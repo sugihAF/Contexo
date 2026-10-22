@@ -1,0 +1,146 @@
+{
+  "schema": "ctx.status.v1",
+  "generated_at": "2000-01-01T00:00:00Z",
+  "offline": false,
+  "root": "/e2e/alice",
+  "contexo_dir": "/e2e/alice/.contexo",
+  "project": {
+    "repo_id": "e2e",
+    "config_server_url": "http://contexo-e2e.invalid",
+    "dashboard_url": ""
+  },
+  "server": {
+    "url": "http://contexo-e2e.invalid",
+    "url_source": "credentials",
+    "capabilities_known": true,
+    "capabilities": []
+  },
+  "auth": {
+    "state": "authenticated",
+    "credentials_source": "project",
+    "token_kind": "legacy"
+  },
+  "remote": {
+    "source": "live",
+    "fetched_at": "2000-01-01T00:00:00Z",
+    "repo_exists": true,
+    "page_count": 3
+  },
+  "counts": {
+    "unchanged": 1,
+    "modified": 1,
+    "new": 0,
+    "incoming": 0,
+    "incoming_new": 0,
+    "conflict": 0,
+    "deleted_local": 0,
+    "invalid": 0,
+    "unverified": 1,
+    "ahead": 1,
+    "behind": 0
+  },
+  "pages": [
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "state": "unchanged",
+      "type": "concept",
+      "slug": "ledger-reconciliation",
+      "title": "ledger-reconciliation",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/ledger-reconciliation.md",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "hash": "sha256:c6dd791feb3c377e185ac710f8b6ddfd7a4a40cbecf69d2d7ed75a1cb80e81e2",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000001",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (3 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "state": "unverified",
+      "type": "concept",
+      "slug": "settlement-windows",
+      "title": "settlement-windows",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/concepts/settlement-windows.md",
+        "hash": "sha256:a38acdcb6d635ac62c1084fd8f4302589d9d2fec8042b9f98e0b1932b5d72a30"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000001",
+        "stale": true
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000002",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (3 pages)"
+      },
+      "notes": []
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "type": "entity",
+      "slug": "ledger-service",
+      "title": "ledger-service",
+      "tags": [],
+      "author": "testkit",
+      "updated": "2000-01-01T00:00:00Z",
+      "local": {
+        "file": "wiki/entities/ledger-service.md",
+        "hash": "sha256:fceb9da10ab271d40ea6c78c7a58b2ff0bbe563ecbdfc972744ea7e777cd80c8"
+      },
+      "base": {
+        "sha": "0000000000000000000000000000000000000003",
+        "hash": "sha256:657d10d1489ed885719e1f4444805429778049710c6f4740d23f7e28187ec5dd",
+        "synced_at": "2000-01-01T00:00:00Z",
+        "stale": false
+      },
+      "remote": {
+        "sha": "0000000000000000000000000000000000000003",
+        "author": "unknown",
+        "email": "unknown@contexo.local",
+        "time": "2000-01-01T00:00:00Z",
+        "message": "ctx push (3 pages)"
+      },
+      "notes": []
+    }
+  ],
+  "captures": {
+    "pending": 0,
+    "fresh": 0,
+    "blocks_push": false,
+    "sessions": []
+  },
+  "warnings": [
+    {
+      "code": "server_outdated",
+      "message": "http://contexo-e2e.invalid does not advertise pages.at, push.expect_absent, write.path_sha; update the Contexo server",
+      "paths": []
+    },
+    {
+      "code": "base_repair_skipped",
+      "message": "1 page(s) left unverified: base repair skipped (server_unsupported)",
+      "paths": [
+        "wiki/concepts/settlement-windows.md"
+      ]
+    }
+  ]
+}

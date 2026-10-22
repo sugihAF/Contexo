@@ -1,0 +1,27 @@
+{
+  "schema": "ctx.push.v1",
+  "dry_run": false,
+  "message": "ctx push (2 pages)",
+  "server_url": "http://contexo-e2e.invalid",
+  "repo_id": "e2e",
+  "new_head": "0000000000000000000000000000000000000001",
+  "pushed": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "kind": "update",
+      "sha": "0000000000000000000000000000000000000002"
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "kind": "create",
+      "sha": "0000000000000000000000000000000000000001"
+    }
+  ],
+  "conflicts": [],
+  "skipped": [],
+  "distill": {
+    "required": false,
+    "bypassed": false
+  },
+  "warnings": []
+}

@@ -1,0 +1,54 @@
+{
+  "schema": "ctx.pull.v1",
+  "server_url": "http://contexo-e2e.invalid",
+  "repo_id": "e2e",
+  "head": "0000000000000000000000000000000000000001",
+  "written": [],
+  "adopted": [
+    {
+      "path": "wiki/concepts/ledger-reconciliation.md",
+      "sha": "0000000000000000000000000000000000000002"
+    }
+  ],
+  "skipped": [
+    {
+      "path": "wiki/concepts/retry-policy.md",
+      "state": "conflict",
+      "reason": "conflict",
+      "server_sha": "0000000000000000000000000000000000000003"
+    },
+    {
+      "path": "wiki/concepts/settlement-windows.md",
+      "state": "unverified",
+      "reason": "unverified",
+      "server_sha": "0000000000000000000000000000000000000004"
+    },
+    {
+      "path": "wiki/concepts/webhook-signing.md",
+      "state": "invalid",
+      "reason": "invalid",
+      "server_sha": "0000000000000000000000000000000000000005"
+    },
+    {
+      "path": "wiki/entities/fraud-service.md",
+      "state": "deleted_local",
+      "reason": "deleted_local",
+      "server_sha": "0000000000000000000000000000000000000001"
+    },
+    {
+      "path": "wiki/entities/ledger-service.md",
+      "state": "modified",
+      "reason": "modified"
+    }
+  ],
+  "reindexed": false,
+  "warnings": [
+    {
+      "code": "base_repair_skipped",
+      "message": "1 page(s) left unverified: base repair skipped (sha_not_found)",
+      "paths": [
+        "wiki/concepts/settlement-windows.md"
+      ]
+    }
+  ]
+}

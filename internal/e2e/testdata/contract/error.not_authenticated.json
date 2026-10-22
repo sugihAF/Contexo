@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":4,"error":{"code":"not_authenticated","message":"pull: not authenticated","advice":["ctx auth login"],"retryable":false}}

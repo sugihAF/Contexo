@@ -1,0 +1,1 @@
+{"schema":"ctx.error.v1","exit_code":8,"error":{"code":"sha_not_found","message":"show wiki/concepts/retry-policy.md --at 0000000000000000000000000000000000000001: sync: read page at (404): {\"code\":\"sha_not_found\",\"error\":\"sha not found\"}","advice":[],"retryable":false,"http_status":404}}
