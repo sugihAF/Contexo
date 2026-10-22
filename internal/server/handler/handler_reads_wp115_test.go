@@ -108,11 +108,20 @@ func TestStaleAccess_ReadRoutesRecheckAfterRead(t *testing.T) {
 			release := wp115HoldUserstoreWrite(t, rig)
 			defer release()
 			cw := wp115RecreateAsync(t, rig, s.repo, carol.bearer)
-			for deadline := time.Now().Add(10 * time.Second); !rig.store.Exists(s.repo); time.Sleep(time.Millisecond) {
+			// gitstore.Create makes .git with git init and then runs two git
+			// config; the identity it writes last is the sign that Create ran
+			// its last git process and the create waits in its purge. Arming
+			// the gate before that would park carol's git config instead of
+			// bob's read.
+			created := func() bool {
+				b, err := os.ReadFile(filepath.Join(rig.store.Root, s.repo, ".git", "config"))
+				return err == nil && strings.Contains(string(b), "contexo-server")
+			}
+			for deadline := time.Now().Add(10 * time.Second); !created(); time.Sleep(time.Millisecond) {
 				if len(cw) > 0 || time.Now().After(deadline) {
 					release()
 					w := wp115Recv(t, "carol re-creates rr", cw)
-					t.Fatalf("carol's re-create answered %d %s without rr existing while the userstore was held", w.Code, w.Body.String())
+					t.Fatalf("carol's re-create answered %d %s without rr created while the userstore was held", w.Code, w.Body.String())
 				}
 			}
 			if err := os.Mkdir(gate, 0o755); err != nil {
