@@ -769,3 +769,182 @@ func TestStatus_HeadAmbiguousOmitted(t *testing.T) {
 		}
 	}
 }
+
+func TestStatus_CallsEnsureBaseWithListingAndReloads(t *testing.T) {
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	const a, b = "wiki/entities/a.md", "wiki/entities/b.md"
+	aBytes := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "a"})
+	sa := fr.Seed(a, aBytes)
+	st11Write(t, env, a, aBytes)
+	st11SetPageSHA(t, env, a, st11SHA(7)) // stale: no base record for that sha
+	bBytes := st11Page(testkit.PageSpec{Type: schema.TypeEntity, Slug: "b"})
+	sb := fr.Seed(b, bBytes)
+	st11SeedBase(t, env, b, bBytes, sb)
+	st11Write(t, env, b, bBytes)
+
+	// A repair that changes nothing leaves the stale base unverified.
+	st11OverrideEnsureBase(t, func(context.Context, Env, EnsureBaseOptions) (*EnsureBaseResult, error) {
+		return &EnsureBaseResult{}, nil
+	})
+	if got := st11Entry(t, st11Status(t, env, StatusOptions{}), a).State; got != contract.StateUnverified {
+		t.Fatalf("a without repair = %s, want unverified", got)
+	}
+
+	var got EnsureBaseOptions
+	calls := 0
+	st11OverrideEnsureBase(t, func(_ context.Context, env Env, o EnsureBaseOptions) (*EnsureBaseResult, error) {
+		got = o
+		calls++
+		st11SeedBase(t, env, a, aBytes, sa) // rewrites bases.json and page_shas
+		return &EnsureBaseResult{Repaired: []string{a}, Unverified: []string{}, Warnings: []contract.Warning{}}, nil
+	})
+	doc := st11Status(t, env, StatusOptions{})
+	if calls != 1 {
+		t.Fatalf("statusEnsureBase called %d times, want 1", calls)
+	}
+	if got.Locked || got.Paths != nil || len(got.Listing) != 2 ||
+		got.Listing[0].Path != a || got.Listing[0].SHA != sa || got.Listing[1].Path != b || got.Listing[1].SHA != sb {
+		t.Fatalf("EnsureBase options = %+v, want the live listing [a, b], Locked false", got)
+	}
+	ea := st11Entry(t, doc, a)
+	if ea.State != contract.StateUnchanged || ea.Base == nil || ea.Base.SHA != sa || ea.Base.Stale {
+		t.Fatalf("a after repair = %+v base %+v, want unchanged on %s", ea, ea.Base, sa)
+	}
+	if w := st11Warning(doc, contract.WarnBaseRepairSkipped); w != nil {
+		t.Fatalf("base_repair_skipped after a full repair: %+v", w)
+	}
+}
+
+func TestStatus_StaleBaseIsUnverified(t *testing.T) {
+	// An old server cannot read past versions and the listing sha differs
+	// from page_shas, with no older base record: even WP-1.5's real
+	// EnsureBase cannot repair this base.
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{OldServer: true})
+	env := st11Env(t, fr)
+	const a = "wiki/concepts/a.md"
+	s1 := fr.Seed(a, st11Page(testkit.PageSpec{Slug: "a", Body: "v1"}))
+	v2 := st11Page(testkit.PageSpec{Slug: "a", Body: "v2"})
+	s2 := fr.Seed(a, v2)
+	st11SetPageSHA(t, env, a, s1)
+	st11Write(t, env, a, v2)
+
+	doc := st11Status(t, env, StatusOptions{})
+	e := st11Entry(t, doc, a)
+	if e.State != contract.StateUnverified {
+		t.Fatalf("a = %s, want unverified", e.State)
+	}
+	if e.Base == nil || *e.Base != (contract.BaseSide{SHA: s1, Stale: true}) {
+		t.Fatalf("a base = %+v, want {sha: %s, stale: true}", e.Base, s1)
+	}
+	if e.Remote == nil || e.Remote.SHA != s2 {
+		t.Fatalf("a remote = %+v", e.Remote)
+	}
+	w := st11Warning(doc, contract.WarnBaseRepairSkipped)
+	if w == nil || !reflect.DeepEqual(w.Paths, []string{a}) || w.Message == "" {
+		t.Fatalf("base_repair_skipped = %+v, want paths [%s]", w, a)
+	}
+	if st11Warning(doc, contract.WarnServerOutdated) == nil {
+		t.Fatalf("no server_outdated on an old server: %+v", doc.Warnings)
+	}
+	if !doc.Server.CapabilitiesKnown || len(doc.Server.Capabilities) != 0 || doc.Server.Version != "" {
+		t.Fatalf("server = %+v", doc.Server)
+	}
+	if doc.Counts.Unverified != 1 {
+		t.Fatalf("counts = %+v", doc.Counts)
+	}
+}
+
+// st11StaleScenario is a current server holding rel at one sha while
+// page_shas names another, with no base record: unverified until repaired.
+func st11StaleScenario(t testing.TB, rel, slug string) (*syncopstest.FakeRemote, Env) {
+	t.Helper()
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env := st11Env(t, fr)
+	data := st11Page(testkit.PageSpec{Slug: slug})
+	fr.Seed(rel, data)
+	st11SetPageSHA(t, env, rel, st11SHA(9))
+	st11Write(t, env, rel, data)
+	return fr, env
+}
+
+func TestStatus_EnsureBaseErrorIsWarning(t *testing.T) {
+	boom := func(context.Context, Env, EnsureBaseOptions) (*EnsureBaseResult, error) {
+		return nil, errors.New("boom")
+	}
+
+	const z = "wiki/concepts/z.md"
+	_, env := st11StaleScenario(t, z, "z")
+	st11OverrideEnsureBase(t, boom)
+	doc := st11Status(t, env, StatusOptions{})
+	if st11Entry(t, doc, z).State != contract.StateUnverified {
+		t.Fatalf("pages = %v", st11Paths(doc))
+	}
+	w := st11Warning(doc, contract.WarnBaseRepairSkipped)
+	if w == nil || !reflect.DeepEqual(w.Paths, []string{z}) || !strings.Contains(w.Message, "boom") {
+		t.Fatalf("base_repair_skipped = %+v, want paths [%s] and the error", w, z)
+	}
+
+	// The error alone, with every page verified, still warns once.
+	fr := syncopstest.NewFakeRemote(syncopstest.FakeOptions{})
+	env = st11Env(t, fr)
+	const a = "wiki/concepts/a.md"
+	data := st11Page(testkit.PageSpec{Slug: "a"})
+	st11SeedBase(t, env, a, data, fr.Seed(a, data))
+	st11Write(t, env, a, data)
+	doc = st11Status(t, env, StatusOptions{})
+	w = st11Warning(doc, contract.WarnBaseRepairSkipped)
+	if w == nil || len(w.Paths) != 0 || !strings.Contains(w.Message, "boom") {
+		t.Fatalf("base_repair_skipped = %+v, want paths [] and the error", w)
+	}
+	if len(doc.Warnings) != 1 {
+		t.Fatalf("warnings = %+v", doc.Warnings)
+	}
+}
+
+func TestStatus_ServerOutdatedWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts syncopstest.FakeOptions
+		want string
+	}{
+		{"legacy no-op sha", syncopstest.FakeOptions{LegacyNoopHeadSHA: true}, "write.path_sha"},
+		{"old server", syncopstest.FakeOptions{OldServer: true}, "pages.at, push.expect_absent, write.path_sha"},
+	} {
+		env := st11Env(t, syncopstest.NewFakeRemote(tc.opts))
+		doc := st11Status(t, env, StatusOptions{})
+		w := st11Warning(doc, contract.WarnServerOutdated)
+		want := "https://kb.acme.dev does not advertise " + tc.want + "; update the Contexo server"
+		if w == nil || w.Message != want || w.Paths == nil || len(w.Paths) != 0 {
+			t.Fatalf("%s: server_outdated = %+v, want message %q and paths []", tc.name, w, want)
+		}
+	}
+
+	// Unknown capabilities never claim the server is outdated.
+	or := &st11OrderRemote{
+		FakeRemote: syncopstest.NewFakeRemote(syncopstest.FakeOptions{OldServer: true}),
+		info: func() (string, []contract.ServerCapability, bool) {
+			return "", []contract.ServerCapability{}, false
+		},
+	}
+	doc := st11Status(t, st11Env(t, or), StatusOptions{})
+	if w := st11Warning(doc, contract.WarnServerOutdated); w != nil || doc.Server.CapabilitiesKnown {
+		t.Fatalf("unknown capabilities: server %+v, server_outdated %+v", doc.Server, w)
+	}
+}
+
+func TestStatus_WarningsMergedByCode(t *testing.T) {
+	const x, y, z = "wiki/concepts/x.md", "wiki/concepts/y.md", "wiki/concepts/z.md"
+	_, env := st11StaleScenario(t, z, "z")
+	st11OverrideEnsureBase(t, func(context.Context, Env, EnsureBaseOptions) (*EnsureBaseResult, error) {
+		return &EnsureBaseResult{Warnings: []contract.Warning{
+			{Code: contract.WarnBaseRepairSkipped, Message: "y skipped", Paths: []string{y}},
+			{Code: contract.WarnBaseRepairSkipped, Message: "x skipped", Paths: []string{x}},
+		}}, nil
+	})
+	doc := st11Status(t, env, StatusOptions{})
+	want := []contract.Warning{{Code: contract.WarnBaseRepairSkipped, Message: "y skipped", Paths: []string{x, y, z}}}
+	if !reflect.DeepEqual(doc.Warnings, want) {
+		t.Fatalf("warnings = %+v, want %+v", doc.Warnings, want)
+	}
+}

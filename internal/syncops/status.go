@@ -2,8 +2,10 @@ package syncops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,19 +46,24 @@ func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc,
 	}
 	doc := statusNewDoc(env, now, o.Offline)
 
-	var remote map[string]string // nil: no live listing (E9 offline rule)
-	var meta map[string]sync.PageMeta
+	var live statusLive // zero: no live listing (E9 offline rule)
 	if !o.Offline && env.Online() {
-		remote, meta, _, _ = statusOnline(ctx, env, doc, now)
+		live = statusOnline(ctx, env, doc, now)
 	}
+	if w, ok := statusServerOutdated(env.ServerURL, doc.Server); ok {
+		doc.Warnings = append(doc.Warnings, w)
+	}
+	doc.Warnings = append(doc.Warnings, live.warnings...)
+
 	// Read the local state only now: EnsureBase may have rewritten
 	// state.json, bases.json and conflicts.json (E5 step 4).
-	view, err := syncstate.LoadView(hub, remote)
+	view, err := syncstate.LoadView(hub, live.remote)
 	if err != nil {
 		return nil, Wrap(err, contract.CodeInternal, "status")
 	}
 	doc.Project.LastPullSHA = view.State.LastPullSHA
 
+	unverified := []string{}
 	for _, rel := range view.Paths {
 		f := view.Facts[rel]
 		res, err := contract.ClassifySides(contract.Side(f.Local), contract.Side(f.Base), contract.Side(f.Remote))
@@ -70,11 +77,26 @@ func Status(ctx context.Context, env Env, o StatusOptions) (*contract.StatusDoc,
 		if res.State == "" {
 			continue
 		}
-		doc.Pages = append(doc.Pages, statusEntry(f, res, meta))
+		if res.State == contract.StateUnverified {
+			unverified = append(unverified, rel)
+		}
+		doc.Pages = append(doc.Pages, statusEntry(f, res, live.meta))
 		statusCount(&doc.Counts, res.State)
 	}
 	doc.Counts.Ahead = doc.Counts.Modified + doc.Counts.New
 	doc.Counts.Behind = doc.Counts.Incoming + doc.Counts.IncomingNew
+
+	// Deviation 13: online, every page left unverified is named, also when
+	// EnsureBase failed or said nothing. Merging below keeps EnsureBase's
+	// own message.
+	if doc.Remote.Source == contract.RemoteLive && (len(unverified) > 0 || live.ensureErr != nil) {
+		doc.Warnings = append(doc.Warnings, contract.Warning{
+			Code:    contract.WarnBaseRepairSkipped,
+			Message: statusRepairMessage(len(unverified), live.ensureErr),
+			Paths:   unverified,
+		})
+	}
+	doc.Warnings = statusMergeWarnings(doc.Warnings)
 	return doc, nil
 }
 
@@ -104,30 +126,39 @@ func statusNewDoc(env Env, now time.Time, offline bool) *contract.StatusDoc {
 	}
 }
 
+// statusLive is what the live listing contributed to a status run.
+type statusLive struct {
+	remote    map[string]string // path -> sha; nil without a live listing
+	meta      map[string]sync.PageMeta
+	warnings  []contract.Warning // EnsureBase's
+	ensureErr error              // EnsureBase's failure (base_repair_skipped)
+}
+
 // statusOnline makes status's one ListPages call and reads ServerInfo right
 // after it, before EnsureBase's requests can change what it reports
-// (deviation 14). On success it fills server, auth and remote, runs
-// EnsureBase over the live listing, and returns the listing as path -> sha
-// and as entries by path, plus EnsureBase's warnings and error. A failed
-// listing returns a nil map: the E9 offline rule applies.
-func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now time.Time) (map[string]string, map[string]sync.PageMeta, []contract.Warning, error) {
+// (deviation 14). On success it fills server, auth and remote and runs
+// EnsureBase over the live listing (E5 step 3). A failed listing leaves the
+// zero statusLive: the E9 offline rule applies.
+func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now time.Time) statusLive {
 	listing, lerr := env.Remote.ListPages(env.RepoID)
 	ver, caps, known := env.Remote.ServerInfo()
 	doc.Server.Version = ver
 	doc.Server.CapabilitiesKnown = known
 	doc.Server.Capabilities = append([]contract.ServerCapability{}, caps...)
 	if lerr != nil {
-		return nil, nil, nil, nil
+		return statusLive{}
 	}
 
 	if listing == nil {
 		listing = []sync.PageMeta{}
 	}
-	remote := make(map[string]string, len(listing))
-	meta := make(map[string]sync.PageMeta, len(listing))
+	live := statusLive{
+		remote: make(map[string]string, len(listing)),
+		meta:   make(map[string]sync.PageMeta, len(listing)),
+	}
 	for _, m := range listing {
-		remote[m.Path] = m.SHA
-		meta[m.Path] = m
+		live.remote[m.Path] = m.SHA
+		live.meta[m.Path] = m
 	}
 	exists := true
 	doc.Auth.State = contract.AuthAuthenticated
@@ -139,11 +170,75 @@ func statusOnline(ctx context.Context, env Env, doc *contract.StatusDoc, now tim
 		PageCount:  len(listing),
 	}
 	res, err := statusEnsureBase(ctx, env, EnsureBaseOptions{Listing: listing, Locked: false})
-	var warnings []contract.Warning
 	if res != nil {
-		warnings = res.Warnings
+		live.warnings = res.Warnings
 	}
-	return remote, meta, warnings, err
+	live.ensureErr = err
+	return live
+}
+
+// statusServerOutdated is E13's server_outdated: the server's capabilities
+// are known and lack one a v1 client relies on.
+func statusServerOutdated(serverURL string, s contract.ServerInfo) (contract.Warning, bool) {
+	if !s.CapabilitiesKnown {
+		return contract.Warning{}, false
+	}
+	var missing []string
+	for _, c := range []contract.ServerCapability{contract.SrvPagesAt, contract.SrvExpectAbsent, contract.SrvWritePathSHA} {
+		if !slices.Contains(s.Capabilities, c) {
+			missing = append(missing, string(c))
+		}
+	}
+	if len(missing) == 0 {
+		return contract.Warning{}, false
+	}
+	if serverURL == "" {
+		serverURL = "the server"
+	}
+	return contract.Warning{
+		Code:    contract.WarnServerOutdated,
+		Message: serverURL + " does not advertise " + strings.Join(missing, ", ") + "; update the Contexo server",
+		Paths:   []string{},
+	}, true
+}
+
+// statusRepairMessage is status's own base_repair_skipped message, for n
+// unverified pages and EnsureBase's error (nil when it did not fail).
+func statusRepairMessage(n int, err error) string {
+	msg := fmt.Sprintf("%d pages could not be verified against the server", n)
+	if n == 1 {
+		msg = "1 page could not be verified against the server"
+	}
+	switch {
+	case err == nil:
+		return msg
+	case n == 0:
+		return "base repair failed: " + err.Error()
+	}
+	return msg + ": base repair failed: " + err.Error()
+}
+
+// statusMergeWarnings merges warnings by code (R11): the first warning of a
+// code keeps its position and message and gets the sorted union of every
+// same-code warning's paths (never nil).
+func statusMergeWarnings(ws []contract.Warning) []contract.Warning {
+	out := make([]contract.Warning, 0, len(ws))
+	at := map[contract.WarningCode]int{}
+	for _, w := range ws {
+		i, seen := at[w.Code]
+		if !seen {
+			at[w.Code] = len(out)
+			w.Paths = append([]string{}, w.Paths...)
+			out = append(out, w)
+			continue
+		}
+		out[i].Paths = append(out[i].Paths, w.Paths...)
+	}
+	for i := range out {
+		slices.Sort(out[i].Paths)
+		out[i].Paths = slices.Compact(out[i].Paths)
+	}
+	return out
 }
 
 // statusHead is remote.head (R1): the sha of the listing entry with the
