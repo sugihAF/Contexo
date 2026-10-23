@@ -52,3 +52,5 @@ jobs:
           args: release --clean ${{ steps.sign.outputs.skip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Build the pushed tag, even when an rc tag points at the same commit.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
