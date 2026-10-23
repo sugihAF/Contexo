@@ -681,7 +681,7 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 	}
 
 	// Step 5: push the batch through the engine.
-	var lines []string
+	var head string
 	var doc *contract.PushDoc
 	if len(paths) > 0 {
 		if message == "" {
@@ -706,15 +706,14 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 				_ = buf.Archive()
 			}
 		}
-		head := fmt.Sprintf("Pushed %d page(s)", len(doc.Pushed))
+		head = fmt.Sprintf("Pushed %d page(s)", len(doc.Pushed))
 		if doc.NewHead != "" {
-			head += "; HEAD=" + shortMCPSHA(doc.NewHead)
+			head += "; HEAD=" + doc.NewHead
 		}
-		lines = append(lines, head)
 	}
-	lines = append(lines, notes...)
-
-	// Every page that needs a merge goes into one brief.
+	// Every page that needs a merge goes into one brief; rest holds the
+	// other skips and the warnings.
+	var rest []string
 	var conflicts []mergeItem
 	seen := map[string]bool{}
 	add := func(it mergeItem) {
@@ -732,10 +731,10 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 				add(s.mergeItemFor(ctx, env, sk.Path, sk.ServerSHA, ""))
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("Skipped %s (%s): %s", sk.Path, sk.Reason, pushSkipFix(sk)))
+			rest = append(rest, fmt.Sprintf("Skipped %s (%s): %s", sk.Path, sk.Reason, pushSkipFix(sk)))
 		}
 		for _, w := range doc.Warnings {
-			lines = append(lines, "Warning: "+w.Message)
+			rest = append(rest, "Warning: "+w.Message)
 		}
 	}
 	for _, rel := range plan.conflicts {
@@ -744,6 +743,15 @@ func (s *Server) toolPush(ctx context.Context, args map[string]interface{}) *Too
 	for _, it := range briefs {
 		add(it)
 	}
+
+	// The resolve notes come first: they happened before the push they led
+	// to (WP-4.1 GFR-4). A push that sent nothing and only asks for a merge
+	// has no "Pushed 0 page(s)" line (WP-4.1 GFR-3).
+	lines := append([]string(nil), notes...)
+	if head != "" && (len(doc.Pushed) > 0 || len(conflicts) == 0) {
+		lines = append(lines, head)
+	}
+	lines = append(lines, rest...)
 	if len(conflicts) > 0 {
 		lines = append(lines, s.renderBrief(env, "push", conflicts))
 	}
@@ -794,7 +802,7 @@ func (s *Server) resolveForPush(ctx context.Context, env syncops.Env, rel string
 	})
 	if err == nil {
 		briefForget(env.Root, rel)
-		out.notes = append(out.notes, fmt.Sprintf("Resolved %s: kept your version, re-based on server %s", rel, shortMCPSHA(known)))
+		out.notes = append(out.notes, fmt.Sprintf("Resolved %s: kept your version, re-based on server %s", rel, known))
 		return out, nil
 	}
 	c := ui.ToContractError(err)
@@ -1182,7 +1190,7 @@ func (s *Server) toolPull(ctx context.Context, args map[string]interface{}) *Too
 
 	head := fmt.Sprintf("Pulled %d page(s), adopted %d", len(doc.Written), len(doc.Adopted))
 	if doc.Head != "" {
-		head += "; HEAD=" + shortMCPSHA(doc.Head)
+		head += "; HEAD=" + doc.Head
 	}
 	lines := []string{head}
 	var kept []string

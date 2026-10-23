@@ -1118,7 +1118,7 @@ func TestPush_NoDistillBypasses(t *testing.T) {
 		if ce.Code != contract.CodeDistillRequired || doc != nil {
 			t.Fatalf("dry %v: Push = %+v, code %q; want distill_required", dry, doc, ce.Code)
 		}
-		const msg = "push: 1 un-distilled agent session is pending; share these pages through your agent so the reasoning trail is captured"
+		const msg = "push: 1 un-distilled agent session is pending; share these pages through your agent so the decision record is captured"
 		if ce.Message != msg || len(ce.Advice) != 0 {
 			t.Fatalf("dry %v: message %q advice %v", dry, ce.Message, ce.Advice)
 		}

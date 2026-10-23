@@ -77,9 +77,11 @@ func buildMergeBrief(origin string, items []mergeItem) string {
 	for i, it := range items {
 		paths[i] = it.Path
 		fmt.Fprintf(&sb, "─── FILE %d/%d: %s ───\n", i+1, len(items), it.Path)
+		// Both shas are printed in full, like every sha in the ctx_push and
+		// ctx_pull text (WP-4.1 GFR-5).
 		ancestor := "(none)"
 		if it.AncestorSHA != "" {
-			ancestor = shortMergeSHA(it.AncestorSHA)
+			ancestor = it.AncestorSHA
 		}
 		fmt.Fprintf(&sb, "  ancestor (both diverged from):  %s\n", ancestor)
 		fmt.Fprintf(&sb, "  server now:                     %s\n", it.ServerSHA)
@@ -90,13 +92,23 @@ func buildMergeBrief(origin string, items []mergeItem) string {
 		serverDiff := diff.PageSections(it.Ancestor, it.Server, it.AncestorSHA, it.ServerSHA)
 		writeSidedDiff(&sb, "SERVER changes vs ancestor:", &serverDiff)
 
-		if conflicting := overlappingModifiedSections(&yourDiff, &serverDiff); len(conflicting) > 0 {
+		conflicting, same := overlappingModifiedSections(&yourDiff, &serverDiff)
+		switch {
+		case len(conflicting) > 0:
 			fmt.Fprintln(&sb, "  CONFLICTING regions (both sides changed):")
 			for _, h := range conflicting {
 				fmt.Fprintf(&sb, "    %s — synthesize both edits into one coherent version\n", h)
 			}
-		} else {
+		case len(same) > 0:
+			fmt.Fprintln(&sb, "  (No section has conflicting edits — auto-mergeable in principle.)")
+		default:
 			fmt.Fprintln(&sb, "  (No section was modified by both sides — auto-mergeable in principle.)")
+		}
+		if len(same) > 0 {
+			fmt.Fprintln(&sb, "  Same change on both sides (keep it once):")
+			for _, h := range same {
+				fmt.Fprintf(&sb, "    %s\n", h)
+			}
 		}
 		fmt.Fprintln(&sb)
 
@@ -170,28 +182,30 @@ func writeSidedDiff(sb *strings.Builder, label string, d *diff.SectionDiff) {
 	fmt.Fprintln(sb)
 }
 
-// overlappingModifiedSections returns the headings that were modified on
-// BOTH sides of the merge — the regions the agent must reconcile by
-// synthesis rather than by picking one.
-func overlappingModifiedSections(yours, theirs *diff.SectionDiff) []string {
-	mineMod := map[string]bool{}
+// overlappingModifiedSections splits the headings modified on BOTH sides
+// of the merge: conflicting are the regions the two sides changed
+// differently, which the agent must reconcile by synthesis rather than by
+// picking one; same are the ones both sides changed to the same text
+// (WP-4.1 GFR-6), which need no merge.
+func overlappingModifiedSections(yours, theirs *diff.SectionDiff) (conflicting, same []string) {
+	mine := map[string]string{}
 	for _, s := range yours.Sections {
 		if s.Status == diff.StatusModified || s.Status == diff.StatusRenamed {
-			mineMod[s.Heading] = true
+			mine[s.Heading] = s.To
 		}
 	}
-	var both []string
 	for _, s := range theirs.Sections {
-		if (s.Status == diff.StatusModified || s.Status == diff.StatusRenamed) && mineMod[s.Heading] {
-			both = append(both, s.Heading)
+		if s.Status != diff.StatusModified && s.Status != diff.StatusRenamed {
+			continue
+		}
+		to, ok := mine[s.Heading]
+		switch {
+		case !ok:
+		case strings.TrimSpace(to) == strings.TrimSpace(s.To):
+			same = append(same, s.Heading)
+		default:
+			conflicting = append(conflicting, s.Heading)
 		}
 	}
-	return both
-}
-
-func shortMergeSHA(s string) string {
-	if len(s) <= 7 {
-		return s
-	}
-	return s[:7]
+	return conflicting, same
 }
