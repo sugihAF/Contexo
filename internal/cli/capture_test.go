@@ -301,3 +301,55 @@ func TestFindContexoRoot(t *testing.T) {
 		t.Errorf("findContexoRoot in non-Contexo dir should return empty")
 	}
 }
+
+func TestReadStdinPayloadLastAssistantMessageForms(t *testing.T) {
+	// Codex sends last_assistant_message as a string; Claude Code's Stop
+	// sends a text block. Neither (nor an unexpected shape) may cost the
+	// payload its other fields.
+	cases := map[string]string{
+		`"Done."`:                           "Done.",
+		`{"type":"text","text":"Done."}`:    "Done.",
+		`[{"type":"text","text":"Done."}]`:  "Done.",
+		`{"type":"tool_use","name":"Read"}`: "",
+		`42`:                                "",
+		`null`:                              "",
+	}
+	for raw, want := range cases {
+		p := readStdinPayload(strings.NewReader(`{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":` + raw + `}`))
+		if p.SessionID != "s1" || p.HookEventName != "Stop" {
+			t.Errorf("%s: payload fields lost: %+v", raw, p)
+		}
+		if got := string(p.LastAssistantMessage); got != want {
+			t.Errorf("%s: last_assistant_message = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestCaptureTurnClaudeStopUsesLastAssistantMessage(t *testing.T) {
+	project := tmpContexoProject(t)
+	transcript := filepath.Join(project, "transcript.jsonl")
+	// The final text record has not landed: the last record is a tool_result.
+	const body = `{"type":"user","message":{"role":"user","content":"fix the test"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}
+`
+	if err := os.WriteFile(transcript, []byte(body), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	payload := `{"hook_event_name":"Stop","session_id":"sess-last","transcript_path":"` +
+		strings.ReplaceAll(transcript, `\`, `\\`) + `","cwd":"` +
+		strings.ReplaceAll(project, `\`, `\\`) + `","last_assistant_message":{"type":"text","text":"Fixed."}}`
+
+	cmd := newCaptureTurnCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetIn(bytes.NewReader([]byte(payload)))
+	if err := runCaptureTurn(cmd, "claude", "", "", ""); err != nil {
+		t.Fatalf("runCaptureTurn: %v", err)
+	}
+	recs, _ := capture.Open(config.ContexoDirPath(project), "sess-last").Records()
+	if len(recs) != 1 || recs[0].User != "fix the test" || recs[0].Assistant != "Fixed." ||
+		len(recs[0].Tools) != 1 || recs[0].Tools[0] != "Edit" {
+		t.Errorf("want the whole turn with the Stop payload's final text, got %+v", recs)
+	}
+}

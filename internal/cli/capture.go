@@ -24,13 +24,29 @@ type hookPayload struct {
 	CWD            string `json:"cwd,omitempty"`
 	// Codex inline-capture fields: UserPromptSubmit carries the prompt, Stop
 	// carries the assistant's final message (no transcript parsing needed).
-	Prompt               string `json:"prompt,omitempty"`
-	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
+	// Claude Code's Stop carries last_assistant_message too, as a text block.
+	Prompt               string   `json:"prompt,omitempty"`
+	LastAssistantMessage hookText `json:"last_assistant_message,omitempty"`
 	// Cursor inline-capture fields: beforeSubmitPrompt carries `prompt` (shared
 	// above), afterAgentResponse carries `text`; Cursor keys sessions by
 	// conversation_id (it has no session_id).
 	Text           string `json:"text,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
+}
+
+// hookText is a hook message field sent either as a bare string (Codex) or
+// as content blocks (Claude Code: {"type":"text","text":"..."}). Any other
+// shape decodes to "" rather than failing the payload.
+type hookText string
+
+func (h *hookText) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*h = hookText(s)
+		return nil
+	}
+	*h = hookText(capture.ContentText(data))
+	return nil
 }
 
 func newCaptureCmd() *cobra.Command {
@@ -107,7 +123,7 @@ func runCaptureTurn(cmd *cobra.Command, flagAgent, flagSession, flagTranscript, 
 	if done {
 		return nil // event handled with nothing to append yet (e.g. Codex prompt stashed)
 	}
-	if ex.User == "" && ex.Assistant == "" {
+	if ex.User == "" && ex.Assistant == "" && len(ex.Tools) == 0 {
 		return nil
 	}
 
@@ -142,7 +158,7 @@ func extractExchange(agent string, payload hookPayload, transcriptPath, contexoD
 		}
 		// Stop (or any terminal event): pair the stashed prompt with the reply.
 		prompt, _ := capture.TakePendingPrompt(contexoDir, sessionID)
-		return capture.Exchange{User: prompt, Assistant: payload.LastAssistantMessage}, false, nil
+		return capture.Exchange{User: prompt, Assistant: string(payload.LastAssistantMessage)}, false, nil
 	case "cursor":
 		// Cursor mirrors Codex: beforeSubmitPrompt stashes the prompt,
 		// afterAgentResponse pairs it with the inline `text`.
@@ -155,7 +171,10 @@ func extractExchange(agent string, payload hookPayload, transcriptPath, contexoD
 		prompt, _ := capture.TakePendingPrompt(contexoDir, sessionID)
 		return capture.Exchange{User: prompt, Assistant: payload.Text}, false, nil
 	default: // claude: parse the Stop-hook transcript
-		ex, err := capture.LatestExchange(transcriptPath)
+		// The transcript is written asynchronously and can lag the turn:
+		// the Stop payload's last_assistant_message is the final text when
+		// present; otherwise LatestTurn re-reads briefly for it.
+		ex, err := capture.LatestTurn(transcriptPath, string(payload.LastAssistantMessage), capture.TurnSettleWait)
 		return ex, false, err
 	}
 }
